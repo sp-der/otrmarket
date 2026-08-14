@@ -9,12 +9,16 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from dotenv import load_dotenv
 
+from src.bridge.futures import normalize_bridge_symbol, source_name
 from src.dashboard.queries import DashboardRepository
+from src.storage.database import get_connection, save_quotes_batch
 
 
 ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(ROOT / ".env")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 DB_PATH = Path(os.getenv("OTR_DB_PATH", ROOT / "data" / "otrmarket.db"))
 
@@ -22,6 +26,7 @@ BASE_PATH = "/market"
 COOKIE_NAME = "otr_market_session"
 DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "").strip()
 SESSION_SECRET = os.getenv("DASHBOARD_SESSION_SECRET", "").strip() or DASHBOARD_PASSWORD
+BRIDGE_KEY = os.getenv("OTR_BRIDGE_KEY", "").strip()
 
 repository = DashboardRepository(DB_PATH)
 
@@ -37,6 +42,20 @@ app.mount(f"{BASE_PATH}/assets", StaticFiles(directory=STATIC_DIR), name="market
 
 class LoginPayload(BaseModel):
     password: str
+
+
+class BridgeTickPayload(BaseModel):
+    symbol: str
+    contract: str = ""
+    timestamp: str
+    last: float
+    bid: float | None = None
+    ask: float | None = None
+    volume: int | None = Field(default=None, ge=0)
+
+
+class BridgeBatchPayload(BaseModel):
+    ticks: list[BridgeTickPayload] = Field(min_length=1, max_length=5000)
 
 
 def auth_required() -> bool:
@@ -86,7 +105,50 @@ async def health():
         "ok": True,
         "database_exists": DB_PATH.exists(),
         "mode": "paper",
+        "bridge_configured": bool(BRIDGE_KEY),
     }
+
+
+def require_bridge_key(request: Request) -> None:
+    if not BRIDGE_KEY:
+        raise HTTPException(status_code=503, detail="OTR bridge key is not configured")
+    supplied = request.headers.get("X-OTR-Bridge-Key", "")
+    if not hmac.compare_digest(supplied, BRIDGE_KEY):
+        raise HTTPException(status_code=401, detail="Invalid OTR bridge key")
+
+
+@app.post(f"{BASE_PATH}/api/bridge/ticks")
+async def bridge_ticks(payload: BridgeBatchPayload, request: Request):
+    require_bridge_key(request)
+
+    rows = []
+    accepted = {"NQ": 0, "ES": 0, "GC": 0}
+    for item in payload.ticks:
+        try:
+            symbol = normalize_bridge_symbol(item.symbol)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        rows.append(
+            (
+                item.timestamp,
+                item.timestamp,
+                source_name(item.contract),
+                symbol,
+                float(item.last),
+                float(item.bid) if item.bid is not None else None,
+                float(item.ask) if item.ask is not None else None,
+            )
+        )
+        accepted[symbol] += 1
+
+    connection = get_connection()
+    try:
+        inserted = save_quotes_batch(connection, rows)
+    finally:
+        connection.close()
+
+    return {"ok": True, "inserted": inserted, "symbols": accepted}
 
 
 @app.get(f"{BASE_PATH}/api/auth-status")

@@ -6,7 +6,7 @@ const state = {
 };
 
 const $ = (id) => document.getElementById(id);
-const labelMap = { "BTC-USD": "Bitcoin", QQQ: "Nasdaq", SPY: "S&P 500" };
+const labelMap = { NQ: "Nasdaq Futures", ES: "S&P 500 Futures", GC: "Gold Futures", "BTC-USD": "Bitcoin" };
 
 function fmtNumber(value, digits = 2) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";

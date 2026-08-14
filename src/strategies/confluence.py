@@ -140,10 +140,10 @@ class ConfluenceEngine:
     @staticmethod
     def _detect_pair_smt(symbol: str, timeframe: str, histories):
         pair = None
-        if symbol == "QQQ":
-            pair = "SPY"
-        elif symbol == "SPY":
-            pair = "QQQ"
+        if symbol == "NQ":
+            pair = "ES"
+        elif symbol == "ES":
+            pair = "NQ"
         if pair is None:
             return None
 

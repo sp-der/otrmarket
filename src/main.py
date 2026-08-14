@@ -1,11 +1,10 @@
 import asyncio
 import json
-import os
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
 import websockets
-from dotenv import load_dotenv
 from rich.console import Console
 from rich.live import Live
 from rich.table import Table
@@ -23,12 +22,7 @@ from src.strategies.confluence import ConfluenceEngine
 from src.strategies.momentum import MomentumTracker
 
 ROOT = Path(__file__).resolve().parents[1]
-load_dotenv(ROOT / ".env")
-
 COINBASE_URL = "wss://advanced-trade-ws.coinbase.com"
-ALPACA_URL = "wss://stream.data.alpaca.markets/v2/iex"
-ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
-ALPACA_API_SECRET = os.getenv("ALPACA_API_SECRET")
 
 console = Console()
 momentum = MomentumTracker()
@@ -38,22 +32,35 @@ paper = PaperExecutor()
 
 market_state = {
     "BTC-USD": {"name": "Bitcoin", "source": "Coinbase", "price": None, "bid": None, "ask": None, "updated": None, "quotes": 0},
-    "QQQ": {"name": "Nasdaq", "source": "Alpaca IEX", "price": None, "bid": None, "ask": None, "updated": None, "quotes": 0},
-    "SPY": {"name": "S&P 500", "source": "Alpaca IEX", "price": None, "bid": None, "ask": None, "updated": None, "quotes": 0},
+    "NQ": {"name": "Nasdaq Futures", "source": "NinjaTrader", "price": None, "bid": None, "ask": None, "updated": None, "quotes": 0},
+    "ES": {"name": "S&P 500 Futures", "source": "NinjaTrader", "price": None, "bid": None, "ask": None, "updated": None, "quotes": 0},
+    "GC": {"name": "Gold Futures", "source": "NinjaTrader", "price": None, "bid": None, "ask": None, "updated": None, "quotes": 0},
 }
-feed_status = {"Coinbase": "CONNECTING", "Alpaca": "CONNECTING"}
+
+feed_status = {
+    "Coinbase": "CONNECTING",
+    "NinjaTrader": "WAITING",
+}
 
 
 def utc_now():
     return datetime.now(timezone.utc)
 
 
-def utc_iso():
-    return utc_now().isoformat()
+def parse_timestamp(value: str | None) -> datetime:
+    if not value:
+        return utc_now()
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except ValueError:
+        return utc_now()
 
 
 def price_string(value):
-    return "---" if value is None else f"${value:,.2f}"
+    return "---" if value is None else f"{value:,.2f}"
 
 
 def percent_string(value):
@@ -70,13 +77,13 @@ def age_string(updated):
 
 
 def histories_snapshot():
-    return {
-        key: list(history)
-        for key, history in candles.history.items()
-    }
+    return {key: list(history) for key, history in candles.history.items()}
 
 
 def process_price(connection, symbol, price, bid, ask, timestamp=None):
+    if symbol not in market_state or price is None:
+        return
+
     timestamp = timestamp or utc_now()
     state = market_state[symbol]
     state.update(price=price, bid=bid, ask=ask, updated=timestamp)
@@ -102,8 +109,8 @@ def process_price(connection, symbol, price, bid, ask, timestamp=None):
 
 def build_dashboard():
     table = Table(
-        title="OTR MARKET • STRATEGY ENGINE",
-        caption="OPERATION 1 • RESEARCH + PAPER EXECUTION ONLY • LIVE ORDERS DISABLED 🔒",
+        title="OTR MARKET • FUTURES STRATEGY ENGINE",
+        caption="OPERATION 3 • NQ / ES / GC + BTC • PAPER EXECUTION ONLY 🔒",
     )
     table.add_column("Market")
     table.add_column("Price", justify="right")
@@ -129,8 +136,17 @@ def build_dashboard():
 
     table.add_section()
     table.add_row("Coinbase", feed_status["Coinbase"], "", "", "", "", "", "")
-    table.add_row("Alpaca", feed_status["Alpaca"], "", "", "", "", "", "")
-    table.add_row("Paper", f"Pending {paper.pending_count} / Open {paper.open_count}", "", "", "", "", "", f"R {paper.total_r:+.2f}")
+    table.add_row("NinjaTrader", feed_status["NinjaTrader"], "", "", "", "", "", "")
+    table.add_row(
+        "Paper",
+        f"Pending {paper.pending_count} / Open {paper.open_count}",
+        "",
+        "",
+        "",
+        "",
+        "",
+        f"R {paper.total_r:+.2f}",
+    )
 
     if strategy.last_setup:
         setup = strategy.last_setup
@@ -158,11 +174,15 @@ async def coinbase_collector(connection):
                 ping_timeout=20,
                 close_timeout=10,
             ) as websocket:
-                await websocket.send(json.dumps({
-                    "type": "subscribe",
-                    "product_ids": ["BTC-USD"],
-                    "channel": "ticker",
-                }))
+                await websocket.send(
+                    json.dumps(
+                        {
+                            "type": "subscribe",
+                            "product_ids": ["BTC-USD"],
+                            "channel": "ticker",
+                        }
+                    )
+                )
                 feed_status["Coinbase"] = "CONNECTED"
 
                 async for message in websocket:
@@ -179,7 +199,16 @@ async def coinbase_collector(connection):
                             ask = float(ticker["best_ask"])
                             now = utc_now()
                             process_price(connection, "BTC-USD", price, bid, ask, now)
-                            save_quote(connection, now.isoformat(), exchange_time, "coinbase", "BTC-USD", price, bid, ask)
+                            save_quote(
+                                connection,
+                                now.isoformat(),
+                                exchange_time,
+                                "coinbase",
+                                "BTC-USD",
+                                price,
+                                bid,
+                                ask,
+                            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -188,65 +217,73 @@ async def coinbase_collector(connection):
             await asyncio.sleep(5)
 
 
-async def alpaca_collector(connection):
-    if not ALPACA_API_KEY or not ALPACA_API_SECRET:
-        feed_status["Alpaca"] = "NO CREDENTIALS"
-        return
+def _latest_ninjatrader_id(connection) -> int:
+    try:
+        row = connection.execute(
+            "SELECT COALESCE(MAX(id), 0) FROM market_quotes WHERE source LIKE 'ninjatrader:%'"
+        ).fetchone()
+        return int(row[0] or 0)
+    except sqlite3.Error:
+        return 0
+
+
+async def ninjatrader_collector(connection):
+    """
+    Consume new NinjaTrader bridge ticks already written into SQLite by the
+    FastAPI bridge endpoint. Keeping network ingress in the web process and
+    strategy evaluation in this process makes the bridge easy to audit.
+    """
+    last_id = _latest_ninjatrader_id(connection)
+    feed_status["NinjaTrader"] = "WAITING"
 
     while True:
         try:
-            async with websockets.connect(
-                ALPACA_URL,
-                ping_interval=20,
-                ping_timeout=20,
-                close_timeout=10,
-            ) as websocket:
-                first_message = json.loads(await websocket.recv())
-                connected = any(
-                    item.get("T") == "success" and item.get("msg") == "connected"
-                    for item in first_message
-                )
-                if not connected:
-                    raise RuntimeError(f"Alpaca connection failed: {first_message}")
+            rows = connection.execute(
+                """
+                SELECT id, received_at, symbol, price, bid, ask, source
+                FROM market_quotes
+                WHERE id > ? AND source LIKE 'ninjatrader:%'
+                ORDER BY id ASC
+                LIMIT 1000
+                """,
+                (last_id,),
+            ).fetchall()
 
-                await websocket.send(json.dumps({
-                    "action": "auth",
-                    "key": ALPACA_API_KEY,
-                    "secret": ALPACA_API_SECRET,
-                }))
-                auth_response = json.loads(await websocket.recv())
-                authenticated = any(
-                    item.get("T") == "success" and item.get("msg") == "authenticated"
-                    for item in auth_response
-                )
-                if not authenticated:
-                    raise RuntimeError(f"Alpaca authentication failed: {auth_response}")
-
-                await websocket.send(json.dumps({"action": "subscribe", "quotes": ["QQQ", "SPY"]}))
-                feed_status["Alpaca"] = "CONNECTED"
-
-                async for message in websocket:
-                    data = json.loads(message)
-                    if not isinstance(data, list):
+            if rows:
+                feed_status["NinjaTrader"] = "CONNECTED"
+                for row in rows:
+                    last_id = int(row[0])
+                    symbol = row[2]
+                    if symbol not in ("NQ", "ES", "GC"):
                         continue
-                    for event in data:
-                        if event.get("T") != "q":
-                            continue
-                        symbol = event.get("S")
-                        if symbol not in ("QQQ", "SPY"):
-                            continue
-                        bid = float(event["bp"])
-                        ask = float(event["ap"])
-                        mid = (bid + ask) / 2
-                        now = utc_now()
-                        process_price(connection, symbol, mid, bid, ask, now)
-                        save_quote(connection, now.isoformat(), event.get("t"), "alpaca_iex", symbol, mid, bid, ask)
+                    price = row[3]
+                    bid = row[4]
+                    ask = row[5]
+                    timestamp = parse_timestamp(row[1])
+                    process_price(connection, symbol, price, bid, ask, timestamp)
+            else:
+                newest = connection.execute(
+                    """
+                    SELECT received_at
+                    FROM market_quotes
+                    WHERE source LIKE 'ninjatrader:%'
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                if newest:
+                    age = (utc_now() - parse_timestamp(newest[0])).total_seconds()
+                    feed_status["NinjaTrader"] = "CONNECTED" if age < 5 else "STALE"
+                else:
+                    feed_status["NinjaTrader"] = "WAITING"
+
+            await asyncio.sleep(0.05)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            feed_status["Alpaca"] = "RECONNECTING"
-            console.log(f"Alpaca error: {exc}")
-            await asyncio.sleep(5)
+            feed_status["NinjaTrader"] = "ERROR"
+            console.log(f"NinjaTrader bridge error: {exc}")
+            await asyncio.sleep(1)
 
 
 async def dashboard():
@@ -261,7 +298,7 @@ async def main():
     try:
         await asyncio.gather(
             coinbase_collector(connection),
-            alpaca_collector(connection),
+            ninjatrader_collector(connection),
             dashboard(),
         )
     finally:

@@ -10,8 +10,9 @@ from typing import Any
 
 SYMBOL_LABELS = {
     "BTC-USD": "Bitcoin",
-    "QQQ": "Nasdaq (QQQ proxy)",
-    "SPY": "S&P 500 (SPY proxy)",
+    "NQ": "Nasdaq Futures",
+    "ES": "S&P 500 Futures",
+    "GC": "Gold Futures",
 }
 
 
@@ -129,7 +130,7 @@ class DashboardRepository:
     def market_snapshot(self, connection: sqlite3.Connection) -> list[dict[str, Any]]:
         if not self._table_exists(connection, "market_quotes"):
             return []
-        return [self._market_row(connection, symbol) for symbol in ("BTC-USD", "QQQ", "SPY")]
+        return [self._market_row(connection, symbol) for symbol in ("NQ", "ES", "GC", "BTC-USD")]
 
     def trade_stats(self, connection: sqlite3.Connection) -> dict[str, Any]:
         defaults = {

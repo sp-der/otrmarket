@@ -200,3 +200,51 @@ def upsert_paper_trade(connection, position, updated_at):
             ),
         )
         connection.commit()
+
+
+def save_quotes_batch(connection, rows):
+    """
+    Save many market quote rows in one transaction.
+
+    Each row is:
+    (received_at, exchange_time, source, symbol, price, bid, ask)
+    """
+    prepared = []
+    for received_at, exchange_time, source, symbol, price, bid, ask in rows:
+        mid = spread = spread_bps = None
+        if bid is not None and ask is not None:
+            mid = (bid + ask) / 2
+            spread = ask - bid
+            if mid:
+                spread_bps = (spread / mid) * 10_000
+        prepared.append(
+            (
+                received_at,
+                exchange_time,
+                source,
+                symbol,
+                price,
+                bid,
+                ask,
+                mid,
+                spread,
+                spread_bps,
+            )
+        )
+
+    if not prepared:
+        return 0
+
+    with _db_lock:
+        connection.executemany(
+            """
+            INSERT INTO market_quotes (
+                received_at, exchange_time, source, symbol,
+                price, bid, ask, mid, spread, spread_bps
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            prepared,
+        )
+        connection.commit()
+
+    return len(prepared)
