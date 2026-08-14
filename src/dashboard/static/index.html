@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#000000">
+  <title>OTR Market Dashboard</title>
+  <link rel="stylesheet" href="/market/assets/styles.css">
+</head>
+<body>
+<div id="app" class="app-shell">
+  <aside class="sidebar">
+    <div class="brand-row">
+      <div class="brand-mark logo-mark"><img src="/market/assets/otr-logo.png" alt="OTR logo"></div>
+      <div>
+        <div class="brand-title">OTR Market</div>
+        <div class="brand-subtitle">Strategy Engine</div>
+      </div>
+    </div>
+
+    <nav class="nav-stack" aria-label="Dashboard sections">
+      <button class="nav-item active" data-view="overview">Overview</button>
+      <button class="nav-item" data-view="trades">Trades</button>
+      <button class="nav-item" data-view="setups">Setups</button>
+      <button class="nav-item" data-view="system">System</button>
+    </nav>
+
+    <div class="sidebar-foot">
+      <div class="mode-badge">PAPER MODE</div>
+      <div class="side-meta">Live orders disabled</div>
+      <button id="logoutButton" class="ghost-button hidden" type="button">Log out</button>
+    </div>
+  </aside>
+
+  <main class="main-panel">
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">OTR MARKET CONTROL CENTER</div>
+        <h1 id="viewTitle">Overview</h1>
+      </div>
+      <div class="topbar-right">
+        <div class="status-pill"><span id="connectionDot" class="status-dot"></span><span id="connectionText">Connecting</span></div>
+        <div class="clock-block">
+          <div id="clock">--:--:--</div>
+          <div id="clockDate" class="muted">---</div>
+        </div>
+      </div>
+    </header>
+
+    <section id="overviewView" class="view active">
+      <div class="metric-grid">
+        <article class="metric-card accent-card">
+          <span class="metric-label">Total R</span>
+          <strong id="totalR" class="metric-value">--</strong>
+          <span id="closedTradesSub" class="metric-sub">No closed trades yet</span>
+        </article>
+        <article class="metric-card">
+          <span class="metric-label">Win Rate</span>
+          <strong id="winRate" class="metric-value">--</strong>
+          <span id="winLossSub" class="metric-sub">--</span>
+        </article>
+        <article class="metric-card">
+          <span class="metric-label">Profit Factor</span>
+          <strong id="profitFactor" class="metric-value">--</strong>
+          <span id="avgRSub" class="metric-sub">Average R --</span>
+        </article>
+        <article class="metric-card">
+          <span class="metric-label">Max Drawdown</span>
+          <strong id="maxDrawdown" class="metric-value">--</strong>
+          <span id="todayRSub" class="metric-sub">Today --</span>
+        </article>
+      </div>
+
+      <section class="panel market-panel">
+        <div class="panel-head">
+          <div>
+            <div class="section-kicker">LIVE DATA</div>
+            <h2>Markets</h2>
+          </div>
+          <span id="generatedAt" class="muted">Waiting for data</span>
+        </div>
+        <div id="marketGrid" class="market-grid"></div>
+      </section>
+
+      <div class="split-grid">
+        <section class="panel chart-panel">
+          <div class="panel-head">
+            <div>
+              <div class="section-kicker">PAPER PERFORMANCE</div>
+              <h2>Equity Curve</h2>
+            </div>
+            <span class="tiny-chip">R MULTIPLES</span>
+          </div>
+          <div class="chart-wrap">
+            <canvas id="equityCanvas" aria-label="Cumulative paper-trading R curve"></canvas>
+            <div id="chartEmpty" class="empty-state">Closed paper trades will build the equity curve here.</div>
+          </div>
+        </section>
+
+        <section class="panel activity-panel">
+          <div class="panel-head">
+            <div>
+              <div class="section-kicker">ENGINE STATE</div>
+              <h2>Trade Queue</h2>
+            </div>
+          </div>
+          <div class="queue-grid">
+            <div class="queue-item"><span>Pending</span><strong id="pendingCount">0</strong></div>
+            <div class="queue-item"><span>Open</span><strong id="openCount">0</strong></div>
+            <div class="queue-item"><span>Setups</span><strong id="setupCount">0</strong></div>
+            <div class="queue-item"><span>Invalidated</span><strong id="invalidatedCount">0</strong></div>
+          </div>
+          <div class="divider"></div>
+          <div class="section-kicker">LATEST SETUP</div>
+          <div id="latestSetup" class="latest-card empty-state">No strategy setups yet.</div>
+        </section>
+      </div>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <div class="section-kicker">RECENT ACTIVITY</div>
+            <h2>Paper Trades</h2>
+          </div>
+          <button class="text-button" data-jump="trades" type="button">View all</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Market</th><th>TF</th><th>Direction</th><th>Status</th><th>Entry</th><th>Exit</th><th>Result</th><th>R</th><th>Updated</th></tr>
+            </thead>
+            <tbody id="overviewTradesBody"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+
+    <section id="tradesView" class="view">
+      <section class="panel">
+        <div class="panel-head filter-head">
+          <div>
+            <div class="section-kicker">JOURNAL</div>
+            <h2>Paper Trade History</h2>
+          </div>
+          <div class="filters">
+            <select id="tradeSymbolFilter" aria-label="Filter trades by market">
+              <option value="all">All markets</option>
+              <option value="BTC-USD">Bitcoin</option>
+              <option value="QQQ">Nasdaq</option>
+              <option value="SPY">S&amp;P 500</option>
+            </select>
+            <select id="tradeResultFilter" aria-label="Filter trades by result">
+              <option value="all">All results</option>
+              <option value="WIN">Wins</option>
+              <option value="LOSS">Losses</option>
+              <option value="OPEN">Open</option>
+              <option value="PENDING">Pending</option>
+              <option value="INVALIDATED">Invalidated</option>
+            </select>
+          </div>
+        </div>
+        <div class="table-wrap tall-table">
+          <table>
+            <thead>
+              <tr><th>Market</th><th>TF</th><th>Direction</th><th>Status</th><th>Entry</th><th>Stop</th><th>Target</th><th>Exit</th><th>Result</th><th>R</th><th>Opened</th><th>Closed</th></tr>
+            </thead>
+            <tbody id="tradesBody"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+
+    <section id="setupsView" class="view">
+      <section class="panel">
+        <div class="panel-head filter-head">
+          <div>
+            <div class="section-kicker">CONFLUENCE ENGINE</div>
+            <h2>Detected Setups</h2>
+          </div>
+          <div class="filters">
+            <select id="setupSymbolFilter" aria-label="Filter setups by market">
+              <option value="all">All markets</option>
+              <option value="BTC-USD">Bitcoin</option>
+              <option value="QQQ">Nasdaq</option>
+              <option value="SPY">S&amp;P 500</option>
+            </select>
+            <select id="setupTriggerFilter" aria-label="Filter setups by trigger">
+              <option value="all">All triggers</option>
+              <option value="liquidity_sweep">Liquidity sweep</option>
+              <option value="smt">SMT</option>
+            </select>
+          </div>
+        </div>
+        <div id="setupCards" class="setup-grid"></div>
+      </section>
+    </section>
+
+    <section id="systemView" class="view">
+      <div class="split-grid">
+        <section class="panel">
+          <div class="panel-head"><div><div class="section-kicker">STORAGE</div><h2>Database</h2></div></div>
+          <div class="system-list">
+            <div><span>Status</span><strong id="dbStatus">--</strong></div>
+            <div><span>Size</span><strong id="dbSize">--</strong></div>
+            <div><span>Path</span><strong id="dbPath" class="mono">--</strong></div>
+          </div>
+        </section>
+        <section class="panel">
+          <div class="panel-head"><div><div class="section-kicker">CANDLE ENGINE</div><h2>Stored Candles</h2></div></div>
+          <div id="candleSummary" class="system-list"></div>
+        </section>
+      </div>
+      <section class="panel">
+        <div class="panel-head"><div><div class="section-kicker">RUNTIME</div><h2>Dashboard Endpoint</h2></div></div>
+        <div class="system-list">
+          <div><span>Path</span><strong class="mono">/market</strong></div>
+          <div><span>API</span><strong class="mono">/market/api/snapshot</strong></div>
+          <div><span>WebSocket</span><strong class="mono">/market/ws</strong></div>
+          <div><span>Execution</span><strong>Paper only 🔒</strong></div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <div id="loginOverlay" class="login-overlay hidden">
+    <div class="login-card">
+      <div class="brand-mark large">OTR</div>
+      <h2>Market Dashboard</h2>
+      <p>Enter the dashboard password to continue.</p>
+      <label for="passwordInput">Password</label>
+      <input id="passwordInput" type="password" autocomplete="current-password" placeholder="Dashboard password">
+      <button id="loginButton" type="button">Enter dashboard</button>
+      <div id="loginError" class="login-error" aria-live="polite"></div>
+    </div>
+  </div>
+</div>
+<script src="/market/assets/app.js" defer></script>
+</body>
+</html>
