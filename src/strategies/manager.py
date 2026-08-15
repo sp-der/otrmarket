@@ -1,20 +1,21 @@
 from __future__ import annotations
 
-from src.strategies.confluence import ConfluenceEngine
+from src.strategies.flexible_confluence import FlexibleConfluenceEngine
 from src.strategies.rejection_block import RejectionBlockEngine
 
 
 class MultiStrategyEngine:
     """Run independent setup engines behind the existing OTR runtime contract.
 
-    The legacy ICT confluence model remains untouched. Rejection Block 10/10
-    scans the same completed-candle histories independently. If both engines
-    produce a setup for the same symbol/timeframe on the same evaluation, OTR
-    emits one trade candidate instead of accidentally stacking duplicate risk.
+    ICT keeps the same six-stage confluence state machine but can choose among
+    approved entry variants at the final geometry gate. Rejection Block 10/10
+    remains independent. If both engines produce a setup for the same
+    symbol/timeframe on the same evaluation, OTR emits one trade candidate
+    instead of accidentally stacking duplicate risk.
     """
 
     def __init__(self) -> None:
-        self.ict = ConfluenceEngine()
+        self.ict = FlexibleConfluenceEngine()
         self.rejection_block = RejectionBlockEngine()
         self.engines = (self.ict, self.rejection_block)
         self.diagnostics: dict[tuple[str, str], dict] = {}
