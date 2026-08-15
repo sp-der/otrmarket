@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class Operation451SupervisorTests(unittest.TestCase):
     def test_dashboard_server_supervises_engine(self):
         text = (ROOT / "src/dashboard/server.py").read_text()
-        self.assertIn('"-u", "-m", "src.main"', text)
+        self.assertIn('"-u", "-m", "src.main_multi"', text)
         self.assertIn("otr-engine-watchdog", text)
         self.assertIn("ENGINE_PID_FILE", text)
         self.assertIn("os.kill(os.getpid(), signal.SIGTERM)", text)
