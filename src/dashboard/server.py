@@ -69,7 +69,7 @@ def _start_engine() -> None:
 
     # Inherit stdout/stderr so engine logs are captured by Railway directly.
     _engine_process = subprocess.Popen(
-        [sys.executable, "-u", "-m", "src.main"],
+        [sys.executable, "-u", "-m", "src.main_multi"],
         cwd=str(ROOT),
         stdout=None,
         stderr=None,
