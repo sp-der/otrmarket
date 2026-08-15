@@ -22,6 +22,7 @@
       <button class="nav-item active" data-view="overview">Overview</button>
       <button class="nav-item" data-view="trades">Trades</button>
       <button class="nav-item" data-view="setups">Setups</button>
+      <button class="nav-item" data-view="scanner">Scanner</button>
       <button class="nav-item" data-view="system">System</button>
     </nav>
 
@@ -77,7 +78,7 @@
             <div class="section-kicker">LIVE DATA</div>
             <h2>Markets</h2>
           </div>
-          <span id="generatedAt" class="muted">Waiting for data</span>
+          <div class="runtime-head"><span id="runtimeMode" class="tiny-chip">IDLE</span><span id="generatedAt" class="muted">Waiting for data</span></div>
         </div>
         <div id="marketGrid" class="market-grid"></div>
       </section>
@@ -115,6 +116,18 @@
           <div id="latestSetup" class="latest-card empty-state">No strategy setups yet.</div>
         </section>
       </div>
+
+
+      <section class="panel scanner-preview-panel">
+        <div class="panel-head">
+          <div>
+            <div class="section-kicker">CONFLUENCE SCANNER</div>
+            <h2>Strategy Progress</h2>
+          </div>
+          <button class="text-button" data-jump="scanner" type="button">Open scanner</button>
+        </div>
+        <div id="scannerPreview" class="scanner-grid"></div>
+      </section>
 
       <section class="panel">
         <div class="panel-head">
@@ -194,6 +207,35 @@
           </div>
         </div>
         <div id="setupCards" class="setup-grid"></div>
+      </section>
+    </section>
+
+
+    <section id="scannerView" class="view">
+      <section class="panel">
+        <div class="panel-head filter-head">
+          <div>
+            <div class="section-kicker">LIVE / REPLAY REASONING</div>
+            <h2>Confluence Scanner</h2>
+          </div>
+          <div class="filters">
+            <select id="scannerSymbolFilter" aria-label="Filter scanner by market">
+              <option value="all">All markets</option>
+              <option value="NQ">NQ Futures</option>
+              <option value="ES">ES Futures</option>
+              <option value="GC">Gold Futures</option>
+              <option value="BTC-USD">Bitcoin</option>
+            </select>
+            <select id="scannerTimeframeFilter" aria-label="Filter scanner by timeframe">
+              <option value="all">All timeframes</option>
+              <option value="1m">1 minute</option>
+              <option value="5m">5 minutes</option>
+              <option value="15m">15 minutes</option>
+              <option value="1h">1 hour</option>
+            </select>
+          </div>
+        </div>
+        <div id="scannerCards" class="scanner-grid scanner-grid-full"></div>
       </section>
     </section>
 

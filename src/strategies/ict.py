@@ -55,13 +55,43 @@ def find_recent_fvgs(candles: list[Candle], lookback: int = 100) -> list[FairVal
     return results
 
 
+def _fvg_fully_mitigated(fvg: FairValueGap, later_candles: list[Candle]) -> bool:
+    """Treat a gap as active until price completely traverses it.
+
+    A bullish FVG is fully mitigated once price trades to/below its lower edge.
+    A bearish FVG is fully mitigated once price trades to/above its upper edge.
+    Partial fills remain active PD arrays.
+    """
+    if fvg.direction == "bullish":
+        return any(c.low <= fvg.lower for c in later_candles)
+    return any(c.high >= fvg.upper for c in later_candles)
+
+
+def find_active_fvgs(candles: list[Candle], lookback: int = 100) -> list[FairValueGap]:
+    if len(candles) < 3:
+        return []
+
+    start = max(0, len(candles) - lookback)
+    active: list[FairValueGap] = []
+    for idx in range(start + 2, len(candles)):
+        fvg = detect_fvg(candles[: idx + 1])
+        if not fvg:
+            continue
+        later = candles[idx + 1 :]
+        if not _fvg_fully_mitigated(fvg, later):
+            active.append(fvg)
+    return active
+
+
 def find_pd_array_touch(candles: list[Candle], max_age_bars: int = 80) -> FairValueGap | None:
     if len(candles) < 4:
         return None
 
     latest = candles[-1]
+    # Build active arrays using candles before the touch candle. This prevents
+    # the touch itself from being counted as prior mitigation.
     earlier = candles[:-1]
-    fvgs = find_recent_fvgs(earlier, lookback=max_age_bars + 3)
+    fvgs = find_active_fvgs(earlier, lookback=max_age_bars + 3)
 
     for fvg in reversed(fvgs):
         if fvg.overlaps_range(latest.low, latest.high):
@@ -150,23 +180,38 @@ def detect_displacement(
     )
 
 
+def _synchronized_windows(
+    leader: list[Candle], laggard: list[Candle], lookback: int
+) -> tuple[Candle, Candle, list[Candle], list[Candle]] | None:
+    """Return the latest shared candle time and synchronized lookback windows."""
+    if not leader or not laggard:
+        return None
+
+    b_by_time = {c.close_time: c for c in laggard[-100:]}
+    shared = [(idx, c, b_by_time.get(c.close_time)) for idx, c in enumerate(leader[-100:])]
+    shared = [(idx, a, b) for idx, a, b in shared if b is not None]
+    if len(shared) < lookback + 1:
+        return None
+
+    _, a, b = shared[-1]
+    previous_shared = shared[-lookback - 1 : -1]
+    a_prev = [item[1] for item in previous_shared]
+    b_prev = [item[2] for item in previous_shared]
+    if len(a_prev) < lookback or len(b_prev) < lookback:
+        return None
+    return a, b, a_prev, b_prev
+
+
 def detect_smt(
     leader: list[Candle],
     laggard: list[Candle],
     lookback: int = 8,
 ) -> SMTDivergence | None:
-    if len(leader) < lookback + 1 or len(laggard) < lookback + 1:
+    synced = _synchronized_windows(leader, laggard, lookback)
+    if synced is None:
         return None
 
-    a = leader[-1]
-    b = laggard[-1]
-
-    # Require roughly synchronized candles.
-    if abs((a.close_time - b.close_time).total_seconds()) > 1:
-        return None
-
-    a_prev = leader[-lookback - 1 : -1]
-    b_prev = laggard[-lookback - 1 : -1]
+    a, b, a_prev, b_prev = synced
 
     a_prev_high = max(c.high for c in a_prev)
     a_prev_low = min(c.low for c in a_prev)

@@ -32,7 +32,10 @@ class DashboardRepository:
         if not value:
             return None
         try:
-            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
         except ValueError:
             return None
 
@@ -47,10 +50,16 @@ class DashboardRepository:
         ).fetchone()
         return bool(row)
 
+    @staticmethod
+    def _column_exists(connection: sqlite3.Connection, table: str, column: str) -> bool:
+        rows = connection.execute(f"PRAGMA table_info({table})").fetchall()
+        return any(row[1] == column for row in rows)
+
     def _market_row(self, connection: sqlite3.Connection, symbol: str) -> dict[str, Any]:
+        ingest_expr = "ingested_at" if self._column_exists(connection, "market_quotes", "ingested_at") else "received_at AS ingested_at"
         latest = connection.execute(
-            """
-            SELECT received_at, source, symbol, price, bid, ask, mid, spread, spread_bps
+            f"""
+            SELECT received_at, {ingest_expr}, source, symbol, price, bid, ask, mid, spread, spread_bps
             FROM market_quotes
             WHERE symbol = ?
             ORDER BY id DESC
@@ -70,13 +79,17 @@ class DashboardRepository:
                 "spread_bps": None,
                 "source": None,
                 "received_at": None,
+                "ingested_at": None,
                 "age_seconds": None,
+                "market_age_seconds": None,
+                "mode": "WAITING",
                 "return_1m": None,
                 "return_5m": None,
                 "quote_count": 0,
             }
 
         latest_time = self._parse_time(latest["received_at"])
+        ingest_time = self._parse_time(latest["ingested_at"])
         latest_price = latest["price"] if latest["price"] is not None else latest["mid"]
 
         def window_return(seconds: int) -> float | None:
@@ -106,10 +119,15 @@ class DashboardRepository:
         ).fetchone()[0]
 
         age_seconds = None
+        market_age_seconds = None
+        if ingest_time is not None:
+            age_seconds = max(0.0, (self._now() - ingest_time).total_seconds())
         if latest_time is not None:
-            if latest_time.tzinfo is None:
-                latest_time = latest_time.replace(tzinfo=timezone.utc)
-            age_seconds = max(0.0, (self._now() - latest_time).total_seconds())
+            market_age_seconds = max(0.0, (self._now() - latest_time).total_seconds())
+
+        mode = "WAITING"
+        if latest_time is not None and ingest_time is not None:
+            mode = "REPLAY" if abs((ingest_time - latest_time).total_seconds()) > 300 else "LIVE"
 
         return {
             "symbol": symbol,
@@ -121,7 +139,10 @@ class DashboardRepository:
             "spread_bps": latest["spread_bps"],
             "source": latest["source"],
             "received_at": latest["received_at"],
+            "ingested_at": latest["ingested_at"],
             "age_seconds": age_seconds,
+            "market_age_seconds": market_age_seconds,
+            "mode": mode,
             "return_1m": window_return(60),
             "return_5m": window_return(300),
             "quote_count": quote_count,
@@ -131,6 +152,19 @@ class DashboardRepository:
         if not self._table_exists(connection, "market_quotes"):
             return []
         return [self._market_row(connection, symbol) for symbol in ("NQ", "ES", "GC", "BTC-USD")]
+
+    def runtime_state(self, connection: sqlite3.Connection) -> dict[str, Any]:
+        markets = self.market_snapshot(connection)
+        replay_markets = [m for m in markets if m.get("mode") == "REPLAY" and m.get("age_seconds") is not None and m["age_seconds"] < 20]
+        live_markets = [m for m in markets if m.get("mode") == "LIVE" and m.get("age_seconds") is not None and m["age_seconds"] < 20]
+        active_market_times = [self._parse_time(m.get("received_at")) for m in replay_markets]
+        active_market_times = [t for t in active_market_times if t is not None]
+        return {
+            "mode": "REPLAY" if replay_markets else "LIVE" if live_markets else "IDLE",
+            "market_time": max(active_market_times).isoformat() if active_market_times else None,
+            "replay_symbols": [m["symbol"] for m in replay_markets],
+            "live_symbols": [m["symbol"] for m in live_markets],
+        }
 
     def trade_stats(self, connection: sqlite3.Connection) -> dict[str, Any]:
         defaults = {
@@ -152,7 +186,7 @@ class DashboardRepository:
 
         rows = connection.execute(
             """
-            SELECT setup_id, status, result, result_r, opened_at, closed_at
+            SELECT setup_id, status, result, result_r, opened_at, closed_at, updated_at
             FROM paper_trades
             ORDER BY COALESCE(closed_at, opened_at, updated_at) ASC
             """
@@ -240,6 +274,29 @@ class DashboardRepository:
             result.append(item)
         return result
 
+    def diagnostics(self, connection: sqlite3.Connection) -> list[dict[str, Any]]:
+        if not self._table_exists(connection, "strategy_diagnostics"):
+            return []
+        rows = connection.execute(
+            """
+            SELECT symbol, timeframe, market_time, stage, direction,
+                   pd_array, signal, displacement, entry_fvg, retracement, rr,
+                   trigger_type, note, setup_id, updated_at
+            FROM strategy_diagnostics
+            ORDER BY
+                CASE timeframe WHEN '1m' THEN 1 WHEN '5m' THEN 2 WHEN '15m' THEN 3 WHEN '1h' THEN 4 ELSE 9 END,
+                symbol
+            """
+        ).fetchall()
+        output = []
+        for row in rows:
+            item = dict(row)
+            for key in ("pd_array", "signal", "displacement", "entry_fvg", "retracement", "rr"):
+                item[key] = bool(item[key])
+            item["score"] = sum(int(item[k]) for k in ("pd_array", "signal", "displacement", "entry_fvg", "retracement", "rr"))
+            output.append(item)
+        return output
+
     def equity_curve(self, connection: sqlite3.Connection, limit: int = 500) -> list[dict[str, Any]]:
         if not self._table_exists(connection, "paper_trades"):
             return []
@@ -297,7 +354,9 @@ class DashboardRepository:
             return {
                 "generated_at": generated_at,
                 "database": {"ok": False, "path": str(self.db_path), "size_bytes": 0},
+                "runtime": {"mode": "IDLE", "market_time": None, "replay_symbols": [], "live_symbols": []},
                 "markets": [],
+                "diagnostics": [],
                 "stats": self.trade_stats_empty(),
                 "trades": [],
                 "setups": [],
@@ -314,7 +373,9 @@ class DashboardRepository:
                     "path": str(self.db_path),
                     "size_bytes": self.db_path.stat().st_size,
                 },
+                "runtime": self.runtime_state(connection),
                 "markets": self.market_snapshot(connection),
+                "diagnostics": self.diagnostics(connection),
                 "stats": self.trade_stats(connection),
                 "trades": self.recent_trades(connection),
                 "setups": self.recent_setups(connection),

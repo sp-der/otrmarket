@@ -72,12 +72,14 @@ function renderMarkets(markets) {
     return;
   }
   root.innerHTML = markets.map((m) => {
-    const live = m.age_seconds !== null && m.age_seconds < 20;
+    const active = m.age_seconds !== null && m.age_seconds < 20;
+    const mode = active ? (m.mode || "LIVE") : fmtAge(m.age_seconds);
+    const modeClass = active ? "live" : "";
     return `
       <article class="market-card">
         <div class="market-top">
           <div><div class="market-name">${m.name || labelMap[m.symbol] || m.symbol}</div><div class="market-symbol">${m.symbol}</div></div>
-          <span class="feed-tag ${live ? "live" : ""}">${live ? "LIVE" : fmtAge(m.age_seconds)}</span>
+          <span class="feed-tag ${modeClass}">${mode}</span>
         </div>
         <div class="market-price">${fmtPrice(m.price)}</div>
         <div class="market-stats">
@@ -85,6 +87,7 @@ function renderMarkets(markets) {
           <div class="market-stat"><span>5 minutes</span><strong class="${valueClass(m.return_5m)}">${fmtPct(m.return_5m)}</strong></div>
           <div class="market-stat"><span>Bid / Ask</span><strong>${fmtPrice(m.bid)} / ${fmtPrice(m.ask)}</strong></div>
           <div class="market-stat"><span>Quotes</span><strong>${Number(m.quote_count || 0).toLocaleString()}</strong></div>
+          <div class="market-stat"><span>Market time</span><strong>${fmtTime(m.received_at)}</strong></div>
         </div>
       </article>`;
   }).join("");
@@ -191,6 +194,64 @@ function renderSetups(setups) {
   $("setupCards").innerHTML = filtered.length ? filtered.map(setupCard).join("") : '<div class="empty-state">No setups match these filters.</div>';
 }
 
+
+function checkMark(value) {
+  return value ? '<span class="scan-check pass">PASS</span>' : '<span class="scan-check wait">WAIT</span>';
+}
+
+function scannerCard(d) {
+  const direction = d.direction ? String(d.direction).toUpperCase() : "--";
+  const trigger = d.trigger_type ? String(d.trigger_type).replaceAll("_", " ") : "--";
+  return `
+    <article class="scanner-card">
+      <div class="scanner-card-head">
+        <div>
+          <div class="scanner-title">${labelMap[d.symbol] || d.symbol} · ${d.timeframe}</div>
+          <div class="scanner-meta">${direction} · ${d.stage || "WAITING"} · ${fmtTime(d.market_time)}</div>
+        </div>
+        <span class="score-chip">${Number(d.score || 0)}/6</span>
+      </div>
+      <div class="scan-steps">
+        <div><span>PD Array</span>${checkMark(d.pd_array)}</div>
+        <div><span>Signal</span>${checkMark(d.signal)}</div>
+        <div><span>Displacement</span>${checkMark(d.displacement)}</div>
+        <div><span>Entry FVG</span>${checkMark(d.entry_fvg)}</div>
+        <div><span>50-79%</span>${checkMark(d.retracement)}</div>
+        <div><span>Risk / Reward</span>${checkMark(d.rr)}</div>
+      </div>
+      <div class="scanner-note">${d.note || "Waiting for strategy data."}</div>
+      <div class="scanner-foot"><span>Trigger</span><strong>${trigger}</strong></div>
+    </article>`;
+}
+
+function renderDiagnostics(diagnostics) {
+  const ranked = [...(diagnostics || [])].sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
+  const preview = ranked.slice(0, 4);
+  $("scannerPreview").innerHTML = preview.length
+    ? preview.map(scannerCard).join("")
+    : '<div class="empty-state">Scanner is warming up. Completed candles will appear here.</div>';
+
+  const symbolFilter = $("scannerSymbolFilter").value;
+  const timeframeFilter = $("scannerTimeframeFilter").value;
+  const filtered = ranked.filter((d) => {
+    const symbolOk = symbolFilter === "all" || d.symbol === symbolFilter;
+    const tfOk = timeframeFilter === "all" || d.timeframe === timeframeFilter;
+    return symbolOk && tfOk;
+  });
+  $("scannerCards").innerHTML = filtered.length
+    ? filtered.map(scannerCard).join("")
+    : '<div class="empty-state">No scanner states match these filters yet.</div>';
+}
+
+function renderRuntime(runtime) {
+  const mode = runtime?.mode || "IDLE";
+  $("runtimeMode").textContent = mode;
+  $("runtimeMode").classList.toggle("active-runtime", mode === "REPLAY" || mode === "LIVE");
+  if (mode === "REPLAY" && runtime?.market_time) {
+    $("generatedAt").textContent = `Replay ${fmtTime(runtime.market_time)}`;
+  }
+}
+
 function renderSystem(snapshot) {
   const db = snapshot.database || {};
   $("dbStatus").textContent = db.ok ? "ONLINE" : "MISSING";
@@ -265,9 +326,13 @@ function render(snapshot) {
   renderMarkets(snapshot.markets || []);
   renderTrades(snapshot.trades || []);
   renderSetups(snapshot.setups || []);
+  renderDiagnostics(snapshot.diagnostics || []);
+  renderRuntime(snapshot.runtime || {});
   renderSystem(snapshot);
   drawEquity(snapshot.equity_curve || []);
-  $("generatedAt").textContent = snapshot.generated_at ? `Updated ${fmtTime(snapshot.generated_at)}` : "Waiting for data";
+  if ((snapshot.runtime || {}).mode !== "REPLAY") {
+    $("generatedAt").textContent = snapshot.generated_at ? `Updated ${fmtTime(snapshot.generated_at)}` : "Waiting for data";
+  }
 }
 
 function setConnection(status) {
@@ -353,6 +418,7 @@ function bindEvents() {
   document.querySelectorAll("[data-jump]").forEach((button) => button.addEventListener("click", () => switchView(button.dataset.jump)));
   ["tradeSymbolFilter", "tradeResultFilter"].forEach((id) => $(id).addEventListener("change", () => state.snapshot && renderTrades(state.snapshot.trades || [])));
   ["setupSymbolFilter", "setupTriggerFilter"].forEach((id) => $(id).addEventListener("change", () => state.snapshot && renderSetups(state.snapshot.setups || [])));
+  ["scannerSymbolFilter", "scannerTimeframeFilter"].forEach((id) => $(id).addEventListener("change", () => state.snapshot && renderDiagnostics(state.snapshot.diagnostics || [])));
   $("loginButton").addEventListener("click", login);
   $("passwordInput").addEventListener("keydown", (event) => { if (event.key === "Enter") login(); });
   $("logoutButton").addEventListener("click", logout);

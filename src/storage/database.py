@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
 
@@ -9,6 +10,15 @@ from src.strategies.models import Candle, StrategySetup
 
 DB_PATH = Path("data/otrmarket.db")
 _db_lock = Lock()
+
+
+def _utc_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _column_exists(connection: sqlite3.Connection, table: str, column: str) -> bool:
+    rows = connection.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(row[1] == column for row in rows)
 
 
 def get_connection():
@@ -30,11 +40,15 @@ def get_connection():
             ask REAL,
             mid REAL,
             spread REAL,
-            spread_bps REAL
+            spread_bps REAL,
+            ingested_at TEXT
         );
 
         CREATE INDEX IF NOT EXISTS idx_market_quotes_symbol_time
         ON market_quotes(symbol, received_at);
+
+        CREATE INDEX IF NOT EXISTS idx_market_quotes_symbol_ingest
+        ON market_quotes(symbol, ingested_at);
 
         CREATE TABLE IF NOT EXISTS candles (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -84,7 +98,39 @@ def get_connection():
             result_r REAL,
             updated_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS engine_state (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS strategy_diagnostics (
+            symbol TEXT NOT NULL,
+            timeframe TEXT NOT NULL,
+            market_time TEXT NOT NULL,
+            stage TEXT NOT NULL,
+            direction TEXT,
+            pd_array INTEGER NOT NULL DEFAULT 0,
+            signal INTEGER NOT NULL DEFAULT 0,
+            displacement INTEGER NOT NULL DEFAULT 0,
+            entry_fvg INTEGER NOT NULL DEFAULT 0,
+            retracement INTEGER NOT NULL DEFAULT 0,
+            rr INTEGER NOT NULL DEFAULT 0,
+            trigger_type TEXT,
+            note TEXT,
+            setup_id TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(symbol, timeframe)
+        );
         """
+    )
+
+    # Upgrade databases created by Operations 1-3 without deleting data.
+    if not _column_exists(connection, "market_quotes", "ingested_at"):
+        connection.execute("ALTER TABLE market_quotes ADD COLUMN ingested_at TEXT")
+    connection.execute(
+        "UPDATE market_quotes SET ingested_at = COALESCE(ingested_at, received_at) WHERE ingested_at IS NULL"
     )
     connection.commit()
     return connection
@@ -103,10 +149,22 @@ def save_quote(connection, received_at, exchange_time, source, symbol, price, bi
             """
             INSERT INTO market_quotes (
                 received_at, exchange_time, source, symbol,
-                price, bid, ask, mid, spread, spread_bps
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                price, bid, ask, mid, spread, spread_bps, ingested_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (received_at, exchange_time, source, symbol, price, bid, ask, mid, spread, spread_bps),
+            (
+                received_at,
+                exchange_time,
+                source,
+                symbol,
+                price,
+                bid,
+                ask,
+                mid,
+                spread,
+                spread_bps,
+                _utc_iso(),
+            ),
         )
         connection.commit()
 
@@ -135,6 +193,37 @@ def save_candle(connection, candle: Candle):
         connection.commit()
 
 
+def load_recent_candles(connection, symbols, timeframes, limit_per_series: int = 500) -> list[Candle]:
+    output: list[Candle] = []
+    for symbol in symbols:
+        for timeframe in timeframes:
+            rows = connection.execute(
+                """
+                SELECT symbol, timeframe, open_time, close_time, open, high, low, close, ticks
+                FROM candles
+                WHERE symbol = ? AND timeframe = ?
+                ORDER BY open_time DESC
+                LIMIT ?
+                """,
+                (symbol, timeframe, limit_per_series),
+            ).fetchall()
+            for row in reversed(rows):
+                output.append(
+                    Candle(
+                        symbol=row[0],
+                        timeframe=row[1],
+                        open_time=datetime.fromisoformat(row[2].replace("Z", "+00:00")),
+                        close_time=datetime.fromisoformat(row[3].replace("Z", "+00:00")),
+                        open=float(row[4]),
+                        high=float(row[5]),
+                        low=float(row[6]),
+                        close=float(row[7]),
+                        ticks=int(row[8] or 0),
+                    )
+                )
+    return output
+
+
 def save_setup(connection, setup: StrategySetup):
     with _db_lock:
         connection.execute(
@@ -158,6 +247,53 @@ def save_setup(connection, setup: StrategySetup):
                 setup.risk_reward,
                 setup.status,
                 json.dumps(setup.to_dict(), sort_keys=True),
+            ),
+        )
+        connection.commit()
+
+
+def save_diagnostic(connection, diagnostic: dict | None):
+    if not diagnostic:
+        return
+    with _db_lock:
+        connection.execute(
+            """
+            INSERT INTO strategy_diagnostics (
+                symbol, timeframe, market_time, stage, direction,
+                pd_array, signal, displacement, entry_fvg, retracement, rr,
+                trigger_type, note, setup_id, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(symbol, timeframe) DO UPDATE SET
+                market_time=excluded.market_time,
+                stage=excluded.stage,
+                direction=excluded.direction,
+                pd_array=excluded.pd_array,
+                signal=excluded.signal,
+                displacement=excluded.displacement,
+                entry_fvg=excluded.entry_fvg,
+                retracement=excluded.retracement,
+                rr=excluded.rr,
+                trigger_type=excluded.trigger_type,
+                note=excluded.note,
+                setup_id=excluded.setup_id,
+                updated_at=excluded.updated_at
+            """,
+            (
+                diagnostic["symbol"],
+                diagnostic["timeframe"],
+                diagnostic["market_time"],
+                diagnostic["stage"],
+                diagnostic.get("direction"),
+                int(bool(diagnostic.get("pd_array"))),
+                int(bool(diagnostic.get("signal"))),
+                int(bool(diagnostic.get("displacement"))),
+                int(bool(diagnostic.get("entry_fvg"))),
+                int(bool(diagnostic.get("retracement"))),
+                int(bool(diagnostic.get("rr"))),
+                diagnostic.get("trigger_type"),
+                diagnostic.get("note", ""),
+                diagnostic.get("setup_id"),
+                _utc_iso(),
             ),
         )
         connection.commit()
@@ -203,13 +339,13 @@ def upsert_paper_trade(connection, position, updated_at):
 
 
 def save_quotes_batch(connection, rows):
-    """
-    Save many market quote rows in one transaction.
+    """Save many market quote rows in one transaction.
 
-    Each row is:
+    Each input row is:
     (received_at, exchange_time, source, symbol, price, bid, ask)
     """
     prepared = []
+    ingested_at = _utc_iso()
     for received_at, exchange_time, source, symbol, price, bid, ask in rows:
         mid = spread = spread_bps = None
         if bid is not None and ask is not None:
@@ -229,6 +365,7 @@ def save_quotes_batch(connection, rows):
                 mid,
                 spread,
                 spread_bps,
+                ingested_at,
             )
         )
 
@@ -236,15 +373,44 @@ def save_quotes_batch(connection, rows):
         return 0
 
     with _db_lock:
-        connection.executemany(
-            """
-            INSERT INTO market_quotes (
-                received_at, exchange_time, source, symbol,
-                price, bid, ask, mid, spread, spread_bps
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            prepared,
-        )
+        if _column_exists(connection, "market_quotes", "ingested_at"):
+            connection.executemany(
+                """
+                INSERT INTO market_quotes (
+                    received_at, exchange_time, source, symbol,
+                    price, bid, ask, mid, spread, spread_bps, ingested_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                prepared,
+            )
+        else:
+            # Backwards-compatible path used by legacy/unit-test schemas.
+            connection.executemany(
+                """
+                INSERT INTO market_quotes (
+                    received_at, exchange_time, source, symbol,
+                    price, bid, ask, mid, spread, spread_bps
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [row[:-1] for row in prepared],
+            )
         connection.commit()
 
     return len(prepared)
+
+
+def get_engine_state(connection, key: str, default: str | None = None) -> str | None:
+    row = connection.execute("SELECT value FROM engine_state WHERE key = ?", (key,)).fetchone()
+    return row[0] if row else default
+
+
+def set_engine_state(connection, key: str, value: str) -> None:
+    with _db_lock:
+        connection.execute(
+            """
+            INSERT INTO engine_state(key, value, updated_at) VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+            """,
+            (key, value, _utc_iso()),
+        )
+        connection.commit()

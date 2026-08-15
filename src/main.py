@@ -10,11 +10,16 @@ from rich.live import Live
 from rich.table import Table
 
 from src.execution.paper import PaperExecutor
+from src.runtime.clock import MarketClock
 from src.storage.database import (
     get_connection,
+    get_engine_state,
+    load_recent_candles,
     save_candle,
+    save_diagnostic,
     save_quote,
     save_setup,
+    set_engine_state,
     upsert_paper_trade,
 )
 from src.strategies.candles import CandleBuilder
@@ -29,12 +34,13 @@ momentum = MomentumTracker()
 candles = CandleBuilder(timeframes=("1m", "5m", "15m", "1h"))
 strategy = ConfluenceEngine()
 paper = PaperExecutor()
+clock = MarketClock()
 
 market_state = {
-    "BTC-USD": {"name": "Bitcoin", "source": "Coinbase", "price": None, "bid": None, "ask": None, "updated": None, "quotes": 0},
-    "NQ": {"name": "Nasdaq Futures", "source": "NinjaTrader", "price": None, "bid": None, "ask": None, "updated": None, "quotes": 0},
-    "ES": {"name": "S&P 500 Futures", "source": "NinjaTrader", "price": None, "bid": None, "ask": None, "updated": None, "quotes": 0},
-    "GC": {"name": "Gold Futures", "source": "NinjaTrader", "price": None, "bid": None, "ask": None, "updated": None, "quotes": 0},
+    "BTC-USD": {"name": "Bitcoin", "source": "Coinbase", "price": None, "bid": None, "ask": None, "quotes": 0},
+    "NQ": {"name": "Nasdaq Futures", "source": "NinjaTrader", "price": None, "bid": None, "ask": None, "quotes": 0},
+    "ES": {"name": "S&P 500 Futures", "source": "NinjaTrader", "price": None, "bid": None, "ask": None, "quotes": 0},
+    "GC": {"name": "Gold Futures", "source": "NinjaTrader", "price": None, "bid": None, "ask": None, "quotes": 0},
 }
 
 feed_status = {
@@ -69,15 +75,28 @@ def percent_string(value):
     return f"{value:+.3f}%"
 
 
-def age_string(updated):
-    if updated is None:
+def stream_state(symbol: str) -> str:
+    mode = clock.mode(symbol)
+    age = clock.ingress_age_seconds(symbol)
+    if age is None:
         return "WAITING"
-    seconds = (utc_now() - updated).total_seconds()
-    return f"{seconds * 1000:.0f} ms" if seconds < 1 else f"{seconds:.1f} s"
+    if age > 10:
+        return "STALE"
+    return mode
 
 
 def histories_snapshot():
     return {key: list(history) for key, history in candles.history.items()}
+
+
+def evaluate_strategy(connection, symbol: str, timeframe: str):
+    setup = strategy.on_candle(symbol, timeframe, histories_snapshot())
+    save_diagnostic(connection, strategy.diagnostic(symbol, timeframe))
+    if setup:
+        save_setup(connection, setup)
+        position = paper.register_setup(setup)
+        upsert_paper_trade(connection, position, setup.created_at.isoformat())
+    return setup
 
 
 def process_price(connection, symbol, price, bid, ask, timestamp=None):
@@ -85,10 +104,12 @@ def process_price(connection, symbol, price, bid, ask, timestamp=None):
         return
 
     timestamp = timestamp or utc_now()
+    ingest_time = utc_now()
     state = market_state[symbol]
-    state.update(price=price, bid=bid, ask=ask, updated=timestamp)
+    state.update(price=price, bid=bid, ask=ask)
     state["quotes"] += 1
-    momentum.add_price(symbol, price)
+    clock.update(symbol, timestamp, ingest_time)
+    momentum.add_price(symbol, price, timestamp)
 
     for position in paper.on_price(symbol, price, timestamp):
         upsert_paper_trade(connection, position, timestamp.isoformat())
@@ -96,21 +117,25 @@ def process_price(connection, symbol, price, bid, ask, timestamp=None):
     closed_candles = candles.update(symbol, price, timestamp)
     for candle in closed_candles:
         save_candle(connection, candle)
-        setup = strategy.on_candle(
-            candle.symbol,
-            candle.timeframe,
-            histories_snapshot(),
-        )
-        if setup:
-            save_setup(connection, setup)
-            position = paper.register_setup(setup)
-            upsert_paper_trade(connection, position, timestamp.isoformat())
+
+        # Evaluate the candle that just closed.
+        evaluate_strategy(connection, candle.symbol, candle.timeframe)
+
+        # NQ/ES SMT requires both markets to have the same close-time available.
+        # Re-evaluate the paired market after either side closes. Stage gating in
+        # ConfluenceEngine prevents duplicate same-bar transitions while allowing
+        # SMT to appear once the second market catches up.
+        if candle.symbol in ("NQ", "ES"):
+            pair = "ES" if candle.symbol == "NQ" else "NQ"
+            pair_history = candles.get_history(pair, candle.timeframe)
+            if pair_history and pair_history[-1].close_time == candle.close_time:
+                evaluate_strategy(connection, pair, candle.timeframe)
 
 
 def build_dashboard():
     table = Table(
-        title="OTR MARKET • FUTURES STRATEGY ENGINE",
-        caption="OPERATION 3 • NQ / ES / GC + BTC • PAPER EXECUTION ONLY 🔒",
+        title="OTR MARKET • STRATEGY LAB",
+        caption="OPERATION 4 • REPLAY-AWARE CONFLUENCE + PAPER EXECUTION • LIVE ORDERS DISABLED 🔒",
     )
     table.add_column("Market")
     table.add_column("Price", justify="right")
@@ -118,7 +143,7 @@ def build_dashboard():
     table.add_column("5s", justify="right")
     table.add_column("15s", justify="right")
     table.add_column("1m", justify="right")
-    table.add_column("Age", justify="right")
+    table.add_column("Mode", justify="right")
     table.add_column("Quotes", justify="right")
 
     for symbol, state in market_state.items():
@@ -130,7 +155,7 @@ def build_dashboard():
             percent_string(returns["5s"]),
             percent_string(returns["15s"]),
             percent_string(returns["1m"]),
-            age_string(state["updated"]),
+            stream_state(symbol),
             f'{state["quotes"]:,}',
         )
 
@@ -147,6 +172,29 @@ def build_dashboard():
         "",
         f"R {paper.total_r:+.2f}",
     )
+
+    # Show the most advanced current scanner state.
+    ranked = sorted(
+        strategy.diagnostics.values(),
+        key=lambda d: (
+            sum(bool(d.get(k)) for k in ("pd_array", "signal", "displacement", "entry_fvg", "retracement", "rr")),
+            d.get("market_time", ""),
+        ),
+        reverse=True,
+    )
+    if ranked:
+        diag = ranked[0]
+        table.add_section()
+        table.add_row(
+            "SCANNER",
+            f'{diag["symbol"]} {diag["timeframe"]}',
+            diag.get("stage", ""),
+            "PD✓" if diag.get("pd_array") else "PD·",
+            "SIG✓" if diag.get("signal") else "SIG·",
+            "DISP✓" if diag.get("displacement") else "DISP·",
+            "FVG✓" if diag.get("entry_fvg") else "FVG·",
+            diag.get("trigger_type") or "",
+        )
 
     if strategy.last_setup:
         setup = strategy.last_setup
@@ -197,11 +245,11 @@ async def coinbase_collector(connection):
                             price = float(ticker["price"])
                             bid = float(ticker["best_bid"])
                             ask = float(ticker["best_ask"])
-                            now = utc_now()
-                            process_price(connection, "BTC-USD", price, bid, ask, now)
+                            event_time = parse_timestamp(exchange_time)
+                            process_price(connection, "BTC-USD", price, bid, ask, event_time)
                             save_quote(
                                 connection,
-                                now.isoformat(),
+                                event_time.isoformat(),
                                 exchange_time,
                                 "coinbase",
                                 "BTC-USD",
@@ -218,21 +266,25 @@ async def coinbase_collector(connection):
 
 
 def _latest_ninjatrader_id(connection) -> int:
+    saved = get_engine_state(connection, "last_ninjatrader_quote_id")
+    if saved is not None:
+        try:
+            return int(saved)
+        except ValueError:
+            pass
     try:
         row = connection.execute(
             "SELECT COALESCE(MAX(id), 0) FROM market_quotes WHERE source LIKE 'ninjatrader:%'"
         ).fetchone()
-        return int(row[0] or 0)
+        value = int(row[0] or 0)
+        set_engine_state(connection, "last_ninjatrader_quote_id", str(value))
+        return value
     except sqlite3.Error:
         return 0
 
 
 async def ninjatrader_collector(connection):
-    """
-    Consume new NinjaTrader bridge ticks already written into SQLite by the
-    FastAPI bridge endpoint. Keeping network ingress in the web process and
-    strategy evaluation in this process makes the bridge easy to audit.
-    """
+    """Consume bridge ticks already written by the FastAPI ingress process."""
     last_id = _latest_ninjatrader_id(connection)
     feed_status["NinjaTrader"] = "WAITING"
 
@@ -240,11 +292,11 @@ async def ninjatrader_collector(connection):
         try:
             rows = connection.execute(
                 """
-                SELECT id, received_at, symbol, price, bid, ask, source
+                SELECT id, received_at, symbol, price, bid, ask, source, ingested_at
                 FROM market_quotes
                 WHERE id > ? AND source LIKE 'ninjatrader:%'
                 ORDER BY id ASC
-                LIMIT 1000
+                LIMIT 2000
                 """,
                 (last_id,),
             ).fetchall()
@@ -261,19 +313,20 @@ async def ninjatrader_collector(connection):
                     ask = row[5]
                     timestamp = parse_timestamp(row[1])
                     process_price(connection, symbol, price, bid, ask, timestamp)
+                set_engine_state(connection, "last_ninjatrader_quote_id", str(last_id))
             else:
                 newest = connection.execute(
                     """
-                    SELECT received_at
+                    SELECT ingested_at
                     FROM market_quotes
                     WHERE source LIKE 'ninjatrader:%'
                     ORDER BY id DESC
                     LIMIT 1
                     """
                 ).fetchone()
-                if newest:
+                if newest and newest[0]:
                     age = (utc_now() - parse_timestamp(newest[0])).total_seconds()
-                    feed_status["NinjaTrader"] = "CONNECTED" if age < 5 else "STALE"
+                    feed_status["NinjaTrader"] = "CONNECTED" if age < 10 else "STALE"
                 else:
                     feed_status["NinjaTrader"] = "WAITING"
 
@@ -295,6 +348,19 @@ async def dashboard():
 
 async def main():
     connection = get_connection()
+
+    # Restore enough completed candles for swings, FVGs, displacement and SMT
+    # to survive engine restarts. No historical trades are re-executed here.
+    seeded = load_recent_candles(
+        connection,
+        symbols=("NQ", "ES", "GC", "BTC-USD"),
+        timeframes=("1m", "5m", "15m", "1h"),
+        limit_per_series=500,
+    )
+    candles.seed_history(seeded)
+    if seeded:
+        console.log(f"Seeded {len(seeded)} completed candles from SQLite")
+
     try:
         await asyncio.gather(
             coinbase_collector(connection),

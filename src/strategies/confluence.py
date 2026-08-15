@@ -24,6 +24,7 @@ class PendingContext:
     pd_array: FairValueGap
     stage: str
     started_bar_count: int
+    stage_bar_count: int
     trigger_type: str | None = None
     trigger_details: dict | None = None
     swept_level: float | None = None
@@ -31,7 +32,11 @@ class PendingContext:
 
 
 class ConfluenceEngine:
-    """State machine for the user's PD Array -> Signal -> Displacement -> FVG setup."""
+    """State machine for PD Array -> Signal -> Displacement -> Entry FVG.
+
+    Operation 4 deliberately exposes each stage so replay sessions can show
+    exactly why a setup is waiting, rejected, or accepted.
+    """
 
     def __init__(
         self,
@@ -45,43 +50,107 @@ class ConfluenceEngine:
         self.contexts: dict[tuple[str, str], PendingContext] = {}
         self.last_setup: StrategySetup | None = None
         self.events: list[str] = []
+        self.diagnostics: dict[tuple[str, str], dict] = {}
 
-    def _log(self, message: str) -> None:
-        now = datetime.now(timezone.utc).strftime("%H:%M:%S")
+    def _log(self, message: str, event_time: datetime | None = None) -> None:
+        event_time = event_time or datetime.now(timezone.utc)
+        now = event_time.astimezone(timezone.utc).strftime("%H:%M:%S")
         self.events.append(f"{now} {message}")
-        self.events = self.events[-8:]
+        self.events = self.events[-16:]
+
+    def _set_diag(
+        self,
+        symbol: str,
+        timeframe: str,
+        market_time: datetime,
+        *,
+        stage: str,
+        direction: str | None = None,
+        pd_array: bool = False,
+        signal: bool = False,
+        displacement: bool = False,
+        entry_fvg: bool = False,
+        retracement: bool = False,
+        rr: bool = False,
+        trigger_type: str | None = None,
+        note: str = "",
+        setup_id: str | None = None,
+    ) -> dict:
+        item = {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "market_time": market_time.isoformat(),
+            "stage": stage,
+            "direction": direction,
+            "pd_array": bool(pd_array),
+            "signal": bool(signal),
+            "displacement": bool(displacement),
+            "entry_fvg": bool(entry_fvg),
+            "retracement": bool(retracement),
+            "rr": bool(rr),
+            "trigger_type": trigger_type,
+            "note": note,
+            "setup_id": setup_id,
+        }
+        self.diagnostics[(symbol, timeframe)] = item
+        return item
+
+    def diagnostic(self, symbol: str, timeframe: str) -> dict | None:
+        value = self.diagnostics.get((symbol, timeframe))
+        return dict(value) if value else None
 
     def on_candle(self, symbol: str, timeframe: str, histories: dict[tuple[str, str], list]):
         candles = histories.get((symbol, timeframe), [])
+        if not candles:
+            return None
+        market_time = candles[-1].close_time
+
         if len(candles) < 6:
+            self._set_diag(
+                symbol,
+                timeframe,
+                market_time,
+                stage="WARMUP",
+                note=f"Need more candles ({len(candles)}/6 minimum).",
+            )
             return None
 
         key = (symbol, timeframe)
         context = self.contexts.get(key)
 
         if context and len(candles) - context.started_bar_count > self.context_expiry_bars:
-            self._log(f"{symbol} {timeframe}: context expired at {context.stage}")
+            self._log(f"{symbol} {timeframe}: context expired at {context.stage}", market_time)
             self.contexts.pop(key, None)
             context = None
 
         if context is None:
             pd_array = find_pd_array_touch(candles)
-            if pd_array:
-                context = PendingContext(
-                    symbol=symbol,
-                    timeframe=timeframe,
-                    direction=pd_array.direction,
-                    pd_array=pd_array,
-                    stage="WAIT_SIGNAL",
-                    started_bar_count=len(candles),
+            if not pd_array:
+                self._set_diag(
+                    symbol,
+                    timeframe,
+                    market_time,
+                    stage="WAIT_PD_ARRAY",
+                    note="Waiting for price to touch an active FVG PD array.",
                 )
-                self.contexts[key] = context
-                self._log(
-                    f"{symbol} {timeframe}: {pd_array.direction} PD-array FVG touched"
-                )
-                # Keep evaluating the same candle. A liquidity sweep can be the
-                # exact candle that taps the PD array, so returning here would
-                # miss valid setups.
+                return None
+
+            context = PendingContext(
+                symbol=symbol,
+                timeframe=timeframe,
+                direction=pd_array.direction,
+                pd_array=pd_array,
+                stage="WAIT_SIGNAL",
+                started_bar_count=len(candles),
+                stage_bar_count=len(candles),
+            )
+            self.contexts[key] = context
+            self._log(f"{symbol} {timeframe}: {pd_array.direction} PD-array FVG touched", market_time)
+
+        # Baseline checks carried through subsequent diagnostic states.
+        passed_pd = True
+        passed_signal = context.trigger_type is not None
+        passed_displacement = context.displacement is not None
 
         if context.stage == "WAIT_SIGNAL":
             sweep = detect_liquidity_sweep(candles)
@@ -95,7 +164,9 @@ class ConfluenceEngine:
                 }
                 context.swept_level = sweep.swept_level
                 context.stage = "WAIT_DISPLACEMENT"
-                self._log(f"{symbol} {timeframe}: liquidity sweep confirmed")
+                context.stage_bar_count = len(candles)
+                self._log(f"{symbol} {timeframe}: liquidity sweep confirmed", market_time)
+                passed_signal = True
 
             elif smt and smt.direction == context.direction:
                 context.trigger_type = "smt"
@@ -105,53 +176,185 @@ class ConfluenceEngine:
                     "description": smt.description,
                 }
                 context.stage = "WAIT_DISPLACEMENT"
-                self._log(f"{symbol} {timeframe}: SMT confirmed")
+                context.stage_bar_count = len(candles)
+                self._log(f"{symbol} {timeframe}: SMT confirmed", market_time)
+                passed_signal = True
 
+            self._set_diag(
+                symbol,
+                timeframe,
+                market_time,
+                stage=context.stage,
+                direction=context.direction,
+                pd_array=passed_pd,
+                signal=passed_signal,
+                trigger_type=context.trigger_type,
+                note=(
+                    f"Signal confirmed by {context.trigger_type.replace('_', ' ')}."
+                    if passed_signal
+                    else "PD array touched. Waiting for liquidity sweep or NQ/ES SMT."
+                ),
+            )
             return None
 
         if context.stage == "WAIT_DISPLACEMENT":
+            # Displacement must occur after the signal bar, not on a duplicate
+            # evaluation of the same candle when the paired market closes.
+            if len(candles) <= context.stage_bar_count:
+                self._set_diag(
+                    symbol,
+                    timeframe,
+                    market_time,
+                    stage=context.stage,
+                    direction=context.direction,
+                    pd_array=True,
+                    signal=True,
+                    trigger_type=context.trigger_type,
+                    note="Signal confirmed. Waiting for a later displacement candle.",
+                )
+                return None
+
             displacement = detect_displacement(candles)
             if displacement and displacement.direction == context.direction:
                 context.displacement = displacement
                 context.stage = "WAIT_ENTRY_FVG"
-                self._log(f"{symbol} {timeframe}: displacement confirmed")
+                context.stage_bar_count = len(candles)
+                passed_displacement = True
+                self._log(f"{symbol} {timeframe}: displacement confirmed", market_time)
+
+            self._set_diag(
+                symbol,
+                timeframe,
+                market_time,
+                stage=context.stage,
+                direction=context.direction,
+                pd_array=True,
+                signal=True,
+                displacement=passed_displacement,
+                trigger_type=context.trigger_type,
+                note=(
+                    "Displacement confirmed. Waiting for the 3-candle entry FVG."
+                    if passed_displacement
+                    else "Waiting for aggressive displacement after the signal."
+                ),
+            )
             return None
 
         if context.stage == "WAIT_ENTRY_FVG":
+            if len(candles) <= context.stage_bar_count:
+                self._set_diag(
+                    symbol,
+                    timeframe,
+                    market_time,
+                    stage=context.stage,
+                    direction=context.direction,
+                    pd_array=True,
+                    signal=True,
+                    displacement=True,
+                    trigger_type=context.trigger_type,
+                    note="Displacement confirmed. Waiting for a later candle to complete the FVG.",
+                )
+                return None
+
             fvg = detect_fvg(candles)
-            if not fvg or fvg.direction != context.direction:
+            entry_ok = bool(fvg and fvg.direction == context.direction)
+            retrace_ok = bool(entry_ok and fvg_in_retracement_zone(fvg, context.displacement))
+
+            if not entry_ok:
+                self._set_diag(
+                    symbol,
+                    timeframe,
+                    market_time,
+                    stage=context.stage,
+                    direction=context.direction,
+                    pd_array=True,
+                    signal=True,
+                    displacement=True,
+                    trigger_type=context.trigger_type,
+                    note="Waiting for a same-direction entry FVG after displacement.",
+                )
                 return None
 
-            if not fvg_in_retracement_zone(fvg, context.displacement):
-                self._log(f"{symbol} {timeframe}: entry FVG outside 50-79% zone")
+            if not retrace_ok:
+                self._log(f"{symbol} {timeframe}: entry FVG outside 50-79% zone", market_time)
+                self._set_diag(
+                    symbol,
+                    timeframe,
+                    market_time,
+                    stage=context.stage,
+                    direction=context.direction,
+                    pd_array=True,
+                    signal=True,
+                    displacement=True,
+                    entry_fvg=True,
+                    trigger_type=context.trigger_type,
+                    note="Entry FVG formed but is outside the 50-79% displacement retracement zone.",
+                )
                 return None
 
-            setup = self._build_setup(candles, context, fvg)
+            setup = self._build_setup(candles, context, fvg, market_time)
             if setup:
                 self.last_setup = setup
                 self.contexts.pop(key, None)
                 self._log(
-                    f"{symbol} {timeframe}: SETUP {setup.direction.upper()} RR {setup.risk_reward:.2f}"
+                    f"{symbol} {timeframe}: SETUP {setup.direction.upper()} RR {setup.risk_reward:.2f}",
+                    market_time,
+                )
+                self._set_diag(
+                    symbol,
+                    timeframe,
+                    market_time,
+                    stage="SETUP_READY",
+                    direction=context.direction,
+                    pd_array=True,
+                    signal=True,
+                    displacement=True,
+                    entry_fvg=True,
+                    retracement=True,
+                    rr=True,
+                    trigger_type=context.trigger_type,
+                    note=f"Valid setup ready at {setup.risk_reward:.2f}R.",
+                    setup_id=setup.setup_id,
                 )
                 return setup
+
+            self._set_diag(
+                symbol,
+                timeframe,
+                market_time,
+                stage="WAIT_VALID_RR",
+                direction=context.direction,
+                pd_array=True,
+                signal=True,
+                displacement=True,
+                entry_fvg=True,
+                retracement=True,
+                trigger_type=context.trigger_type,
+                note="Entry FVG qualifies, but stop/target structure does not yet produce a valid trade.",
+            )
 
         return None
 
     @staticmethod
     def _detect_pair_smt(symbol: str, timeframe: str, histories):
-        pair = None
         if symbol == "NQ":
             pair = "ES"
         elif symbol == "ES":
             pair = "NQ"
-        if pair is None:
+        else:
             return None
 
         leader = histories.get((symbol, timeframe), [])
         laggard = histories.get((pair, timeframe), [])
         return detect_smt(leader, laggard)
 
-    def _build_setup(self, candles, context: PendingContext, entry_fvg: FairValueGap):
+    def _build_setup(
+        self,
+        candles,
+        context: PendingContext,
+        entry_fvg: FairValueGap,
+        market_time: datetime,
+    ):
         entry = entry_fvg.midpoint
         swings = detect_swings(candles)
 
@@ -179,7 +382,7 @@ class ConfluenceEngine:
             return None
         rr = reward / risk
         if rr < self.min_rr:
-            self._log(f"{context.symbol} {context.timeframe}: rejected low RR {rr:.2f}")
+            self._log(f"{context.symbol} {context.timeframe}: rejected low RR {rr:.2f}", market_time)
             return None
 
         return StrategySetup(
@@ -187,7 +390,7 @@ class ConfluenceEngine:
             symbol=context.symbol,
             timeframe=context.timeframe,
             direction=context.direction,
-            created_at=datetime.now(timezone.utc),
+            created_at=market_time,
             pd_array=context.pd_array,
             trigger_type=context.trigger_type,
             trigger_details=context.trigger_details or {},
@@ -200,6 +403,7 @@ class ConfluenceEngine:
             metadata={
                 "entry_rule": "FVG midpoint",
                 "discount_rule": "50-79% displacement retracement",
-                "pd_array_type": "FVG_ONLY_OPERATION_1",
+                "pd_array_type": "ACTIVE_FVG",
+                "operation": 4,
             },
         )

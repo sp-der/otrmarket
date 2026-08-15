@@ -16,8 +16,13 @@ class MomentumTracker:
         self.retention_seconds = retention_seconds
         self.history = {}
 
-    def add_price(self, symbol: str, price: float):
-        now = datetime.now(timezone.utc).timestamp()
+    def add_price(self, symbol: str, price: float, timestamp: datetime | None = None):
+        timestamp = timestamp or datetime.now(timezone.utc)
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        else:
+            timestamp = timestamp.astimezone(timezone.utc)
+        now = timestamp.timestamp()
         history = self.history.setdefault(symbol, deque())
         history.append((now, price))
         cutoff = now - self.retention_seconds
