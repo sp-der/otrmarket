@@ -84,8 +84,16 @@ class RejectionBlockEngine:
     @staticmethod
     def _checklist(**passed: bool) -> dict[str, bool]:
         names = (
-            "bias", "liquidity", "sweep", "rejection_block", "smt_checked",
-            "displacement", "mss_bos", "retracement", "entry_stop", "target",
+            "bias",
+            "liquidity",
+            "sweep",
+            "rejection_block",
+            "smt_checked",
+            "displacement",
+            "mss_bos",
+            "retracement",
+            "entry_stop",
+            "target",
         )
         return {name: bool(passed.get(name, False)) for name in names}
 
@@ -110,6 +118,7 @@ class RejectionBlockEngine:
             "market_time": market_time.isoformat(),
             "stage": stage,
             "direction": direction,
+            # Compatibility with the current six-column scanner persistence.
             "pd_array": checklist["bias"] and checklist["liquidity"],
             "signal": checklist["sweep"] and checklist["rejection_block"],
             "displacement": checklist["smt_checked"] and checklist["displacement"],
@@ -133,7 +142,9 @@ class RejectionBlockEngine:
         self.events = self.events[-24:]
 
     @staticmethod
-    def _bias(symbol: str, timeframe: str, histories) -> tuple[str | None, str, str]:
+    def _bias(
+        symbol: str, timeframe: str, histories
+    ) -> tuple[str | None, str, str]:
         bias_tf = BIAS_TIMEFRAME.get(timeframe, timeframe)
         candles = list(histories.get((symbol, bias_tf), []))
         if len(candles) < 8:
@@ -143,10 +154,24 @@ class RejectionBlockEngine:
         lows = [s for s in swings if s.kind == "low"]
         if len(highs) < 2 or len(lows) < 2:
             return None, bias_tf, f"Need two confirmed swing highs/lows on {bias_tf}."
-        if highs[-1].price > highs[-2].price and lows[-1].price > lows[-2].price:
-            return "bullish", bias_tf, f"{bias_tf} HH/HL structure; draw is liquidity above."
-        if highs[-1].price < highs[-2].price and lows[-1].price < lows[-2].price:
-            return "bearish", bias_tf, f"{bias_tf} LH/LL structure; draw is liquidity below."
+        if (
+            highs[-1].price > highs[-2].price
+            and lows[-1].price > lows[-2].price
+        ):
+            return (
+                "bullish",
+                bias_tf,
+                f"{bias_tf} HH/HL structure; draw is liquidity above.",
+            )
+        if (
+            highs[-1].price < highs[-2].price
+            and lows[-1].price < lows[-2].price
+        ):
+            return (
+                "bearish",
+                bias_tf,
+                f"{bias_tf} LH/LL structure; draw is liquidity below.",
+            )
         return None, bias_tf, f"{bias_tf} structure is mixed; no clean directional draw."
 
     def _clean_rejection(
@@ -175,7 +200,9 @@ class RejectionBlockEngine:
         return clean, body_high, candle.high, candle.high
 
     @staticmethod
-    def _structure_level(candles: list[Candle], direction: str) -> float | None:
+    def _structure_level(
+        candles: list[Candle], direction: str
+    ) -> float | None:
         swings = detect_swings(candles[:-1])
         kind = "high" if direction == "bullish" else "low"
         swing = next((s for s in reversed(swings) if s.kind == kind), None)
@@ -315,7 +342,9 @@ class RejectionBlockEngine:
                     stage="RB_WAIT_REJECTION",
                     direction=direction,
                     checklist=self._checklist(
-                        bias=True, liquidity=True, sweep=True
+                        bias=True,
+                        liquidity=True,
+                        sweep=True,
                     ),
                     note="Liquidity swept, but the raid did not create a clean rejection block.",
                 )
@@ -394,7 +423,10 @@ class RejectionBlockEngine:
                     direction=context.direction,
                     checklist=self._base(context),
                     smt_present=context.smt_present,
-                    note="Raid/rejection confirmed. Waiting for later aggressive displacement that creates an FVG.",
+                    note=(
+                        "Raid/rejection confirmed. Waiting for later aggressive "
+                        "displacement that creates an FVG."
+                    ),
                 )
                 return None
 
@@ -414,7 +446,10 @@ class RejectionBlockEngine:
                     direction=context.direction,
                     checklist=self._base(context),
                     smt_present=context.smt_present,
-                    note="Weak/choppy reaction is not enough. Waiting for strong displacement + FVG.",
+                    note=(
+                        "Weak/choppy reaction is not enough. Waiting for strong "
+                        "displacement + FVG."
+                    ),
                 )
                 return None
 
@@ -622,14 +657,33 @@ class RejectionBlockEngine:
         if target_swing is None:
             return None
 
-        risk = abs(raw_entry - raw_stop)
-        if risk <= 0:
+        raw_risk = abs(raw_entry - raw_stop)
+        if raw_risk <= 0:
+            return None
+
+        # Normalize entry/stop first, then calculate the objective from the
+        # executable risk. Otherwise stop rounding can turn nominal 3R into 2.9R.
+        provisional_target = (
+            raw_entry + raw_risk * self.min_rr
+            if context.direction == "bullish"
+            else raw_entry - raw_risk * self.min_rr
+        )
+        entry, stop, _ = normalize_trade_prices(
+            context.symbol,
+            context.direction,
+            raw_entry,
+            raw_stop,
+            provisional_target,
+        )
+        normalized_risk = abs(entry - stop)
+        if normalized_risk <= 0:
             return None
         three_r = (
-            raw_entry + risk * self.min_rr
+            entry + normalized_risk * self.min_rr
             if context.direction == "bullish"
-            else raw_entry - risk * self.min_rr
+            else entry - normalized_risk * self.min_rr
         )
+
         if context.direction == "bullish" and target_swing.price < three_r:
             return None
         if context.direction == "bearish" and target_swing.price > three_r:
@@ -638,8 +692,8 @@ class RejectionBlockEngine:
         entry, stop, target = normalize_trade_prices(
             context.symbol,
             context.direction,
-            raw_entry,
-            raw_stop,
+            entry,
+            stop,
             three_r,
         )
         geometry = validate_trade_geometry(
