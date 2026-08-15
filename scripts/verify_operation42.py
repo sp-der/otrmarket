@@ -18,8 +18,8 @@ js = checks["grouped scanner JS"].read_text()
 css = checks["grouped scanner CSS"].read_text()
 
 required = [
-    ("cache-busted CSS", 'styles.css?v=4.2' in html),
-    ("cache-busted JS", 'app.js?v=4.2' in html),
+    ("cache-busted CSS", 'styles.css?v=4.4' in html),
+    ("cache-busted JS", 'app.js?v=4.4' in html),
     ("market grouping", "scannerMarketSection" in js),
     ("all four markets", 'scannerMarketOrder = ["NQ", "ES", "GC", "BTC-USD"]' in js),
     ("all four timeframes", 'scannerTimeframeOrder = ["1m", "5m", "15m", "1h"]' in js),

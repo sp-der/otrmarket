@@ -204,8 +204,8 @@ const scannerTimeframeOrder = ["1m", "5m", "15m", "1h"];
 const scannerSymbolCode = { NQ: "NQ", ES: "ES", GC: "GC", "BTC-USD": "BTC" };
 const scannerStageOrder = {
   SETUP_READY: 8,
-  WAIT_RR: 7,
-  WAIT_RETRACEMENT: 6,
+  WAIT_VALID_RR: 7,
+  WAIT_QUALIFYING_FVG: 6,
   WAIT_ENTRY_FVG: 5,
   WAIT_DISPLACEMENT: 4,
   WAIT_SIGNAL: 3,
@@ -221,12 +221,28 @@ function prettyStage(stage) {
     WAIT_SIGNAL: "Waiting for signal",
     WAIT_DISPLACEMENT: "Waiting for displacement",
     WAIT_ENTRY_FVG: "Waiting for entry FVG",
-    WAIT_RETRACEMENT: "Waiting for 50-79%",
-    WAIT_RR: "Checking risk / reward",
+    WAIT_QUALIFYING_FVG: "Waiting for qualifying FVG",
+    WAIT_VALID_RR: "Waiting for valid R:R",
     SETUP_READY: "Setup ready",
     EXPIRED: "Expired",
   };
   return map[stage] || String(stage || "Waiting").replaceAll("_", " ");
+}
+
+
+function scannerStageChip(stage) {
+  const map = {
+    WARMUP: "WARMUP",
+    WAIT_PD_ARRAY: "WAIT PD",
+    WAIT_SIGNAL: "WAIT SIGNAL",
+    WAIT_DISPLACEMENT: "WAIT DISP",
+    WAIT_ENTRY_FVG: "WAIT FVG",
+    WAIT_QUALIFYING_FVG: "OUTSIDE ZONE",
+    WAIT_VALID_RR: "WAIT R:R",
+    SETUP_READY: "SETUP READY",
+    EXPIRED: "EXPIRED",
+  };
+  return map[stage] || String(stage || "WAITING").replaceAll("_", " ");
 }
 
 function scannerProgress(d) {
@@ -290,7 +306,7 @@ function scannerTimeframeCard(d, symbol, timeframe, runtime) {
     <article class="scanner-timeframe-card ${stageClass}">
       <div class="scanner-tf-top">
         <div class="scanner-tf-name">${timeframe}</div>
-        <span class="scanner-stage-chip">${stage.replaceAll("_", " ")}</span>
+        <span class="scanner-stage-chip">${scannerStageChip(stage)}</span>
       </div>
       <div class="scanner-state-row">
         <div>

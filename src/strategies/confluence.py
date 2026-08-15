@@ -29,6 +29,8 @@ class PendingContext:
     trigger_details: dict | None = None
     swept_level: float | None = None
     displacement: object | None = None
+    entry_fvg_seen: bool = False
+    retracement_seen: bool = False
 
 
 class ConfluenceEngine:
@@ -54,6 +56,8 @@ class ConfluenceEngine:
             "WAIT_SIGNAL": context_expiry_bars,
             "WAIT_DISPLACEMENT": displacement_expiry_bars,
             "WAIT_ENTRY_FVG": entry_fvg_expiry_bars,
+            "WAIT_QUALIFYING_FVG": entry_fvg_expiry_bars,
+            "WAIT_VALID_RR": entry_fvg_expiry_bars,
         }
         self.stop_buffer_fraction = stop_buffer_fraction
         self.contexts: dict[tuple[str, str], PendingContext] = {}
@@ -159,6 +163,8 @@ class ConfluenceEngine:
                     pd_array=True,
                     signal=context.trigger_type is not None,
                     displacement=context.displacement is not None,
+                    entry_fvg=context.entry_fvg_seen,
+                    retracement=context.retracement_seen,
                     trigger_type=context.trigger_type,
                     note=f"{expired_stage} expired after {elapsed} bars (limit {limit}). Waiting for a new PD-array sequence.",
                 )
@@ -281,7 +287,11 @@ class ConfluenceEngine:
             )
             return None
 
-        if context.stage == "WAIT_ENTRY_FVG":
+        if context.stage in {"WAIT_ENTRY_FVG", "WAIT_QUALIFYING_FVG", "WAIT_VALID_RR"}:
+            # The entry-candidate timer starts when displacement is confirmed and
+            # intentionally does NOT reset when a non-qualifying FVG appears.
+            # This lets us keep scanning for a better same-direction FVG without
+            # allowing a setup to live forever.
             if len(candles) <= context.stage_bar_count:
                 self._set_diag(
                     symbol,
@@ -292,14 +302,21 @@ class ConfluenceEngine:
                     pd_array=True,
                     signal=True,
                     displacement=True,
+                    entry_fvg=context.entry_fvg_seen,
+                    retracement=context.retracement_seen,
                     trigger_type=context.trigger_type,
-                    note="Displacement confirmed. Waiting for a later candle to complete the FVG.",
+                    note=(
+                        "A qualifying FVG was seen, but structure/R:R is not valid yet. Waiting for a later candidate."
+                        if context.stage == "WAIT_VALID_RR"
+                        else "An entry FVG was seen outside the 50-79% zone. Waiting for a qualifying same-direction FVG."
+                        if context.stage == "WAIT_QUALIFYING_FVG"
+                        else "Displacement confirmed. Waiting for a later candle to complete the FVG."
+                    ),
                 )
                 return None
 
             fvg = detect_fvg(candles)
             entry_ok = bool(fvg and fvg.direction == context.direction)
-            retrace_ok = bool(entry_ok and fvg_in_retracement_zone(fvg, context.displacement))
 
             if not entry_ok:
                 self._set_diag(
@@ -311,12 +328,28 @@ class ConfluenceEngine:
                     pd_array=True,
                     signal=True,
                     displacement=True,
+                    entry_fvg=context.entry_fvg_seen,
+                    retracement=context.retracement_seen,
                     trigger_type=context.trigger_type,
-                    note="Waiting for a same-direction entry FVG after displacement.",
+                    note=(
+                        "Qualifying FVG found previously, but no valid risk/reward yet. Scanning for another entry candidate."
+                        if context.stage == "WAIT_VALID_RR"
+                        else "Entry FVG detected previously, but it missed the 50-79% zone. Scanning for another same-direction FVG."
+                        if context.entry_fvg_seen
+                        else "Waiting for a same-direction entry FVG after displacement."
+                    ),
                 )
                 return None
 
+            context.entry_fvg_seen = True
+            retrace_ok = bool(fvg_in_retracement_zone(fvg, context.displacement))
+
             if not retrace_ok:
+                # Seeing an FVG is progress, but it is not an entry candidate
+                # unless it falls inside the displacement retracement zone.
+                # Keep the original post-displacement timer running.
+                if not context.retracement_seen:
+                    context.stage = "WAIT_QUALIFYING_FVG"
                 self._log(f"{symbol} {timeframe}: entry FVG outside 50-79% zone", market_time)
                 self._set_diag(
                     symbol,
@@ -328,11 +361,13 @@ class ConfluenceEngine:
                     signal=True,
                     displacement=True,
                     entry_fvg=True,
+                    retracement=context.retracement_seen,
                     trigger_type=context.trigger_type,
-                    note="Entry FVG formed but is outside the 50-79% displacement retracement zone.",
+                    note="Entry FVG detected, but it is outside the 50-79% displacement retracement zone. Scanning for another candidate.",
                 )
                 return None
 
+            context.retracement_seen = True
             setup = self._build_setup(candles, context, fvg, market_time)
             if setup:
                 self.last_setup = setup
@@ -359,11 +394,14 @@ class ConfluenceEngine:
                 )
                 return setup
 
+            # The FVG is correctly positioned, but current swing structure or
+            # R:R does not qualify. Keep scanning within the same timer window.
+            context.stage = "WAIT_VALID_RR"
             self._set_diag(
                 symbol,
                 timeframe,
                 market_time,
-                stage="WAIT_VALID_RR",
+                stage=context.stage,
                 direction=context.direction,
                 pd_array=True,
                 signal=True,
@@ -371,7 +409,7 @@ class ConfluenceEngine:
                 entry_fvg=True,
                 retracement=True,
                 trigger_type=context.trigger_type,
-                note="Entry FVG qualifies, but stop/target structure does not yet produce a valid trade.",
+                note="Entry FVG is inside the 50-79% zone, but current stop/target structure does not produce a valid trade. Scanning for another candidate.",
             )
 
         return None
@@ -445,6 +483,6 @@ class ConfluenceEngine:
                 "entry_rule": "FVG midpoint",
                 "discount_rule": "50-79% displacement retracement",
                 "pd_array_type": "ACTIVE_FVG",
-                "operation": 4,
+                "operation": 4.4,
             },
         )
