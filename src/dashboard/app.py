@@ -100,7 +100,7 @@ async def dashboard_index():
 
 
 def engine_process_status() -> tuple[bool, int | None]:
-    pid_file = ROOT / "data" / "engine.pid"
+    pid_file = Path(os.getenv("OTR_RUNTIME_DIR", "/tmp/otrmarket")) / "engine.pid"
     if not pid_file.exists():
         return False, None
     try:

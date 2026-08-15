@@ -12,17 +12,15 @@ import uvicorn
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DATA_DIR = ROOT / "data"
-ENGINE_LOG = DATA_DIR / "engine.log"
-ENGINE_PID_FILE = DATA_DIR / "engine.pid"
+RUNTIME_DIR = Path(os.getenv("OTR_RUNTIME_DIR", "/tmp/otrmarket"))
+ENGINE_PID_FILE = RUNTIME_DIR / "engine.pid"
 
 _engine_process: subprocess.Popen | None = None
-_engine_log_handle = None
 _shutting_down = False
 
 
 def _stop_engine() -> None:
-    global _shutting_down, _engine_process, _engine_log_handle
+    global _shutting_down, _engine_process
     _shutting_down = True
 
     process = _engine_process
@@ -41,28 +39,17 @@ def _stop_engine() -> None:
     except Exception:
         pass
 
-    if _engine_log_handle is not None:
-        try:
-            _engine_log_handle.flush()
-            _engine_log_handle.close()
-        except Exception:
-            pass
-        _engine_log_handle = None
-
 
 def _monitor_engine(process: subprocess.Popen) -> None:
     exit_code = process.wait()
     if _shutting_down:
         return
 
-    try:
-        with ENGINE_LOG.open("a", encoding="utf-8") as handle:
-            handle.write(
-                f"\n[SUPERVISOR] Strategy engine exited unexpectedly with code {exit_code}. "
-                "Stopping dashboard so the host restarts the service.\n"
-            )
-    except Exception:
-        pass
+    print(
+        f"[SUPERVISOR] Strategy engine exited unexpectedly with code {exit_code}. "
+        "Stopping dashboard so Railway restarts the service.",
+        flush=True,
+    )
 
     # Railway supervises the dashboard process. Terminating PID 1 here makes a
     # strategy-engine failure become a service failure instead of a zombie UI.
@@ -70,25 +57,27 @@ def _monitor_engine(process: subprocess.Popen) -> None:
 
 
 def _start_engine() -> None:
-    global _engine_process, _engine_log_handle
+    global _engine_process
 
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    ENGINE_LOG.touch(exist_ok=True)
+    # Runtime metadata belongs on ephemeral storage. The persistent /app/data
+    # volume is reserved for the SQLite database and must not be required just
+    # to write a PID/log file during boot.
+    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
 
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
 
-    _engine_log_handle = ENGINE_LOG.open("a", encoding="utf-8", buffering=1)
+    # Inherit stdout/stderr so engine logs are captured by Railway directly.
     _engine_process = subprocess.Popen(
         [sys.executable, "-u", "-m", "src.main"],
         cwd=str(ROOT),
-        stdout=_engine_log_handle,
-        stderr=subprocess.STDOUT,
+        stdout=None,
+        stderr=None,
         env=env,
     )
     ENGINE_PID_FILE.write_text(str(_engine_process.pid), encoding="utf-8")
     print(f"OTR strategy engine started (PID {_engine_process.pid})", flush=True)
-    print(f"Engine log: {ENGINE_LOG}", flush=True)
+    print("Engine logs stream directly into Railway deploy logs", flush=True)
 
     watcher = threading.Thread(
         target=_monitor_engine,

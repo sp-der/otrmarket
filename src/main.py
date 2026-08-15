@@ -18,6 +18,7 @@ from src.storage.database import (
     get_connection,
     get_engine_state,
     load_recent_candles,
+    prune_market_quotes,
     save_candle,
     save_diagnostic,
     save_quote,
@@ -405,6 +406,16 @@ async def main():
     candles.seed_history(seeded)
     if seeded:
         console.log(f"Seeded {len(seeded)} completed candles from SQLite")
+
+    # Operation 4.5.2: immediately reclaim raw-tick pages left by previous
+    # unlimited retention. Candles/setups/trades remain untouched.
+    try:
+        pruned = prune_market_quotes(connection)
+        total_pruned = sum(pruned.values())
+        if total_pruned:
+            console.log(f"Raw quote retention pruned {total_pruned:,} processed ticks: {pruned}")
+    except sqlite3.Error as exc:
+        console.log(f"Quote retention startup prune deferred: {exc}")
 
     try:
         await asyncio.gather(

@@ -119,10 +119,17 @@ class DashboardRepository:
                 return None
             return ((latest_price - old_price) / old_price) * 100.0
 
-        quote_count = connection.execute(
-            "SELECT COUNT(*) FROM market_quotes WHERE symbol = ?",
-            (symbol,),
-        ).fetchone()[0]
+        if self._table_exists(connection, "quote_counters"):
+            counter_row = connection.execute(
+                "SELECT total_quotes FROM quote_counters WHERE symbol = ?",
+                (symbol,),
+            ).fetchone()
+            quote_count = int(counter_row[0]) if counter_row else 0
+        else:
+            quote_count = connection.execute(
+                "SELECT COUNT(*) FROM market_quotes WHERE symbol = ?",
+                (symbol,),
+            ).fetchone()[0]
 
         age_seconds = None
         market_age_seconds = None

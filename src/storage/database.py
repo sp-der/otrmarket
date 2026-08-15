@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,6 +11,14 @@ from src.strategies.models import Candle, StrategySetup
 
 DB_PATH = Path("data/otrmarket.db")
 _db_lock = Lock()
+_quote_rows_since_prune = 0
+
+QUOTE_RETENTION_DEFAULTS = {
+    "NQ": 50_000,
+    "ES": 50_000,
+    "GC": 50_000,
+    "BTC-USD": 10_000,
+}
 
 
 def _utc_iso() -> str:
@@ -46,6 +55,12 @@ def get_connection():
 
         CREATE INDEX IF NOT EXISTS idx_market_quotes_symbol_time
         ON market_quotes(symbol, received_at);
+
+        CREATE TABLE IF NOT EXISTS quote_counters (
+            symbol TEXT PRIMARY KEY,
+            total_quotes INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        );
 
         CREATE TABLE IF NOT EXISTS candles (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -148,8 +163,113 @@ def get_connection():
     ):
         if not _column_exists(connection, "paper_trades", column):
             connection.execute(f"ALTER TABLE paper_trades ADD COLUMN {column} {ddl}")
+
+    # Operation 4.5.2: initialize lifetime quote counters before raw-tick
+    # retention begins pruning market_quotes.
+    existing_counter_rows = connection.execute("SELECT COUNT(*) FROM quote_counters").fetchone()[0]
+    if existing_counter_rows == 0:
+        now = _utc_iso()
+        for symbol, count in connection.execute(
+            "SELECT symbol, COUNT(*) FROM market_quotes GROUP BY symbol"
+        ).fetchall():
+            connection.execute(
+                "INSERT OR REPLACE INTO quote_counters(symbol, total_quotes, updated_at) VALUES (?, ?, ?)",
+                (symbol, int(count or 0), now),
+            )
     connection.commit()
     return connection
+
+
+def _retention_limit(symbol: str) -> int:
+    env_name = "OTR_QUOTE_RETENTION_" + symbol.replace("-", "_")
+    default = QUOTE_RETENTION_DEFAULTS.get(symbol, 25_000)
+    try:
+        return max(1_000, int(os.getenv(env_name, str(default))))
+    except ValueError:
+        return default
+
+
+def _increment_quote_counter(connection: sqlite3.Connection, symbol: str, amount: int) -> None:
+    # Legacy/unit-test schemas may call save_quotes_batch without get_connection().
+    # In production quote_counters is created by get_connection().
+    try:
+        connection.execute(
+            """
+            INSERT INTO quote_counters(symbol, total_quotes, updated_at) VALUES (?, ?, ?)
+            ON CONFLICT(symbol) DO UPDATE SET
+                total_quotes = total_quotes + excluded.total_quotes,
+                updated_at = excluded.updated_at
+            """,
+            (symbol, int(amount), _utc_iso()),
+        )
+    except sqlite3.OperationalError as exc:
+        if "no such table: quote_counters" not in str(exc):
+            raise
+
+
+def prune_market_quotes(connection: sqlite3.Connection) -> dict[str, int]:
+    """Bound raw tick storage without deleting unprocessed NinjaTrader ticks.
+
+    Candles, setups and trades are persisted separately, so market_quotes only
+    needs a rolling window for dashboard returns and bridge handoff. Futures
+    rows are pruned only after src.main has acknowledged them via
+    last_ninjatrader_quote_id. Deleted SQLite pages are reusable even when the
+    file itself is not VACUUMed smaller.
+    """
+    deleted: dict[str, int] = {}
+    processed_raw = get_engine_state(connection, "last_ninjatrader_quote_id", "0") or "0"
+    try:
+        processed_id = int(processed_raw)
+    except ValueError:
+        processed_id = 0
+
+    for symbol in ("NQ", "ES", "GC", "BTC-USD"):
+        keep = _retention_limit(symbol)
+        cutoff_row = connection.execute(
+            """
+            SELECT id FROM market_quotes
+            WHERE symbol = ?
+            ORDER BY id DESC
+            LIMIT 1 OFFSET ?
+            """,
+            (symbol, keep - 1),
+        ).fetchone()
+        if cutoff_row is None:
+            deleted[symbol] = 0
+            continue
+
+        cutoff_id = int(cutoff_row[0])
+        if symbol in ("NQ", "ES", "GC"):
+            if processed_id <= 0:
+                deleted[symbol] = 0
+                continue
+            cursor = connection.execute(
+                "DELETE FROM market_quotes WHERE symbol = ? AND id < ? AND id <= ?",
+                (symbol, cutoff_id, processed_id),
+            )
+        else:
+            cursor = connection.execute(
+                "DELETE FROM market_quotes WHERE symbol = ? AND id < ?",
+                (symbol, cutoff_id),
+            )
+        deleted[symbol] = max(0, int(cursor.rowcount or 0))
+
+    connection.commit()
+    try:
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except sqlite3.Error:
+        pass
+    return deleted
+
+
+def _maybe_prune_market_quotes(connection: sqlite3.Connection, inserted_rows: int) -> None:
+    global _quote_rows_since_prune
+    _quote_rows_since_prune += max(0, int(inserted_rows))
+    threshold = max(1_000, int(os.getenv("OTR_QUOTE_PRUNE_EVERY", "5000")))
+    if _quote_rows_since_prune < threshold:
+        return
+    prune_market_quotes(connection)
+    _quote_rows_since_prune = 0
 
 
 def save_quote(connection, received_at, exchange_time, source, symbol, price, bid, ask):
@@ -182,7 +302,9 @@ def save_quote(connection, received_at, exchange_time, source, symbol, price, bi
                 _utc_iso(),
             ),
         )
+        _increment_quote_counter(connection, symbol, 1)
         connection.commit()
+    _maybe_prune_market_quotes(connection, 1)
 
 
 def save_candle(connection, candle: Candle):
@@ -427,8 +549,14 @@ def save_quotes_batch(connection, rows):
                 """,
                 [row[:-1] for row in prepared],
             )
+        counts: dict[str, int] = {}
+        for prepared_row in prepared:
+            counts[prepared_row[3]] = counts.get(prepared_row[3], 0) + 1
+        for symbol, amount in counts.items():
+            _increment_quote_counter(connection, symbol, amount)
         connection.commit()
 
+    _maybe_prune_market_quotes(connection, len(prepared))
     return len(prepared)
 
 
