@@ -47,9 +47,6 @@ def get_connection():
         CREATE INDEX IF NOT EXISTS idx_market_quotes_symbol_time
         ON market_quotes(symbol, received_at);
 
-        CREATE INDEX IF NOT EXISTS idx_market_quotes_symbol_ingest
-        ON market_quotes(symbol, ingested_at);
-
         CREATE TABLE IF NOT EXISTS candles (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             symbol TEXT NOT NULL,
@@ -131,6 +128,13 @@ def get_connection():
         connection.execute("ALTER TABLE market_quotes ADD COLUMN ingested_at TEXT")
     connection.execute(
         "UPDATE market_quotes SET ingested_at = COALESCE(ingested_at, received_at) WHERE ingested_at IS NULL"
+    )
+    # Create the replay-ingest index only after legacy databases have been
+    # upgraded with the ingested_at column. Operation 4 originally attempted
+    # this index too early, which broke databases created by Operations 1-3.
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_market_quotes_symbol_ingest "
+        "ON market_quotes(symbol, ingested_at)"
     )
     connection.commit()
     return connection
@@ -295,6 +299,16 @@ def save_diagnostic(connection, diagnostic: dict | None):
                 diagnostic.get("setup_id"),
                 _utc_iso(),
             ),
+        )
+        connection.commit()
+
+
+def delete_diagnostics_for_symbol(connection, symbol: str) -> None:
+    """Remove live scanner state for one symbol without touching its history."""
+    with _db_lock:
+        connection.execute(
+            "DELETE FROM strategy_diagnostics WHERE symbol = ?",
+            (symbol,),
         )
         connection.commit()
 

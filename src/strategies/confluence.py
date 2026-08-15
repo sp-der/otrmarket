@@ -42,10 +42,19 @@ class ConfluenceEngine:
         self,
         min_rr: float = 1.25,
         context_expiry_bars: int = 16,
+        displacement_expiry_bars: int = 8,
+        entry_fvg_expiry_bars: int = 8,
         stop_buffer_fraction: float = 0.0001,
     ):
         self.min_rr = min_rr
-        self.context_expiry_bars = context_expiry_bars
+        # Each setup stage gets its own fresh timer. The original Operation 4
+        # used one timer from the initial PD-array touch, which could expire a
+        # valid setup immediately after it finally reached displacement.
+        self.stage_expiry_bars = {
+            "WAIT_SIGNAL": context_expiry_bars,
+            "WAIT_DISPLACEMENT": displacement_expiry_bars,
+            "WAIT_ENTRY_FVG": entry_fvg_expiry_bars,
+        }
         self.stop_buffer_fraction = stop_buffer_fraction
         self.contexts: dict[tuple[str, str], PendingContext] = {}
         self.last_setup: StrategySetup | None = None
@@ -99,6 +108,20 @@ class ConfluenceEngine:
         value = self.diagnostics.get((symbol, timeframe))
         return dict(value) if value else None
 
+    def clear_symbol(self, symbol: str) -> None:
+        """Clear active scanner state for a symbol without deleting history."""
+        for key in [key for key in self.contexts if key[0] == symbol]:
+            self.contexts.pop(key, None)
+        for key in [key for key in self.diagnostics if key[0] == symbol]:
+            self.diagnostics.pop(key, None)
+        if self.last_setup and self.last_setup.symbol == symbol:
+            self.last_setup = None
+
+    def _stage_expired(self, context: PendingContext, current_bar_count: int) -> tuple[bool, int, int]:
+        limit = self.stage_expiry_bars.get(context.stage, 16)
+        elapsed = max(0, current_bar_count - context.stage_bar_count)
+        return elapsed > limit, elapsed, limit
+
     def on_candle(self, symbol: str, timeframe: str, histories: dict[tuple[str, str], list]):
         candles = histories.get((symbol, timeframe), [])
         if not candles:
@@ -118,10 +141,28 @@ class ConfluenceEngine:
         key = (symbol, timeframe)
         context = self.contexts.get(key)
 
-        if context and len(candles) - context.started_bar_count > self.context_expiry_bars:
-            self._log(f"{symbol} {timeframe}: context expired at {context.stage}", market_time)
-            self.contexts.pop(key, None)
-            context = None
+        if context:
+            expired, elapsed, limit = self._stage_expired(context, len(candles))
+            if expired:
+                expired_stage = context.stage
+                self._log(
+                    f"{symbol} {timeframe}: {expired_stage} expired after {elapsed} bars",
+                    market_time,
+                )
+                self.contexts.pop(key, None)
+                self._set_diag(
+                    symbol,
+                    timeframe,
+                    market_time,
+                    stage="EXPIRED",
+                    direction=context.direction,
+                    pd_array=True,
+                    signal=context.trigger_type is not None,
+                    displacement=context.displacement is not None,
+                    trigger_type=context.trigger_type,
+                    note=f"{expired_stage} expired after {elapsed} bars (limit {limit}). Waiting for a new PD-array sequence.",
+                )
+                return None
 
         if context is None:
             pd_array = find_pd_array_touch(candles)

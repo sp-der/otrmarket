@@ -199,47 +199,164 @@ function checkMark(value) {
   return value ? '<span class="scan-check pass">PASS</span>' : '<span class="scan-check wait">WAIT</span>';
 }
 
-function scannerCard(d) {
+const scannerMarketOrder = ["NQ", "ES", "GC", "BTC-USD"];
+const scannerTimeframeOrder = ["1m", "5m", "15m", "1h"];
+const scannerSymbolCode = { NQ: "NQ", ES: "ES", GC: "GC", "BTC-USD": "BTC" };
+const scannerStageOrder = {
+  SETUP_READY: 8,
+  WAIT_RR: 7,
+  WAIT_RETRACEMENT: 6,
+  WAIT_ENTRY_FVG: 5,
+  WAIT_DISPLACEMENT: 4,
+  WAIT_SIGNAL: 3,
+  WAIT_PD_ARRAY: 2,
+  WARMUP: 1,
+  EXPIRED: 0,
+};
+
+function prettyStage(stage) {
+  const map = {
+    WARMUP: "Warmup",
+    WAIT_PD_ARRAY: "Waiting for PD array",
+    WAIT_SIGNAL: "Waiting for signal",
+    WAIT_DISPLACEMENT: "Waiting for displacement",
+    WAIT_ENTRY_FVG: "Waiting for entry FVG",
+    WAIT_RETRACEMENT: "Waiting for 50-79%",
+    WAIT_RR: "Checking risk / reward",
+    SETUP_READY: "Setup ready",
+    EXPIRED: "Expired",
+  };
+  return map[stage] || String(stage || "Waiting").replaceAll("_", " ");
+}
+
+function scannerProgress(d) {
+  const steps = [
+    ["PD", d?.pd_array],
+    ["SIG", d?.signal],
+    ["DISP", d?.displacement],
+    ["FVG", d?.entry_fvg],
+    ["50-79", d?.retracement],
+    ["R:R", d?.rr],
+  ];
+  return `<div class="scan-rail" aria-label="Strategy progress">${steps.map(([label, pass]) => `
+    <div class="scan-rail-step ${pass ? "complete" : "pending"}">
+      <span class="scan-rail-dot"></span>
+      <span class="scan-rail-label">${label}</span>
+    </div>`).join("")}</div>`;
+}
+
+function scannerPreviewCard(d) {
   const direction = d.direction ? String(d.direction).toUpperCase() : "--";
   const trigger = d.trigger_type ? String(d.trigger_type).replaceAll("_", " ") : "--";
   return `
-    <article class="scanner-card">
+    <article class="scanner-card scanner-preview-card">
       <div class="scanner-card-head">
         <div>
           <div class="scanner-title">${labelMap[d.symbol] || d.symbol} · ${d.timeframe}</div>
-          <div class="scanner-meta">${direction} · ${d.stage || "WAITING"} · ${fmtTime(d.market_time)}</div>
+          <div class="scanner-meta">${direction} · ${prettyStage(d.stage)}</div>
         </div>
         <span class="score-chip">${Number(d.score || 0)}/6</span>
       </div>
-      <div class="scan-steps">
-        <div><span>PD Array</span>${checkMark(d.pd_array)}</div>
-        <div><span>Signal</span>${checkMark(d.signal)}</div>
-        <div><span>Displacement</span>${checkMark(d.displacement)}</div>
-        <div><span>Entry FVG</span>${checkMark(d.entry_fvg)}</div>
-        <div><span>50-79%</span>${checkMark(d.retracement)}</div>
-        <div><span>Risk / Reward</span>${checkMark(d.rr)}</div>
-      </div>
-      <div class="scanner-note">${d.note || "Waiting for strategy data."}</div>
+      ${scannerProgress(d)}
       <div class="scanner-foot"><span>Trigger</span><strong>${trigger}</strong></div>
     </article>`;
 }
 
-function renderDiagnostics(diagnostics) {
-  const ranked = [...(diagnostics || [])].sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
-  const preview = ranked.slice(0, 4);
+function scannerEmptyCard(symbol, timeframe, runtime) {
+  const replayPaused = runtime?.mode === "REPLAY" && symbol === "BTC-USD";
+  return `
+    <article class="scanner-timeframe-card is-idle ${replayPaused ? "is-paused" : ""}">
+      <div class="scanner-tf-top">
+        <div class="scanner-tf-name">${timeframe}</div>
+        <span class="scanner-stage-chip">${replayPaused ? "PAUSED" : "WAITING"}</span>
+      </div>
+      <div class="scanner-primary-state">${replayPaused ? "Replay isolation" : "Waiting for candles"}</div>
+      ${scannerProgress(null)}
+      <div class="scanner-detail-line">
+        ${replayPaused ? "BTC stays visible, but strategy scanning is paused while futures replay is active." : "No scanner state has been produced for this timeframe yet."}
+      </div>
+      <div class="scanner-tf-foot"><span>Trigger</span><strong>--</strong></div>
+    </article>`;
+}
+
+function scannerTimeframeCard(d, symbol, timeframe, runtime) {
+  if (!d) return scannerEmptyCard(symbol, timeframe, runtime);
+  const direction = d.direction ? String(d.direction).toUpperCase() : "--";
+  const trigger = d.trigger_type ? String(d.trigger_type).replaceAll("_", " ") : "--";
+  const stage = d.stage || "WAITING";
+  const score = Number(d.score || 0);
+  const stageClass = stage === "SETUP_READY" ? "is-ready" : stage === "EXPIRED" ? "is-expired" : score >= 3 ? "is-advanced" : "";
+  return `
+    <article class="scanner-timeframe-card ${stageClass}">
+      <div class="scanner-tf-top">
+        <div class="scanner-tf-name">${timeframe}</div>
+        <span class="scanner-stage-chip">${stage.replaceAll("_", " ")}</span>
+      </div>
+      <div class="scanner-state-row">
+        <div>
+          <div class="scanner-direction">${direction}</div>
+          <div class="scanner-primary-state">${prettyStage(stage)}</div>
+        </div>
+        <div class="scanner-score-block"><strong>${score}/6</strong><span>${fmtTime(d.market_time)}</span></div>
+      </div>
+      ${scannerProgress(d)}
+      <div class="scanner-detail-line">${d.note || "Waiting for strategy data."}</div>
+      <div class="scanner-tf-foot"><span>Trigger</span><strong>${trigger}</strong></div>
+    </article>`;
+}
+
+function scannerMarketSection(symbol, diagnostics, runtime, timeframeFilter) {
+  const byTimeframe = new Map((diagnostics || []).filter((d) => d.symbol === symbol).map((d) => [d.timeframe, d]));
+  const visibleTimeframes = scannerTimeframeOrder.filter((tf) => timeframeFilter === "all" || timeframeFilter === tf);
+  const candidates = visibleTimeframes.map((tf) => byTimeframe.get(tf)).filter(Boolean);
+  const best = [...candidates].sort((a, b) => {
+    const scoreDiff = Number(b.score || 0) - Number(a.score || 0);
+    if (scoreDiff) return scoreDiff;
+    return Number(scannerStageOrder[b.stage] || 0) - Number(scannerStageOrder[a.stage] || 0);
+  })[0];
+  const replayPaused = runtime?.mode === "REPLAY" && symbol === "BTC-USD";
+  const modeLabel = replayPaused ? "PAUSED IN REPLAY" : runtime?.mode === "REPLAY" && symbol !== "BTC-USD" ? "REPLAY SCAN" : "ACTIVE SCAN";
+  const summary = replayPaused
+    ? "Live BTC feed isolated from replay strategy"
+    : best
+      ? `Best state ${Number(best.score || 0)}/6 · ${prettyStage(best.stage)}`
+      : "Waiting for scanner history";
+
+  return `
+    <section class="scanner-market-section" data-scanner-symbol="${symbol}">
+      <div class="scanner-market-head">
+        <div class="scanner-market-identity">
+          <div class="scanner-market-code">${scannerSymbolCode[symbol] || symbol}</div>
+          <div>
+            <h3>${labelMap[symbol] || symbol}</h3>
+            <div class="scanner-market-summary">${summary}</div>
+          </div>
+        </div>
+        <span class="scanner-market-mode ${replayPaused ? "paused" : ""}">${modeLabel}</span>
+      </div>
+      <div class="scanner-timeframe-grid">
+        ${visibleTimeframes.map((tf) => scannerTimeframeCard(byTimeframe.get(tf), symbol, tf, runtime)).join("")}
+      </div>
+    </section>`;
+}
+
+function renderDiagnostics(diagnostics, runtime = {}) {
+  const ranked = [...(diagnostics || [])].sort((a, b) => {
+    const scoreDiff = Number(b.score || 0) - Number(a.score || 0);
+    if (scoreDiff) return scoreDiff;
+    return Number(scannerStageOrder[b.stage] || 0) - Number(scannerStageOrder[a.stage] || 0);
+  });
+  const preview = ranked.filter((d) => !(runtime?.mode === "REPLAY" && d.symbol === "BTC-USD")).slice(0, 4);
   $("scannerPreview").innerHTML = preview.length
-    ? preview.map(scannerCard).join("")
+    ? preview.map(scannerPreviewCard).join("")
     : '<div class="empty-state">Scanner is warming up. Completed candles will appear here.</div>';
 
   const symbolFilter = $("scannerSymbolFilter").value;
   const timeframeFilter = $("scannerTimeframeFilter").value;
-  const filtered = ranked.filter((d) => {
-    const symbolOk = symbolFilter === "all" || d.symbol === symbolFilter;
-    const tfOk = timeframeFilter === "all" || d.timeframe === timeframeFilter;
-    return symbolOk && tfOk;
-  });
-  $("scannerCards").innerHTML = filtered.length
-    ? filtered.map(scannerCard).join("")
+  const visibleSymbols = scannerMarketOrder.filter((symbol) => symbolFilter === "all" || symbolFilter === symbol);
+
+  $("scannerCards").innerHTML = visibleSymbols.length
+    ? visibleSymbols.map((symbol) => scannerMarketSection(symbol, ranked, runtime, timeframeFilter)).join("")
     : '<div class="empty-state">No scanner states match these filters yet.</div>';
 }
 
@@ -326,7 +443,7 @@ function render(snapshot) {
   renderMarkets(snapshot.markets || []);
   renderTrades(snapshot.trades || []);
   renderSetups(snapshot.setups || []);
-  renderDiagnostics(snapshot.diagnostics || []);
+  renderDiagnostics(snapshot.diagnostics || [], snapshot.runtime || {});
   renderRuntime(snapshot.runtime || {});
   renderSystem(snapshot);
   drawEquity(snapshot.equity_curve || []);
@@ -418,7 +535,7 @@ function bindEvents() {
   document.querySelectorAll("[data-jump]").forEach((button) => button.addEventListener("click", () => switchView(button.dataset.jump)));
   ["tradeSymbolFilter", "tradeResultFilter"].forEach((id) => $(id).addEventListener("change", () => state.snapshot && renderTrades(state.snapshot.trades || [])));
   ["setupSymbolFilter", "setupTriggerFilter"].forEach((id) => $(id).addEventListener("change", () => state.snapshot && renderSetups(state.snapshot.setups || [])));
-  ["scannerSymbolFilter", "scannerTimeframeFilter"].forEach((id) => $(id).addEventListener("change", () => state.snapshot && renderDiagnostics(state.snapshot.diagnostics || [])));
+  ["scannerSymbolFilter", "scannerTimeframeFilter"].forEach((id) => $(id).addEventListener("change", () => state.snapshot && renderDiagnostics(state.snapshot.diagnostics || [], state.snapshot.runtime || {})));
   $("loginButton").addEventListener("click", login);
   $("passwordInput").addEventListener("keydown", (event) => { if (event.key === "Enter") login(); });
   $("logoutButton").addEventListener("click", logout);

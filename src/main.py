@@ -11,7 +11,9 @@ from rich.table import Table
 
 from src.execution.paper import PaperExecutor
 from src.runtime.clock import MarketClock
+from src.runtime.session import StrategySession
 from src.storage.database import (
+    delete_diagnostics_for_symbol,
     get_connection,
     get_engine_state,
     load_recent_candles,
@@ -35,6 +37,7 @@ candles = CandleBuilder(timeframes=("1m", "5m", "15m", "1h"))
 strategy = ConfluenceEngine()
 paper = PaperExecutor()
 clock = MarketClock()
+session = StrategySession()
 
 market_state = {
     "BTC-USD": {"name": "Bitcoin", "source": "Coinbase", "price": None, "bid": None, "ask": None, "quotes": 0},
@@ -89,7 +92,16 @@ def histories_snapshot():
     return {key: list(history) for key, history in candles.history.items()}
 
 
+def isolate_btc_for_replay(connection) -> None:
+    """Keep BTC visible/stored while excluding it from futures replay research."""
+    strategy.clear_symbol("BTC-USD")
+    delete_diagnostics_for_symbol(connection, "BTC-USD")
+    console.log("Replay isolation enabled: BTC strategy + paper updates paused")
+
+
 def evaluate_strategy(connection, symbol: str, timeframe: str):
+    if not session.strategy_enabled(symbol):
+        return None
     setup = strategy.on_candle(symbol, timeframe, histories_snapshot())
     save_diagnostic(connection, strategy.diagnostic(symbol, timeframe))
     if setup:
@@ -109,10 +121,13 @@ def process_price(connection, symbol, price, bid, ask, timestamp=None):
     state.update(price=price, bid=bid, ask=ask)
     state["quotes"] += 1
     clock.update(symbol, timestamp, ingest_time)
+    if session.observe(symbol, clock.mode(symbol)):
+        isolate_btc_for_replay(connection)
     momentum.add_price(symbol, price, timestamp)
 
-    for position in paper.on_price(symbol, price, timestamp):
-        upsert_paper_trade(connection, position, timestamp.isoformat())
+    if session.paper_updates_enabled(symbol):
+        for position in paper.on_price(symbol, price, timestamp):
+            upsert_paper_trade(connection, position, timestamp.isoformat())
 
     closed_candles = candles.update(symbol, price, timestamp)
     for candle in closed_candles:
@@ -135,7 +150,7 @@ def process_price(connection, symbol, price, bid, ask, timestamp=None):
 def build_dashboard():
     table = Table(
         title="OTR MARKET • STRATEGY LAB",
-        caption="OPERATION 4 • REPLAY-AWARE CONFLUENCE + PAPER EXECUTION • LIVE ORDERS DISABLED 🔒",
+        caption="OPERATION 4.1 • STAGE TIMERS + REPLAY ISOLATION • LIVE ORDERS DISABLED 🔒",
     )
     table.add_column("Market")
     table.add_column("Price", justify="right")

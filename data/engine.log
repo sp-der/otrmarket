@@ -1,16 +1,1 @@
-[00:07:00] Coinbase error: 'NoneType' object has no attribute        main.py:216
-           'stage'                                                              
-[00:08:00] Coinbase error: 'NoneType' object has no attribute        main.py:216
-           'stage'                                                              
-[00:26:00] Coinbase error: 'NoneType' object has no attribute        main.py:216
-           'stage'                                                              
-[00:30:00] Coinbase error: 'NoneType' object has no attribute        main.py:216
-           'stage'                                                              
-[00:35:00] Coinbase error: 'NoneType' object has no attribute        main.py:216
-           'stage'                                                              
-[00:38:03] NinjaTrader bridge error: 'NoneType' object has no        main.py:285
-           attribute 'stage'                                                    
-[00:39:02] NinjaTrader bridge error: 'NoneType' object has no        main.py:285
-           attribute 'stage'                                                    
-[00:40:00] Coinbase error: 'NoneType' object has no attribute        main.py:216
-           'stage'                                                              
+[00:44:02] Seeded 99 completed candles from SQLite                   main.py:362
