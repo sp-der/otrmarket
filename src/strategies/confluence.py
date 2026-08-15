@@ -43,7 +43,7 @@ class ConfluenceEngine:
 
     def __init__(
         self,
-        min_rr: float = 1.25,
+        min_rr: float = 3.0,
         context_expiry_bars: int = 16,
         displacement_expiry_bars: int = 8,
         entry_fvg_expiry_bars: int = 8,
@@ -480,6 +480,21 @@ class ConfluenceEngine:
             return self._reject_setup(context, "No valid opposing swing target exists beyond entry.", market_time)
         raw_target = target_swing.price
 
+        # OTR's capital plan is fixed at $250 risk for a $750 objective. The
+        # opposing swing must offer at least 3R; profits are modeled at exactly
+        # 3R instead of allowing a farther structural target to inflate results.
+        risk_distance = abs(raw_entry - raw_stop)
+        three_r_target = (
+            raw_entry + (risk_distance * 3.0)
+            if context.direction == "bullish"
+            else raw_entry - (risk_distance * 3.0)
+        )
+        if context.direction == "bullish" and raw_target < three_r_target:
+            return self._reject_setup(context, "Opposing swing does not offer the required 3.00R target.", market_time)
+        if context.direction == "bearish" and raw_target > three_r_target:
+            return self._reject_setup(context, "Opposing swing does not offer the required 3.00R target.", market_time)
+        raw_target = three_r_target
+
         entry, stop, target = normalize_trade_prices(
             context.symbol, context.direction, raw_entry, raw_stop, raw_target
         )
@@ -518,4 +533,3 @@ class ConfluenceEngine:
                 "operation": 4.5,
             },
         )
-

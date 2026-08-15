@@ -98,3 +98,12 @@ class CandleBuilder:
     def seed_history(self, candles: list[Candle]) -> None:
         for candle in sorted(candles, key=lambda item: item.open_time):
             self.history[(candle.symbol, candle.timeframe)].append(candle)
+
+    def rewind_symbol(self, symbol: str, before: datetime) -> None:
+        """Reset active buckets and discard future history after a replay rewind."""
+        before = self._normalize_timestamp(before)
+        for timeframe in self.timeframes:
+            key = (symbol, timeframe)
+            self.current.pop(key, None)
+            kept = [candle for candle in self.history.get(key, ()) if candle.close_time <= before]
+            self.history[key] = deque(kept, maxlen=self.history_limit)
