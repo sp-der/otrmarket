@@ -99,13 +99,35 @@ async def dashboard_index():
     return FileResponse(STATIC_DIR / "index.html")
 
 
+def engine_process_status() -> tuple[bool, int | None]:
+    pid_file = ROOT / "data" / "engine.pid"
+    if not pid_file.exists():
+        return False, None
+    try:
+        pid = int(pid_file.read_text(encoding="utf-8").strip())
+        cmdline = Path(f"/proc/{pid}/cmdline")
+        if not cmdline.exists():
+            return False, pid
+        command = cmdline.read_bytes().replace(b"\0", b" ").decode(errors="replace")
+        return "src.main" in command, pid
+    except Exception:
+        return False, None
+
+
 @app.get(f"{BASE_PATH}/api/health")
-async def health():
+async def health(response: Response):
+    require_engine = os.getenv("OTR_REQUIRE_ENGINE_HEALTH", "0") == "1"
+    engine_running, engine_pid = engine_process_status()
+    ok = (not require_engine) or engine_running
+    if not ok:
+        response.status_code = 503
     return {
-        "ok": True,
+        "ok": ok,
         "database_exists": DB_PATH.exists(),
         "mode": "paper",
         "bridge_configured": bool(BRIDGE_KEY),
+        "engine_running": engine_running if require_engine else None,
+        "engine_pid": engine_pid if require_engine else None,
     }
 
 

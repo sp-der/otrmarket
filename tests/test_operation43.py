@@ -15,7 +15,7 @@ class Operation43PermanentHostingTests(unittest.TestCase):
         text = (ROOT / "run_all.sh").read_text()
         self.assertIn('if [ -f ".venv/bin/activate" ]', text)
         self.assertIn('export DASHBOARD_PORT="$PORT"', text)
-        self.assertIn('"$PYTHON_BIN" -m src.main', text)
+        self.assertIn('exec "$PYTHON_BIN" -m src.dashboard.server', text)
 
     def test_railway_config_has_healthcheck_and_restart_policy(self):
         config = json.loads((ROOT / "railway.json").read_text())

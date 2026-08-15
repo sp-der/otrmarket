@@ -24,18 +24,8 @@ else
   export DASHBOARD_PORT="${DASHBOARD_PORT:-8000}"
 fi
 
-cleanup() {
-  if [ -n "${ENGINE_PID:-}" ] && kill -0 "$ENGINE_PID" 2>/dev/null; then
-    kill "$ENGINE_PID" 2>/dev/null || true
-  fi
-}
-trap cleanup EXIT INT TERM
-
-echo "Starting OTR strategy engine in background..."
-"$PYTHON_BIN" -m src.main > data/engine.log 2>&1 &
-ENGINE_PID=$!
-
-echo "Strategy engine PID: $ENGINE_PID"
-echo "Engine log: data/engine.log"
-echo "Starting web dashboard on port ${DASHBOARD_PORT}..."
+# src.dashboard.server owns and supervises the strategy-engine child process.
+# Keeping one supervisor path prevents local/production process drift and
+# guarantees the host sees an engine crash as a service failure.
+echo "Starting OTR supervised runtime on port ${DASHBOARD_PORT}..."
 exec "$PYTHON_BIN" -m src.dashboard.server
