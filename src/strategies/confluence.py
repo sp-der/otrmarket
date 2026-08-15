@@ -13,6 +13,7 @@ from src.strategies.ict import (
     fvg_in_retracement_zone,
 )
 from src.strategies.models import FairValueGap, StrategySetup
+from src.risk.geometry import normalize_trade_prices, validate_trade_geometry
 from src.strategies.structure import detect_swings, nearest_target_swing
 
 
@@ -64,6 +65,7 @@ class ConfluenceEngine:
         self.last_setup: StrategySetup | None = None
         self.events: list[str] = []
         self.diagnostics: dict[tuple[str, str], dict] = {}
+        self.risk_rejections: dict[tuple[str, str], str] = {}
 
     def _log(self, message: str, event_time: datetime | None = None) -> None:
         event_time = event_time or datetime.now(timezone.utc)
@@ -118,6 +120,8 @@ class ConfluenceEngine:
             self.contexts.pop(key, None)
         for key in [key for key in self.diagnostics if key[0] == symbol]:
             self.diagnostics.pop(key, None)
+        for key in [key for key in self.risk_rejections if key[0] == symbol]:
+            self.risk_rejections.pop(key, None)
         if self.last_setup and self.last_setup.symbol == symbol:
             self.last_setup = None
 
@@ -397,6 +401,7 @@ class ConfluenceEngine:
             # The FVG is correctly positioned, but current swing structure or
             # R:R does not qualify. Keep scanning within the same timer window.
             context.stage = "WAIT_VALID_RR"
+            rejection = self.risk_rejections.get(key)
             self._set_diag(
                 symbol,
                 timeframe,
@@ -409,7 +414,11 @@ class ConfluenceEngine:
                 entry_fvg=True,
                 retracement=True,
                 trigger_type=context.trigger_type,
-                note="Entry FVG is inside the 50-79% zone, but current stop/target structure does not produce a valid trade. Scanning for another candidate.",
+                note=(
+                    f"Risk check rejected this candidate: {rejection} Scanning for another candidate."
+                    if rejection
+                    else "Entry FVG is inside the 50-79% zone, but current stop/target structure does not produce a valid trade. Scanning for another candidate."
+                ),
             )
 
         return None
@@ -427,6 +436,11 @@ class ConfluenceEngine:
         laggard = histories.get((pair, timeframe), [])
         return detect_smt(leader, laggard)
 
+    def _reject_setup(self, context: PendingContext, reason: str, market_time: datetime):
+        self.risk_rejections[(context.symbol, context.timeframe)] = reason
+        self._log(f"{context.symbol} {context.timeframe}: risk rejected - {reason}", market_time)
+        return None
+
     def _build_setup(
         self,
         candles,
@@ -434,35 +448,52 @@ class ConfluenceEngine:
         entry_fvg: FairValueGap,
         market_time: datetime,
     ):
-        entry = entry_fvg.midpoint
+        key = (context.symbol, context.timeframe)
+        self.risk_rejections.pop(key, None)
+        raw_entry = entry_fvg.midpoint
         swings = detect_swings(candles)
 
         if context.direction == "bullish":
-            low_swings = [s for s in swings if s.kind == "low" and s.price < entry]
+            low_swings = [s for s in swings if s.kind == "low" and s.price < raw_entry]
             if not low_swings:
-                return None
-            stop_anchor = context.swept_level or low_swings[-1].price
-            stop = stop_anchor * (1 - self.stop_buffer_fraction)
+                return self._reject_setup(context, "No valid swing low exists below entry for the stop.", market_time)
+            # Only trust a swept level if it is actually on the protective side
+            # of the entry. This prevents a stale/misaligned sweep from creating
+            # inverted trade geometry.
+            if context.swept_level is not None and context.swept_level < raw_entry:
+                stop_anchor = context.swept_level
+            else:
+                stop_anchor = low_swings[-1].price
+            raw_stop = stop_anchor * (1 - self.stop_buffer_fraction)
         else:
-            high_swings = [s for s in swings if s.kind == "high" and s.price > entry]
+            high_swings = [s for s in swings if s.kind == "high" and s.price > raw_entry]
             if not high_swings:
-                return None
-            stop_anchor = context.swept_level or high_swings[-1].price
-            stop = stop_anchor * (1 + self.stop_buffer_fraction)
+                return self._reject_setup(context, "No valid swing high exists above entry for the stop.", market_time)
+            if context.swept_level is not None and context.swept_level > raw_entry:
+                stop_anchor = context.swept_level
+            else:
+                stop_anchor = high_swings[-1].price
+            raw_stop = stop_anchor * (1 + self.stop_buffer_fraction)
 
-        target_swing = nearest_target_swing(candles, context.direction, entry)
+        target_swing = nearest_target_swing(candles, context.direction, raw_entry)
         if not target_swing:
-            return None
-        target = target_swing.price
+            return self._reject_setup(context, "No valid opposing swing target exists beyond entry.", market_time)
+        raw_target = target_swing.price
 
-        risk = abs(entry - stop)
-        reward = abs(target - entry)
-        if risk <= 0 or reward <= 0:
-            return None
-        rr = reward / risk
+        entry, stop, target = normalize_trade_prices(
+            context.symbol, context.direction, raw_entry, raw_stop, raw_target
+        )
+        geometry = validate_trade_geometry(context.symbol, context.direction, entry, stop, target)
+        if not geometry.valid:
+            return self._reject_setup(context, geometry.reason, market_time)
+
+        rr = float(geometry.risk_reward or 0.0)
         if rr < self.min_rr:
-            self._log(f"{context.symbol} {context.timeframe}: rejected low RR {rr:.2f}", market_time)
-            return None
+            return self._reject_setup(
+                context,
+                f"Risk/reward {rr:.2f}R is below minimum {self.min_rr:.2f}R.",
+                market_time,
+            )
 
         return StrategySetup(
             setup_id=uuid4().hex[:12],
@@ -480,9 +511,11 @@ class ConfluenceEngine:
             target_price=target,
             risk_reward=rr,
             metadata={
-                "entry_rule": "FVG midpoint",
+                "entry_rule": "FVG midpoint rounded to exchange tick",
                 "discount_rule": "50-79% displacement retracement",
                 "pd_array_type": "ACTIVE_FVG",
-                "operation": 4.4,
+                "geometry_guard": "long stop<entry<target; short target<entry<stop",
+                "operation": 4.5,
             },
         )
+

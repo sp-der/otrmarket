@@ -20,6 +20,14 @@ function fmtPrice(value) {
   return "$" + n.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
 }
 
+function fmtMoney(value, signed = false) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "--";
+  const n = Number(value);
+  const body = Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  if (n < 0) return `-$${body}`;
+  return `${signed && n > 0 ? "+" : ""}$${body}`;
+}
+
 function fmtPct(value) {
   if (value === null || value === undefined) return "--";
   const n = Number(value);
@@ -36,6 +44,12 @@ function valueClass(value) {
   const n = Number(value);
   if (!Number.isFinite(n) || n === 0) return "";
   return n > 0 ? "positive" : "negative";
+}
+
+function pnlClass(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n === 0) return "pnl-flat";
+  return n > 0 ? "pnl-positive" : "pnl-negative";
 }
 
 function fmtTime(value) {
@@ -63,6 +77,27 @@ function updateClock() {
   const now = new Date();
   $("clock").textContent = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   $("clockDate").textContent = now.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+}
+
+function renderEvaluation(e) {
+  if (!e || Object.keys(e).length === 0) return;
+  $("evalProfile").textContent = `${String(e.profile || "PROP").replaceAll("_", " ")} · ${e.phase || "EVALUATION"}`;
+  $("evalStatus").textContent = e.status || "WAITING";
+  $("evalStatus").className = `eval-status-chip eval-${String(e.status || "waiting").toLowerCase()}`;
+  $("evalBalance").textContent = fmtMoney(e.balance);
+  $("evalPnl").textContent = `P&L ${fmtMoney(e.realized_pnl, true)}`;
+  $("evalTarget").textContent = fmtMoney(e.profit_target);
+  $("evalProgressText").textContent = `${Math.round(Number(e.profit_progress || 0) * 100)}% toward target`;
+  $("evalCushion").textContent = fmtMoney(e.mll_cushion);
+  $("evalFloor").textContent = `Modeled MLL floor ${fmtMoney(e.mll_floor)}`;
+  $("evalToday").textContent = fmtMoney(e.today_pnl, true);
+  $("evalDailyStop").textContent = `OTR daily stop -${fmtMoney(Math.abs(Number(e.internal_daily_stop || 0)))}`;
+  $("evalRisk").textContent = fmtMoney(e.available_risk);
+  $("evalCommitted").textContent = `Committed ${fmtMoney(e.committed_risk)}`;
+  $("evalTrades").textContent = `${e.trades_today || 0} / ${e.max_trades_per_day || 0}`;
+  $("evalLossStreak").textContent = `Loss streak ${e.consecutive_losses || 0} / ${e.max_consecutive_losses || 0}`;
+  $("evalProgressBar").style.width = `${Math.max(0, Math.min(100, Number(e.profit_progress || 0) * 100))}%`;
+  $("evalReason").textContent = e.reason || "Evaluation guard active.";
 }
 
 function renderMarkets(markets) {
@@ -95,14 +130,16 @@ function renderMarkets(markets) {
 
 function renderMetrics(stats, setupCounts) {
   $("totalR").textContent = fmtR(stats.total_r);
-  $("totalR").className = `metric-value ${valueClass(stats.total_r)}`;
+  $("totalR").className = `metric-value ${pnlClass(stats.total_r)}`;
   $("closedTradesSub").textContent = `${stats.closed || 0} closed paper trade${stats.closed === 1 ? "" : "s"}`;
   $("winRate").textContent = stats.win_rate === null ? "--" : `${fmtNumber(stats.win_rate, 1)}%`;
   $("winLossSub").textContent = `${stats.wins || 0} wins / ${stats.losses || 0} losses`;
-  $("profitFactor").textContent = stats.profit_factor === null ? "--" : fmtNumber(stats.profit_factor, 2);
-  $("avgRSub").textContent = `Average R ${fmtR(stats.avg_r)}`;
-  $("maxDrawdown").textContent = fmtR(-(Number(stats.max_drawdown_r || 0)));
-  $("todayRSub").textContent = `Today ${fmtR(stats.today_r)}`;
+  $("allTimePnl").textContent = fmtMoney(stats.total_dollars, true);
+  $("allTimePnl").className = `metric-value ${pnlClass(stats.total_dollars)}`;
+  $("allTimePnlSub").textContent = `Average R ${fmtR(stats.avg_r)}`;
+  $("todayPnl").textContent = fmtMoney(stats.today_dollars, true);
+  $("todayPnl").className = `metric-value ${pnlClass(stats.today_dollars)}`;
+  $("todayPnlSub").textContent = `Today ${fmtR(stats.today_r)} · Max DD ${fmtR(-(Number(stats.max_drawdown_r || 0)))}`;
   $("pendingCount").textContent = stats.pending || 0;
   $("openCount").textContent = stats.open || 0;
   $("setupCount").textContent = setupCounts?.total || 0;
@@ -123,7 +160,8 @@ function tradeRow(t, compact = false) {
   }
   cols.push(`<td>${fmtPrice(t.exit_price)}</td>`);
   cols.push(`<td>${statusChip(t.status, t.result)}</td>`);
-  cols.push(`<td class="${valueClass(t.result_r)}">${fmtR(t.result_r)}</td>`);
+  cols.push(`<td class="${pnlClass(t.result_r)}">${fmtR(t.result_r)}</td>`);
+  cols.push(`<td class="pnl-cell ${pnlClass(t.display_result_dollars)}">${fmtMoney(t.display_result_dollars, true)}</td>`);
   if (compact) cols.push(`<td>${fmtTime(t.updated_at)}</td>`);
   else {
     cols.push(`<td>${fmtTime(t.opened_at)}</td>`);
@@ -136,7 +174,7 @@ function renderTrades(trades) {
   const recent = (trades || []).slice(0, 8);
   $("overviewTradesBody").innerHTML = recent.length
     ? recent.map((t) => tradeRow(t, true)).join("")
-    : '<tr><td colspan="9" class="empty-state">No paper trades recorded yet.</td></tr>';
+    : '<tr><td colspan="10" class="empty-state">No paper trades recorded yet.</td></tr>';
 
   const symbolFilter = $("tradeSymbolFilter").value;
   const resultFilter = $("tradeResultFilter").value;
@@ -148,7 +186,7 @@ function renderTrades(trades) {
   });
   $("tradesBody").innerHTML = filtered.length
     ? filtered.map((t) => tradeRow(t, false)).join("")
-    : '<tr><td colspan="12" class="empty-state">No trades match these filters.</td></tr>';
+    : '<tr><td colspan="13" class="empty-state">No trades match these filters.</td></tr>';
 }
 
 function setupCard(s) {
@@ -456,6 +494,7 @@ function drawEquity(points) {
 function render(snapshot) {
   state.snapshot = snapshot;
   renderMetrics(snapshot.stats || {}, snapshot.setup_counts || {});
+  renderEvaluation(snapshot.evaluation || {});
   renderMarkets(snapshot.markets || []);
   renderTrades(snapshot.trades || []);
   renderSetups(snapshot.setups || []);

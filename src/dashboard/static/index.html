@@ -7,7 +7,7 @@
   <title>OTR Market Dashboard</title>
   <link rel="icon" type="image/png" sizes="64x64" href="/market/assets/favicon.png?v=4.4.1">
   <link rel="apple-touch-icon" sizes="180x180" href="/market/assets/apple-touch-icon.png?v=4.4.1">
-  <link rel="stylesheet" href="/market/assets/styles.css?v=4.4">
+  <link rel="stylesheet" href="/market/assets/styles.css?v=4.5">
 </head>
 <body>
 <div id="app" class="app-shell">
@@ -63,16 +63,39 @@
           <span id="winLossSub" class="metric-sub">--</span>
         </article>
         <article class="metric-card">
-          <span class="metric-label">Profit Factor</span>
-          <strong id="profitFactor" class="metric-value">--</strong>
-          <span id="avgRSub" class="metric-sub">Average R --</span>
+          <span class="metric-label">All-Time P/L</span>
+          <strong id="allTimePnl" class="metric-value">--</strong>
+          <span id="allTimePnlSub" class="metric-sub">Paper realized P/L</span>
         </article>
         <article class="metric-card">
-          <span class="metric-label">Max Drawdown</span>
-          <strong id="maxDrawdown" class="metric-value">--</strong>
-          <span id="todayRSub" class="metric-sub">Today --</span>
+          <span class="metric-label">Today's P/L</span>
+          <strong id="todayPnl" class="metric-value">--</strong>
+          <span id="todayPnlSub" class="metric-sub">Trading-day realized P/L</span>
         </article>
       </div>
+
+      <section class="panel prop-guard-panel">
+        <div class="panel-head">
+          <div>
+            <div class="section-kicker">PROP ACCOUNT TRAINING</div>
+            <h2>Evaluation Guard</h2>
+          </div>
+          <div class="prop-guard-head">
+            <span id="evalProfile" class="tiny-chip">LUCID PRO 50K</span>
+            <span id="evalStatus" class="eval-status-chip">WAITING</span>
+          </div>
+        </div>
+        <div class="eval-grid">
+          <div class="eval-stat"><span>Paper Balance</span><strong id="evalBalance">--</strong><small id="evalPnl">P&amp;L --</small></div>
+          <div class="eval-stat"><span>Pass Target</span><strong id="evalTarget">--</strong><small id="evalProgressText">--</small></div>
+          <div class="eval-stat"><span>MLL Cushion</span><strong id="evalCushion">--</strong><small id="evalFloor">Floor --</small></div>
+          <div class="eval-stat"><span>Today</span><strong id="evalToday">--</strong><small id="evalDailyStop">OTR stop --</small></div>
+          <div class="eval-stat"><span>Risk / Trade</span><strong id="evalRisk">--</strong><small id="evalCommitted">Committed --</small></div>
+          <div class="eval-stat"><span>Session</span><strong id="evalTrades">--</strong><small id="evalLossStreak">Loss streak --</small></div>
+        </div>
+        <div class="eval-progress"><span id="evalProgressBar"></span></div>
+        <div id="evalReason" class="eval-reason">Waiting for evaluation guard data.</div>
+      </section>
 
       <section class="panel market-panel">
         <div class="panel-head">
@@ -142,7 +165,7 @@
         <div class="table-wrap">
           <table>
             <thead>
-              <tr><th>Market</th><th>TF</th><th>Direction</th><th>Status</th><th>Entry</th><th>Exit</th><th>Result</th><th>R</th><th>Updated</th></tr>
+              <tr><th>Market</th><th>TF</th><th>Direction</th><th>Status</th><th>Entry</th><th>Exit</th><th>Result</th><th>R</th><th>P/L</th><th>Updated</th></tr>
             </thead>
             <tbody id="overviewTradesBody"></tbody>
           </table>
@@ -178,7 +201,7 @@
         <div class="table-wrap tall-table">
           <table>
             <thead>
-              <tr><th>Market</th><th>TF</th><th>Direction</th><th>Status</th><th>Entry</th><th>Stop</th><th>Target</th><th>Exit</th><th>Result</th><th>R</th><th>Opened</th><th>Closed</th></tr>
+              <tr><th>Market</th><th>TF</th><th>Direction</th><th>Status</th><th>Entry</th><th>Stop</th><th>Target</th><th>Exit</th><th>Result</th><th>R</th><th>P/L</th><th>Opened</th><th>Closed</th></tr>
             </thead>
             <tbody id="tradesBody"></tbody>
           </table>
@@ -280,6 +303,6 @@
     </div>
   </div>
 </div>
-<script src="/market/assets/app.js?v=4.4" defer></script>
+<script src="/market/assets/app.js?v=4.5" defer></script>
 </body>
 </html>

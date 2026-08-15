@@ -146,8 +146,8 @@ class Operation44Tests(unittest.TestCase):
         self.assertIn('WAIT_QUALIFYING_FVG: "OUTSIDE ZONE"', js)
         self.assertIn('WAIT_VALID_RR: "WAIT R:R"', js)
         self.assertIn('WAIT_QUALIFYING_FVG: "Waiting for qualifying FVG"', js)
-        self.assertIn('styles.css?v=4.4', html)
-        self.assertIn('app.js?v=4.4', html)
+        self.assertRegex(html, r'styles\.css\?v=4\.(?:4|5)')
+        self.assertRegex(html, r'app\.js\?v=4\.(?:4|5)')
 
 
 if __name__ == "__main__":

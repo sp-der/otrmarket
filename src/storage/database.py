@@ -93,6 +93,9 @@ def get_connection():
             exit_price REAL,
             result TEXT,
             result_r REAL,
+            risk_dollars REAL,
+            result_dollars REAL,
+            guard_reason TEXT,
             updated_at TEXT NOT NULL
         );
 
@@ -136,6 +139,15 @@ def get_connection():
         "CREATE INDEX IF NOT EXISTS idx_market_quotes_symbol_ingest "
         "ON market_quotes(symbol, ingested_at)"
     )
+
+    # Operation 4.5: add dollar-risk accounting to legacy paper-trade rows.
+    for column, ddl in (
+        ("risk_dollars", "REAL"),
+        ("result_dollars", "REAL"),
+        ("guard_reason", "TEXT"),
+    ):
+        if not _column_exists(connection, "paper_trades", column):
+            connection.execute(f"ALTER TABLE paper_trades ADD COLUMN {column} {ddl}")
     connection.commit()
     return connection
 
@@ -321,8 +333,9 @@ def upsert_paper_trade(connection, position, updated_at):
             INSERT INTO paper_trades (
                 setup_id, symbol, timeframe, direction, status,
                 entry_price, stop_price, target_price,
-                opened_at, closed_at, exit_price, result, result_r, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                opened_at, closed_at, exit_price, result, result_r,
+                risk_dollars, result_dollars, guard_reason, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(setup_id) DO UPDATE SET
                 status=excluded.status,
                 opened_at=excluded.opened_at,
@@ -330,6 +343,9 @@ def upsert_paper_trade(connection, position, updated_at):
                 exit_price=excluded.exit_price,
                 result=excluded.result,
                 result_r=excluded.result_r,
+                risk_dollars=COALESCE(excluded.risk_dollars, paper_trades.risk_dollars),
+                result_dollars=excluded.result_dollars,
+                guard_reason=COALESCE(excluded.guard_reason, paper_trades.guard_reason),
                 updated_at=excluded.updated_at
             """,
             (
@@ -346,6 +362,9 @@ def upsert_paper_trade(connection, position, updated_at):
                 position.exit_price,
                 position.result,
                 position.result_r,
+                position.risk_dollars,
+                position.result_dollars,
+                position.guard_reason,
                 updated_at,
             ),
         )

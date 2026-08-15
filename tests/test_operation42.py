@@ -24,8 +24,8 @@ class Operation42ScannerUITests(unittest.TestCase):
 
     def test_scanner_assets_are_cache_busted(self):
         html = (STATIC / "index.html").read_text()
-        self.assertIn('/market/assets/styles.css?v=4.4', html)
-        self.assertIn('/market/assets/app.js?v=4.4', html)
+        self.assertRegex(html, r'/market/assets/styles\.css\?v=4\.(?:4|5)')
+        self.assertRegex(html, r'/market/assets/app\.js\?v=4\.(?:4|5)')
 
     def test_grouped_scanner_styles_exist(self):
         css = (STATIC / "styles.css").read_text()

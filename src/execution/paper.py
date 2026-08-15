@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from src.risk.geometry import validate_trade_geometry
 from src.strategies.models import StrategySetup
 
 
@@ -15,6 +16,9 @@ class PaperPosition:
     exit_price: float | None = None
     result_r: float | None = None
     result: str | None = None
+    risk_dollars: float | None = None
+    result_dollars: float | None = None
+    guard_reason: str | None = None
 
 
 class PaperExecutor:
@@ -24,8 +28,29 @@ class PaperExecutor:
         self.positions: dict[str, PaperPosition] = {}
         self.closed: list[PaperPosition] = []
 
-    def register_setup(self, setup: StrategySetup) -> PaperPosition:
-        position = PaperPosition(setup=setup)
+    def register_setup(
+        self,
+        setup: StrategySetup,
+        *,
+        risk_dollars: float | None = None,
+        guard_reason: str | None = None,
+    ) -> PaperPosition:
+        # Defense in depth: even if upstream setup construction regresses, an
+        # inverted stop/target is never allowed into the paper order book.
+        geometry = validate_trade_geometry(
+            setup.symbol,
+            setup.direction,
+            setup.entry_price,
+            setup.stop_price,
+            setup.target_price,
+        )
+        if not geometry.valid:
+            raise ValueError(geometry.reason)
+        position = PaperPosition(
+            setup=setup,
+            risk_dollars=risk_dollars,
+            guard_reason=guard_reason,
+        )
         self.positions[setup.setup_id] = position
         return position
 
@@ -44,7 +69,7 @@ class PaperExecutor:
                     if setup.direction == "bullish"
                     else price >= setup.entry_price
                 )
-                # Avoid fills that have already blown through the stop.
+                # Avoid fills that have already blown through the protective stop.
                 invalid = (
                     price <= setup.stop_price
                     if setup.direction == "bullish"
@@ -55,6 +80,7 @@ class PaperExecutor:
                     position.closed_at = timestamp
                     position.exit_price = price
                     position.result = "INVALIDATED_BEFORE_ENTRY"
+                    position.result_dollars = 0.0 if position.risk_dollars is not None else None
                     changed.append(position)
                     self.closed.append(position)
                     self.positions.pop(setup_id, None)
@@ -78,6 +104,12 @@ class PaperExecutor:
                     position.exit_price = setup.stop_price if stop_hit else setup.target_price
                     position.result = "LOSS" if stop_hit else "WIN"
                     position.result_r = -1.0 if stop_hit else setup.risk_reward
+                    if position.risk_dollars is not None:
+                        position.result_dollars = (
+                            -float(position.risk_dollars)
+                            if stop_hit
+                            else float(position.risk_dollars) * float(setup.risk_reward)
+                        )
                     changed.append(position)
                     self.closed.append(position)
                     self.positions.pop(setup_id, None)
@@ -95,3 +127,7 @@ class PaperExecutor:
     @property
     def total_r(self) -> float:
         return sum(item.result_r or 0.0 for item in self.closed)
+
+    @property
+    def total_dollars(self) -> float:
+        return sum(item.result_dollars or 0.0 for item in self.closed)

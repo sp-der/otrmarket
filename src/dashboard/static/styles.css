@@ -235,3 +235,33 @@ select { min-width: 140px; padding: 9px 10px; border-radius: 9px; border: 1px so
   .scanner-timeframe-card:nth-last-child(-n+2) { border-bottom:1px solid #1d1d1d; }
   .scanner-timeframe-card:last-child { border-bottom:0; }
 }
+
+/* Operation 4.5: prop-account evaluation guard */
+.prop-guard-panel { background:linear-gradient(180deg,#090909 0%,#060606 100%); }
+.prop-guard-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+.eval-status-chip { display:inline-flex; align-items:center; border:1px solid #4c4c4c; border-radius:999px; padding:6px 9px; color:#fff; background:#111; font-size:9px; font-weight:850; letter-spacing:.09em; }
+.eval-status-chip.eval-passed { color:#000; background:#fff; border-color:#fff; }
+.eval-status-chip.eval-breached,
+.eval-status-chip.eval-firm_dll_lock,
+.eval-status-chip.eval-daily_lock,
+.eval-status-chip.eval-risk_lock,
+.eval-status-chip.eval-session_lock,
+.eval-status-chip.eval-position_lock { color:#aaa; background:#0a0a0a; border-color:#343434; }
+.eval-grid { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:9px; }
+.eval-stat { min-width:0; padding:12px; border:1px solid #202020; border-radius:12px; background:#0c0c0c; }
+.eval-stat span { display:block; color:#777; font-size:9px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
+.eval-stat strong { display:block; margin-top:7px; color:#fff; font-size:17px; font-variant-numeric:tabular-nums; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.eval-stat small { display:block; margin-top:5px; color:#777; font-size:9px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.eval-progress { height:5px; margin-top:12px; overflow:hidden; border-radius:999px; background:#202020; }
+.eval-progress span { display:block; width:0; height:100%; background:#fff; transition:width .25s ease; }
+.eval-reason { margin-top:9px; color:#8a8a8a; font-size:10px; line-height:1.45; }
+
+@media (max-width:1200px) { .eval-grid { grid-template-columns:repeat(3,minmax(0,1fr)); } }
+@media (max-width:680px) { .eval-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .prop-guard-head { justify-content:flex-start; } }
+
+/* Operation 4.5: realized paper P/L gets intentional profit/loss color while
+   the rest of the OTR dashboard remains monochrome. */
+.pnl-positive { color: #34d399 !important; }
+.pnl-negative { color: #f87171 !important; }
+.pnl-flat { color: #d4d4d4 !important; }
+.pnl-cell { font-variant-numeric: tabular-nums; font-weight: 700; white-space: nowrap; }

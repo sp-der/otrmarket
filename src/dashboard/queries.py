@@ -6,6 +6,12 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
+
+from src.risk.evaluation import EvaluationConfig, EvaluationRiskGuard
+
+
+TRADING_TZ = ZoneInfo("America/New_York")
 
 
 SYMBOL_LABELS = {
@@ -166,7 +172,23 @@ class DashboardRepository:
             "live_symbols": [m["symbol"] for m in live_markets],
         }
 
-    def trade_stats(self, connection: sqlite3.Connection) -> dict[str, Any]:
+    @staticmethod
+    def _display_result_dollars(row: sqlite3.Row, fallback_risk: float) -> float | None:
+        """Return paper P/L dollars for dashboard display.
+
+        Operation 4.5 records exact modeled dollar P/L for new trades. Legacy
+        Operation 1-4.4 rows only stored R, so the dashboard normalizes those
+        historical results using the configured base evaluation risk. This is
+        display/account-training P/L only; the Evaluation Guard still ignores
+        legacy rows because their persisted risk_dollars remains NULL.
+        """
+        if row["result_dollars"] is not None:
+            return float(row["result_dollars"])
+        if row["result_r"] is None:
+            return None
+        return float(row["result_r"]) * float(fallback_risk)
+
+    def trade_stats(self, connection: sqlite3.Connection, reference_time: datetime | None = None) -> dict[str, Any]:
         defaults = {
             "closed": 0,
             "wins": 0,
@@ -180,13 +202,17 @@ class DashboardRepository:
             "profit_factor": None,
             "max_drawdown_r": 0.0,
             "today_r": 0.0,
+            "total_dollars": 0.0,
+            "today_dollars": 0.0,
         }
         if not self._table_exists(connection, "paper_trades"):
             return defaults
 
+        risk_expr = "risk_dollars" if self._column_exists(connection, "paper_trades", "risk_dollars") else "NULL AS risk_dollars"
+        result_dollars_expr = "result_dollars" if self._column_exists(connection, "paper_trades", "result_dollars") else "NULL AS result_dollars"
         rows = connection.execute(
-            """
-            SELECT setup_id, status, result, result_r, opened_at, closed_at, updated_at
+            f"""
+            SELECT setup_id, status, result, result_r, {risk_expr}, {result_dollars_expr}, opened_at, closed_at, updated_at
             FROM paper_trades
             ORDER BY COALESCE(closed_at, opened_at, updated_at) ASC
             """
@@ -199,6 +225,9 @@ class DashboardRepository:
         pending = sum(1 for row in rows if row["status"] == "PENDING")
         open_count = sum(1 for row in rows if row["status"] == "OPEN")
         total_r = sum(float(row["result_r"] or 0.0) for row in closed_results)
+        fallback_risk = EvaluationConfig.from_env().risk_per_trade
+        display_dollars = [self._display_result_dollars(row, fallback_risk) for row in closed_results]
+        total_dollars = sum(float(value or 0.0) for value in display_dollars if value is not None)
         positive_r = sum(float(row["result_r"]) for row in closed_results if float(row["result_r"]) > 0)
         negative_r = abs(sum(float(row["result_r"]) for row in closed_results if float(row["result_r"]) < 0))
 
@@ -210,12 +239,18 @@ class DashboardRepository:
             peak = max(peak, running)
             max_drawdown = max(max_drawdown, peak - running)
 
-        now_date = self._now().date()
+        reference_time = reference_time or self._now()
+        if reference_time.tzinfo is None:
+            reference_time = reference_time.replace(tzinfo=timezone.utc)
+        trading_date = reference_time.astimezone(TRADING_TZ).date()
         today_r = 0.0
+        today_dollars = 0.0
         for row in closed_results:
             closed_at = self._parse_time(row["closed_at"])
-            if closed_at is not None and closed_at.date() == now_date:
+            if closed_at is not None and closed_at.astimezone(TRADING_TZ).date() == trading_date:
                 today_r += float(row["result_r"] or 0.0)
+                value = self._display_result_dollars(row, fallback_risk)
+                today_dollars += float(value or 0.0)
 
         return {
             "closed": len(closed_results),
@@ -230,23 +265,34 @@ class DashboardRepository:
             "profit_factor": (positive_r / negative_r) if negative_r > 0 else (None if positive_r == 0 else positive_r),
             "max_drawdown_r": max_drawdown,
             "today_r": today_r,
+            "total_dollars": total_dollars,
+            "today_dollars": today_dollars,
         }
 
     def recent_trades(self, connection: sqlite3.Connection, limit: int = 30) -> list[dict[str, Any]]:
         if not self._table_exists(connection, "paper_trades"):
             return []
+        risk_expr = "risk_dollars" if self._column_exists(connection, "paper_trades", "risk_dollars") else "NULL AS risk_dollars"
+        result_dollars_expr = "result_dollars" if self._column_exists(connection, "paper_trades", "result_dollars") else "NULL AS result_dollars"
+        guard_expr = "guard_reason" if self._column_exists(connection, "paper_trades", "guard_reason") else "NULL AS guard_reason"
         rows = connection.execute(
-            """
+            f"""
             SELECT setup_id, symbol, timeframe, direction, status,
                    entry_price, stop_price, target_price, opened_at, closed_at,
-                   exit_price, result, result_r, updated_at
+                   exit_price, result, result_r, {risk_expr}, {result_dollars_expr}, {guard_expr}, updated_at
             FROM paper_trades
             ORDER BY updated_at DESC
             LIMIT ?
             """,
             (limit,),
         ).fetchall()
-        return [dict(row) for row in rows]
+        fallback_risk = EvaluationConfig.from_env().risk_per_trade
+        output = []
+        for row in rows:
+            item = dict(row)
+            item["display_result_dollars"] = self._display_result_dollars(row, fallback_risk)
+            output.append(item)
+        return output
 
     def recent_setups(self, connection: sqlite3.Connection, limit: int = 30) -> list[dict[str, Any]]:
         if not self._table_exists(connection, "strategy_setups"):
@@ -348,6 +394,10 @@ class DashboardRepository:
             output[str(row["status"]).lower()] = row["count"]
         return output
 
+    def evaluation_snapshot(self, connection: sqlite3.Connection, runtime: dict[str, Any]) -> dict[str, Any]:
+        reference = self._parse_time(runtime.get("market_time")) or self._now()
+        return EvaluationRiskGuard().snapshot(connection, reference)
+
     def snapshot(self) -> dict[str, Any]:
         generated_at = self._now().isoformat()
         if not self.db_path.exists():
@@ -355,6 +405,7 @@ class DashboardRepository:
                 "generated_at": generated_at,
                 "database": {"ok": False, "path": str(self.db_path), "size_bytes": 0},
                 "runtime": {"mode": "IDLE", "market_time": None, "replay_symbols": [], "live_symbols": []},
+                "evaluation": {},
                 "markets": [],
                 "diagnostics": [],
                 "stats": self.trade_stats_empty(),
@@ -366,6 +417,7 @@ class DashboardRepository:
             }
 
         with self._connect() as connection:
+            runtime = self.runtime_state(connection)
             return {
                 "generated_at": generated_at,
                 "database": {
@@ -373,10 +425,11 @@ class DashboardRepository:
                     "path": str(self.db_path),
                     "size_bytes": self.db_path.stat().st_size,
                 },
-                "runtime": self.runtime_state(connection),
+                "runtime": runtime,
+                "evaluation": self.evaluation_snapshot(connection, runtime),
                 "markets": self.market_snapshot(connection),
                 "diagnostics": self.diagnostics(connection),
-                "stats": self.trade_stats(connection),
+                "stats": self.trade_stats(connection, self._parse_time(runtime.get("market_time")) or self._now()),
                 "trades": self.recent_trades(connection),
                 "setups": self.recent_setups(connection),
                 "equity_curve": self.equity_curve(connection),
@@ -399,4 +452,6 @@ class DashboardRepository:
             "profit_factor": None,
             "max_drawdown_r": 0.0,
             "today_r": 0.0,
+            "total_dollars": 0.0,
+            "today_dollars": 0.0,
         }

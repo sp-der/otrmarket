@@ -10,6 +10,7 @@ from rich.live import Live
 from rich.table import Table
 
 from src.execution.paper import PaperExecutor
+from src.risk.evaluation import EvaluationRiskGuard
 from src.runtime.clock import MarketClock
 from src.runtime.session import StrategySession
 from src.storage.database import (
@@ -38,6 +39,7 @@ strategy = ConfluenceEngine()
 paper = PaperExecutor()
 clock = MarketClock()
 session = StrategySession()
+evaluation_guard = EvaluationRiskGuard()
 
 market_state = {
     "BTC-USD": {"name": "Bitcoin", "source": "Coinbase", "price": None, "bid": None, "ask": None, "quotes": 0},
@@ -105,8 +107,36 @@ def evaluate_strategy(connection, symbol: str, timeframe: str):
     setup = strategy.on_candle(symbol, timeframe, histories_snapshot())
     save_diagnostic(connection, strategy.diagnostic(symbol, timeframe))
     if setup:
+        decision = evaluation_guard.decide(connection, setup.created_at)
+        setup.metadata["evaluation_guard"] = {
+            "status": decision.status,
+            "allowed": decision.allowed,
+            "risk_dollars": decision.risk_dollars,
+            "reason": decision.reason,
+            "profile": decision.snapshot.get("profile"),
+            "phase": decision.snapshot.get("phase"),
+        }
+        if not decision.allowed:
+            setup.status = "GUARD_BLOCKED"
+            save_setup(connection, setup)
+            console.log(
+                f"PROP GUARD blocked {setup.symbol} {setup.timeframe}: {decision.status} - {decision.reason}"
+            )
+            return setup
+
         save_setup(connection, setup)
-        position = paper.register_setup(setup)
+        try:
+            position = paper.register_setup(
+                setup,
+                risk_dollars=decision.risk_dollars,
+                guard_reason=decision.reason,
+            )
+        except ValueError as exc:
+            setup.status = "RISK_REJECTED"
+            setup.metadata["geometry_rejection"] = str(exc)
+            save_setup(connection, setup)
+            console.log(f"RISK GEOMETRY rejected {setup.symbol} {setup.timeframe}: {exc}")
+            return setup
         upsert_paper_trade(connection, position, setup.created_at.isoformat())
     return setup
 
@@ -150,7 +180,7 @@ def process_price(connection, symbol, price, bid, ask, timestamp=None):
 def build_dashboard():
     table = Table(
         title="OTR MARKET • STRATEGY LAB",
-        caption="OPERATION 4.1 • STAGE TIMERS + REPLAY ISOLATION • LIVE ORDERS DISABLED 🔒",
+        caption="OPERATION 4.5 • RISK GEOMETRY + PROP GUARD • LIVE ORDERS DISABLED 🔒",
     )
     table.add_column("Market")
     table.add_column("Price", justify="right")
