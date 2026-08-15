@@ -107,3 +107,12 @@ class CandleBuilder:
             self.current.pop(key, None)
             kept = [candle for candle in self.history.get(key, ()) if candle.close_time <= before]
             self.history[key] = deque(kept, maxlen=self.history_limit)
+
+    def has_future_history(self, symbol: str, timestamp: datetime) -> bool:
+        """Return True when restored candles are ahead of the incoming stream."""
+        timestamp = self._normalize_timestamp(timestamp)
+        return any(
+            history and history[-1].close_time > timestamp
+            for (history_symbol, _), history in self.history.items()
+            if history_symbol == symbol
+        )

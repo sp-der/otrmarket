@@ -18,12 +18,15 @@ class Operation46ReplayTests(unittest.TestCase):
         )
         builder.update("NQ", 3.0, start + timedelta(minutes=3))
 
+        self.assertTrue(builder.has_future_history("NQ", start + timedelta(minutes=1)))
+
         builder.rewind_symbol("NQ", start + timedelta(minutes=1))
 
         self.assertNotIn(("NQ", "1m"), builder.current)
         history = builder.get_history("NQ", "1m")
         self.assertEqual(1, len(history))
         self.assertLessEqual(history[-1].close_time, start + timedelta(minutes=1))
+        self.assertFalse(builder.has_future_history("NQ", start + timedelta(minutes=1)))
 
     def test_capital_plan_defaults_are_250_risk_and_750_daily_stop(self):
         config = EvaluationConfig()

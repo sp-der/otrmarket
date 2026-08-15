@@ -149,16 +149,16 @@ def process_price(connection, symbol, price, bid, ask, timestamp=None):
     timestamp = timestamp or utc_now()
     ingest_time = utc_now()
     previous_event = clock.event_time(symbol)
-    if previous_event is not None and timestamp < previous_event:
-        rewind_seconds = (previous_event - timestamp).total_seconds()
-        if rewind_seconds >= 60:
-            candles.rewind_symbol(symbol, timestamp)
-            strategy.clear_symbol(symbol)
-            delete_diagnostics_for_symbol(connection, symbol)
-            console.log(
-                f"Replay rewind detected for {symbol}: {rewind_seconds:.0f}s; "
-                "cleared future candle/scanner state"
-            )
+    seeded_future = candles.has_future_history(symbol, timestamp)
+    rewind_seconds = (previous_event - timestamp).total_seconds() if previous_event else 0.0
+    if seeded_future or rewind_seconds >= 60:
+        candles.rewind_symbol(symbol, timestamp)
+        strategy.clear_symbol(symbol)
+        delete_diagnostics_for_symbol(connection, symbol)
+        console.log(
+            f"Replay rewind detected for {symbol}: {rewind_seconds:.0f}s; "
+            "cleared future candle/scanner state"
+        )
     state = market_state[symbol]
     state.update(price=price, bid=bid, ask=ask)
     state["quotes"] += 1
