@@ -12,6 +12,16 @@ from src.strategies.manager import MultiStrategyEngine
 runtime.strategy = MultiStrategyEngine()
 
 
+def _setup_risk(decision, setup) -> tuple[float, float]:
+    """Apply a setup's replay multiplier without ever exceeding guard risk."""
+    try:
+        multiplier = float(setup.metadata.get("risk_multiplier", 1.0))
+    except (TypeError, ValueError):
+        multiplier = 1.0
+    multiplier = max(0.0, min(1.0, multiplier))
+    return round(float(decision.risk_dollars) * multiplier, 2), multiplier
+
+
 def evaluate_strategy(connection, symbol: str, timeframe: str):
     if not runtime.session.strategy_enabled(symbol):
         return None
@@ -26,10 +36,13 @@ def evaluate_strategy(connection, symbol: str, timeframe: str):
     handled = []
     for setup in setups:
         decision = runtime.evaluation_guard.decide(connection, setup.created_at)
+        applied_risk, risk_multiplier = _setup_risk(decision, setup)
         setup.metadata["evaluation_guard"] = {
             "status": decision.status,
             "allowed": decision.allowed,
-            "risk_dollars": decision.risk_dollars,
+            "risk_cap_dollars": decision.risk_dollars,
+            "risk_multiplier": risk_multiplier,
+            "risk_dollars": applied_risk if decision.allowed else 0.0,
             "reason": decision.reason,
             "profile": decision.snapshot.get("profile"),
             "phase": decision.snapshot.get("phase"),
@@ -49,8 +62,11 @@ def evaluate_strategy(connection, symbol: str, timeframe: str):
         try:
             position = runtime.paper.register_setup(
                 setup,
-                risk_dollars=decision.risk_dollars,
-                guard_reason=decision.reason,
+                risk_dollars=applied_risk,
+                guard_reason=(
+                    f"{decision.reason} Replay RR tier {risk_multiplier:.0%} "
+                    f"of ${decision.risk_dollars:.2f} cap."
+                ),
             )
         except ValueError as exc:
             setup.status = "RISK_REJECTED"
@@ -69,7 +85,8 @@ def evaluate_strategy(connection, symbol: str, timeframe: str):
         runtime.console.log(
             f"SETUP REGISTERED {setup.symbol} {setup.timeframe} "
             f"[{setup.metadata.get('strategy', 'UNKNOWN')}] "
-            f"{setup.direction.upper()} {setup.risk_reward:.2f}R"
+            f"{setup.direction.upper()} {setup.risk_reward:.2f}R "
+            f"risk ${applied_risk:.2f} ({risk_multiplier:.0%} tier)"
         )
         handled.append(setup)
 
