@@ -46,9 +46,9 @@ class EvaluationConfig:
 
     # OTR internal training limits. These are intentionally stricter than the
     # firm limits and can be tuned after replay statistics are large enough.
-    risk_per_trade: float = 100.0
-    min_risk_per_trade: float = 25.0
-    internal_daily_stop: float = 400.0
+    risk_per_trade: float = 250.0
+    min_risk_per_trade: float = 250.0
+    internal_daily_stop: float = 750.0
     mll_safety_buffer: float = 400.0
     max_trades_per_day: int = 4
     max_consecutive_losses: int = 3
@@ -69,9 +69,9 @@ class EvaluationConfig:
             initial_trail_balance=_env_float("EVAL_INITIAL_TRAIL_BALANCE", 52_100.0),
             locked_mll_balance=_env_float("EVAL_LOCKED_MLL_BALANCE", 50_100.0),
             max_micros=_env_int("EVAL_MAX_MICROS", 40),
-            risk_per_trade=_env_float("EVAL_RISK_PER_TRADE", 100.0),
-            min_risk_per_trade=_env_float("EVAL_MIN_RISK_PER_TRADE", 25.0),
-            internal_daily_stop=_env_float("EVAL_INTERNAL_DAILY_STOP", 400.0),
+            risk_per_trade=_env_float("EVAL_RISK_PER_TRADE", 250.0),
+            min_risk_per_trade=_env_float("EVAL_MIN_RISK_PER_TRADE", 250.0),
+            internal_daily_stop=_env_float("EVAL_INTERNAL_DAILY_STOP", 750.0),
             mll_safety_buffer=_env_float("EVAL_MLL_SAFETY_BUFFER", 400.0),
             max_trades_per_day=_env_int("EVAL_MAX_TRADES_PER_DAY", 4),
             max_consecutive_losses=_env_int("EVAL_MAX_CONSECUTIVE_LOSSES", 3),
