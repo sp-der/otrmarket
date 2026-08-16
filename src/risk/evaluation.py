@@ -235,11 +235,10 @@ class EvaluationRiskGuard:
             status, reason = "SESSION_LOCK", f"No new OTR trades between {c.no_new_trades_after_et} and {c.resume_trading_et} ET."
 
         if target_met and status == "ACTIVE":
+            status = "PASSED"
             if c.continue_after_target:
-                status = "PASSED_CONTINUING"
                 reason = "Evaluation profit target reached; continuing the paper/replay run under normal risk locks."
             else:
-                status = "PASSED"
                 reason = "Configured evaluation profit target reached."
 
         internal_loss_used = max(0.0, -day_pnl)
@@ -287,14 +286,23 @@ class EvaluationRiskGuard:
         snap = self.snapshot(connection, reference_time)
         if not self.config.enabled:
             return EvaluationDecision(True, self.config.risk_per_trade, snap["status"], snap["reason"], snap)
-        if snap["status"] not in {"ACTIVE", "PASSED_CONTINUING"}:
+
+        can_continue_passed = (
+            snap["status"] == "PASSED"
+            and self.config.continue_after_target
+            and bool(snap.get("target_met"))
+        )
+        if snap["status"] != "ACTIVE" and not can_continue_passed:
             return EvaluationDecision(False, 0.0, snap["status"], snap["reason"], snap)
+
         risk = float(snap["available_risk"] or 0.0)
         if risk < self.config.min_risk_per_trade:
             reason = f"Available risk ${risk:.2f} is below OTR minimum ${self.config.min_risk_per_trade:.2f}."
             snap = {**snap, "status": "RISK_LOCK", "reason": reason}
             return EvaluationDecision(False, 0.0, "RISK_LOCK", reason, snap)
-        if snap["status"] == "PASSED_CONTINUING":
+
+        if can_continue_passed:
             reason = f"Evaluation target already reached; continuing weekly paper test with ${risk:.2f} risk."
-            return EvaluationDecision(True, risk, "PASSED_CONTINUING", reason, snap)
+            return EvaluationDecision(True, risk, "PASSED", reason, snap)
+
         return EvaluationDecision(True, risk, "ACTIVE", f"Approved with ${risk:.2f} paper risk.", snap)
