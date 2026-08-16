@@ -10,13 +10,57 @@ from pathlib import Path
 
 import uvicorn
 
+from src.storage.database import get_connection, get_engine_state, set_engine_state
+
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_DIR = Path(os.getenv("OTR_RUNTIME_DIR", "/tmp/otrmarket"))
 ENGINE_PID_FILE = RUNTIME_DIR / "engine.pid"
+RESET_STATE_KEY = "last_evaluation_reset_token"
 
 _engine_process: subprocess.Popen | None = None
 _shutting_down = False
+
+
+def _reset_evaluation_history_if_requested() -> None:
+    """Clear the paper evaluation ledger once for a new replay run.
+
+    Set OTR_RESET_EVAL_TOKEN to a new unique value when a fresh evaluation is
+    wanted. The token is persisted in engine_state, so ordinary Railway
+    restarts/redeploys cannot accidentally erase trades collected afterward.
+
+    Raw quotes and candles are intentionally preserved. Replay rewind handling
+    trims future in-memory candle/scanner state as the replay clock moves back.
+    """
+    token = os.getenv("OTR_RESET_EVAL_TOKEN", "").strip()
+    if not token:
+        return
+
+    connection = get_connection()
+    try:
+        previous = get_engine_state(connection, RESET_STATE_KEY, "") or ""
+        if previous == token:
+            print("Fresh-eval reset token already applied; preserving current test trades", flush=True)
+            return
+
+        counts = {}
+        for table in ("paper_trades", "strategy_setups", "strategy_diagnostics"):
+            counts[table] = int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            connection.execute(f"DELETE FROM {table}")
+
+        # Persist the token only after the reset work succeeds. set_engine_state
+        # commits this transaction, making the deletes and marker durable before
+        # the strategy engine starts.
+        set_engine_state(connection, RESET_STATE_KEY, token)
+        print(
+            "Fresh evaluation reset complete: "
+            f"{counts['paper_trades']} trades, "
+            f"{counts['strategy_setups']} setups, "
+            f"{counts['strategy_diagnostics']} scanner rows cleared",
+            flush=True,
+        )
+    finally:
+        connection.close()
 
 
 def _stop_engine() -> None:
@@ -98,6 +142,7 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, _handle_shutdown)
     signal.signal(signal.SIGINT, _handle_shutdown)
 
+    _reset_evaluation_history_if_requested()
     _start_engine()
     os.environ["OTR_REQUIRE_ENGINE_HEALTH"] = "1"
 
