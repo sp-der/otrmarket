@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from datetime import datetime, timezone
 
 from src import main as runtime
+from src.execution.paper import PaperExecutor
+from src.risk.evaluation import EvaluationConfig
 from src.risk.session_consistency import evaluate_session_consistency
+from src.storage.intelligence import (
+    upsert_shadow_trade,
+    upsert_trade_intelligence,
+)
 from src.strategies.execution_quality import evaluate_ict_context
 from src.strategies.manager import MultiStrategyEngine
 
@@ -13,6 +20,55 @@ from src.strategies.manager import MultiStrategyEngine
 # preserving the existing collectors, replay handling, evaluation guard,
 # storage, paper executor, and dashboard runtime.
 runtime.strategy = MultiStrategyEngine()
+
+# Operation 5.3 runs the pre-5.x / Operation 4.8 candidate stream in parallel
+# without sending it through the 5.x session/context gates. It never affects
+# the live evaluation ledger. The older pending-order behavior is intentionally
+# preserved in this shadow executor so the comparison can expose whether the
+# later stale-entry protections helped or hurt.
+SHADOW_PROFILE = "OPERATION_4_8_SHADOW"
+shadow_paper = PaperExecutor(
+    pending_expiry_enabled=False,
+    stale_preentry_enabled=False,
+)
+shadow_base_risk = float(EvaluationConfig.from_env().risk_per_trade)
+
+
+# Persist MFE/MAE and setup fingerprints whenever the normal paper ledger is
+# written. src.main resolves this global at call time, so wrapping it here also
+# captures updates produced inside the existing process_price loop.
+_original_upsert_paper_trade = runtime.upsert_paper_trade
+
+
+def _upsert_live_trade_with_intelligence(connection, position, updated_at):
+    _original_upsert_paper_trade(connection, position, updated_at)
+    upsert_trade_intelligence(connection, position, updated_at)
+
+
+runtime.upsert_paper_trade = _upsert_live_trade_with_intelligence
+
+
+# Advance shadow positions before the normal runtime processes the same tick.
+# This ordering matters: a setup discovered on a candle close must wait until
+# the next incoming tick in both live and shadow books rather than receiving a
+# same-tick fill advantage.
+_original_process_price = runtime.process_price
+
+
+def _process_price_with_shadow(connection, symbol, price, bid, ask, timestamp=None):
+    event_time = timestamp or runtime.utc_now()
+    for position in shadow_paper.on_price(symbol, price, event_time):
+        upsert_shadow_trade(
+            connection,
+            position,
+            event_time.isoformat(),
+            profile=SHADOW_PROFILE,
+            source_setup_id=position.setup.metadata.get("shadow_source_setup_id"),
+        )
+    return _original_process_price(connection, symbol, price, bid, ask, event_time)
+
+
+runtime.process_price = _process_price_with_shadow
 
 
 def _setup_risk(decision, setup) -> tuple[float, float]:
@@ -23,6 +79,58 @@ def _setup_risk(decision, setup) -> tuple[float, float]:
         multiplier = 1.0
     multiplier = max(0.0, min(1.0, multiplier))
     return round(float(decision.risk_dollars) * multiplier, 2), multiplier
+
+
+def _shadow_risk(setup) -> tuple[float, float]:
+    """Apply Operation 4.8 RR sizing without touching the live guard ledger."""
+    try:
+        multiplier = float(setup.metadata.get("risk_multiplier", 1.0))
+    except (TypeError, ValueError):
+        multiplier = 1.0
+    multiplier = max(0.0, min(1.0, multiplier))
+    return round(shadow_base_risk * multiplier, 2), multiplier
+
+
+def _register_48_shadow(connection, setup) -> None:
+    """Register the raw Operation 4.8 candidate before 5.x filters mutate it."""
+    shadow_id = f"s48_{setup.setup_id}"
+    if shadow_id in shadow_paper.positions or any(
+        item.setup.setup_id == shadow_id for item in shadow_paper.closed
+    ):
+        return
+
+    shadow_setup = deepcopy(setup)
+    shadow_setup.setup_id = shadow_id
+    shadow_setup.status = "PENDING"
+    shadow_setup.metadata = deepcopy(setup.metadata)
+    shadow_setup.metadata["shadow_profile"] = SHADOW_PROFILE
+    shadow_setup.metadata["shadow_source_setup_id"] = setup.setup_id
+    shadow_setup.metadata["execution_quality_gate"] = {
+        "allowed": True,
+        "reason": "Operation 4.8 shadow bypasses Operation 5.x session/context filters.",
+        "profile": SHADOW_PROFILE,
+    }
+
+    risk_dollars, multiplier = _shadow_risk(shadow_setup)
+    try:
+        position = shadow_paper.register_setup(
+            shadow_setup,
+            risk_dollars=risk_dollars,
+            guard_reason=(
+                f"Operation 4.8 strategy shadow only; theoretical risk tier "
+                f"{multiplier:.0%} of ${shadow_base_risk:.2f}."
+            ),
+        )
+    except ValueError:
+        return
+
+    upsert_shadow_trade(
+        connection,
+        position,
+        setup.created_at.isoformat(),
+        profile=SHADOW_PROFILE,
+        source_setup_id=setup.setup_id,
+    )
 
 
 def _parse_time(value: str | None) -> datetime | None:
@@ -186,19 +294,23 @@ def evaluate_strategy(connection, symbol: str, timeframe: str):
 
     handled = []
     for setup in setups:
+        # Capture the same detector output Operation 4.8 would have received
+        # before any 5.x context/session rules are allowed to reject it.
+        _register_48_shadow(connection, setup)
+
         session_decision = evaluate_session_consistency(connection, setup)
         setup.metadata["session_consistency"] = session_decision.details
         if not session_decision.allowed:
             setup.metadata["execution_quality_gate"] = {
                 "allowed": False,
                 "reason": session_decision.reason,
-                "profile": "MULTI_TIMEFRAME_CONTEXT_5_2",
-                "baseline_shadow_profile": "OPERATION_4_8_CANDIDATE",
+                "profile": "TRADE_INTELLIGENCE_5_3",
+                "baseline_shadow_profile": SHADOW_PROFILE,
             }
             setup.status = "SESSION_BLOCKED"
             runtime.save_setup(connection, setup)
             runtime.console.log(
-                f"SESSION 5.2 blocked {setup.symbol} {setup.timeframe} "
+                f"SESSION 5.3 blocked {setup.symbol} {setup.timeframe} "
                 f"[{setup.metadata.get('strategy', 'UNKNOWN')}]: {session_decision.reason}"
             )
             handled.append(setup)
@@ -210,8 +322,8 @@ def evaluate_strategy(connection, symbol: str, timeframe: str):
         setup.metadata["execution_quality_gate"] = {
             "allowed": quality_allowed,
             "reason": quality_reason,
-            "profile": "MULTI_TIMEFRAME_CONTEXT_5_2",
-            "baseline_shadow_profile": "OPERATION_4_8_CANDIDATE",
+            "profile": "TRADE_INTELLIGENCE_5_3",
+            "baseline_shadow_profile": SHADOW_PROFILE,
         }
         if not quality_allowed:
             setup.status = "QUALITY_BLOCKED"
@@ -252,7 +364,7 @@ def evaluate_strategy(connection, symbol: str, timeframe: str):
                 setup,
                 risk_dollars=applied_risk,
                 guard_reason=(
-                    f"{decision.reason} Operation 5.2 multi-timeframe A/A+ gate passed. "
+                    f"{decision.reason} Operation 5.3 live A/A+ gate passed. "
                     f"Replay RR tier {risk_multiplier:.0%} of ${decision.risk_dollars:.2f} cap."
                 ),
             )
