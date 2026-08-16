@@ -36,6 +36,10 @@ class PaperPosition:
     risk_dollars: float | None = None
     result_dollars: float | None = None
     guard_reason: str | None = None
+    mfe_r: float = 0.0
+    mae_r: float = 0.0
+    max_favorable_price: float | None = None
+    max_adverse_price: float | None = None
 
 
 def _aware_utc(value: datetime) -> datetime:
@@ -61,6 +65,32 @@ def _preentry_target_progress(setup: StrategySetup, price: float) -> float:
     return 0.0
 
 
+def _update_excursion(position: PaperPosition, price: float) -> None:
+    """Track maximum favorable/adverse excursion in R while a trade is open."""
+    setup = position.setup
+    risk_distance = abs(float(setup.entry_price) - float(setup.stop_price))
+    if risk_distance <= 0:
+        return
+
+    if setup.direction == "bullish":
+        favorable = max(0.0, (float(price) - float(setup.entry_price)) / risk_distance)
+        adverse = max(0.0, (float(setup.entry_price) - float(price)) / risk_distance)
+        if position.max_favorable_price is None or price > position.max_favorable_price:
+            position.max_favorable_price = float(price)
+        if position.max_adverse_price is None or price < position.max_adverse_price:
+            position.max_adverse_price = float(price)
+    else:
+        favorable = max(0.0, (float(setup.entry_price) - float(price)) / risk_distance)
+        adverse = max(0.0, (float(price) - float(setup.entry_price)) / risk_distance)
+        if position.max_favorable_price is None or price < position.max_favorable_price:
+            position.max_favorable_price = float(price)
+        if position.max_adverse_price is None or price > position.max_adverse_price:
+            position.max_adverse_price = float(price)
+
+    position.mfe_r = max(float(position.mfe_r or 0.0), favorable)
+    position.mae_r = max(float(position.mae_r or 0.0), adverse)
+
+
 def _invalidate_pending(
     position: PaperPosition,
     *,
@@ -78,9 +108,16 @@ def _invalidate_pending(
 class PaperExecutor:
     """Research-only execution. Never sends orders to a broker."""
 
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        pending_expiry_enabled: bool = True,
+        stale_preentry_enabled: bool = True,
+    ):
         self.positions: dict[str, PaperPosition] = {}
         self.closed: list[PaperPosition] = []
+        self.pending_expiry_enabled = pending_expiry_enabled
+        self.stale_preentry_enabled = stale_preentry_enabled
 
     def register_setup(
         self,
@@ -118,9 +155,10 @@ class PaperExecutor:
                 continue
 
             if position.status == "PENDING":
-                # A limit idea does not stay valid forever. Replay speed does not
-                # affect this because expiry uses the market timestamp.
-                if timestamp > _pending_expiry(setup):
+                # Live 5.x execution expires stale limits using replay market
+                # time. The 4.8 shadow executor can disable this to reproduce
+                # the older entry behavior without changing live execution.
+                if self.pending_expiry_enabled and timestamp > _pending_expiry(setup):
                     _invalidate_pending(
                         position,
                         timestamp=timestamp,
@@ -150,10 +188,11 @@ class PaperExecutor:
                     self.positions.pop(setup_id, None)
                     continue
 
-                # If price completes most of the objective before retracing to the
-                # planned entry, the original imbalance is no longer an A+ idea.
+                # Operation 5.0+ cancels an entry after most of its objective has
+                # already traded. The 4.8 shadow executor can intentionally turn
+                # this off for an apples-to-apples strategy baseline.
                 progress = _preentry_target_progress(setup, price)
-                if progress >= _MAX_PREENTRY_TARGET_PROGRESS:
+                if self.stale_preentry_enabled and progress >= _MAX_PREENTRY_TARGET_PROGRESS:
                     _invalidate_pending(
                         position,
                         timestamp=timestamp,
@@ -173,9 +212,13 @@ class PaperExecutor:
                 if touched:
                     position.status = "OPEN"
                     position.opened_at = timestamp
+                    position.max_favorable_price = float(setup.entry_price)
+                    position.max_adverse_price = float(setup.entry_price)
                     changed.append(position)
 
             if position.status == "OPEN":
+                _update_excursion(position, price)
+
                 if setup.direction == "bullish":
                     stop_hit = price <= setup.stop_price
                     target_hit = price >= setup.target_price
