@@ -220,6 +220,87 @@
     grid.innerHTML = cells.join("");
   }
 
+  function tradeTimestamp(value) {
+    if (!value) return "--";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return date.toLocaleString([], {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  }
+
+  function tradeDuration(openedAt, closedAt) {
+    if (!openedAt || !closedAt) return "--";
+    const opened = new Date(openedAt);
+    const closed = new Date(closedAt);
+    if (Number.isNaN(opened.getTime()) || Number.isNaN(closed.getTime())) return "--";
+    const totalSeconds = Math.max(0, Math.round((closed.getTime() - opened.getTime()) / 1000));
+    if (totalSeconds < 60) return `${totalSeconds}s`;
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
+    return `${minutes}m ${seconds}s`;
+  }
+
+  function installTradeTimingUi() {
+    const header = document.querySelector("#tradesView table thead tr");
+    if (header && !header.querySelector("[data-trade-duration]")) {
+      header.insertAdjacentHTML("beforeend", '<th data-trade-duration="true">Duration</th>');
+    }
+
+    tradeRow = function timedTradeRow(t, compact = false) {
+      const cols = [
+        `<td>${labelMap[t.symbol] || t.symbol}</td>`,
+        `<td>${t.timeframe || "--"}</td>`,
+        `<td>${t.direction || "--"}</td>`,
+        `<td>${statusChip(t.status, null)}</td>`,
+        `<td>${fmtPrice(t.entry_price)}</td>`,
+      ];
+      if (!compact) {
+        cols.push(`<td>${fmtPrice(t.stop_price)}</td>`);
+        cols.push(`<td>${fmtPrice(t.target_price)}</td>`);
+      }
+      cols.push(`<td>${fmtPrice(t.exit_price)}</td>`);
+      cols.push(`<td>${statusChip(t.status, t.result)}</td>`);
+      cols.push(`<td class="${pnlClass(t.result_r)}">${fmtR(t.result_r)}</td>`);
+      cols.push(`<td class="pnl-cell ${pnlClass(t.display_result_dollars)}">${fmtMoney(t.display_result_dollars, true)}</td>`);
+      if (compact) {
+        cols.push(`<td>${fmtTime(t.updated_at)}</td>`);
+      } else {
+        cols.push(`<td>${tradeTimestamp(t.opened_at)}</td>`);
+        cols.push(`<td>${tradeTimestamp(t.closed_at)}</td>`);
+        cols.push(`<td>${tradeDuration(t.opened_at, t.closed_at)}</td>`);
+      }
+      return `<tr>${cols.join("")}</tr>`;
+    };
+
+    renderTrades = function timedRenderTrades(trades) {
+      const recent = (trades || []).slice(0, 8);
+      $("overviewTradesBody").innerHTML = recent.length
+        ? recent.map((t) => tradeRow(t, true)).join("")
+        : '<tr><td colspan="10" class="empty-state">No paper trades recorded yet.</td></tr>';
+
+      const symbolFilter = $("tradeSymbolFilter").value;
+      const resultFilter = $("tradeResultFilter").value;
+      const filtered = (trades || []).filter((t) => {
+        const symbolOk = symbolFilter === "all" || t.symbol === symbolFilter;
+        const marker = t.result || t.status;
+        const resultOk = resultFilter === "all" || marker === resultFilter;
+        return symbolOk && resultOk;
+      });
+      $("tradesBody").innerHTML = filtered.length
+        ? filtered.map((t) => tradeRow(t, false)).join("")
+        : '<tr><td colspan="14" class="empty-state">No trades match these filters.</td></tr>';
+    };
+
+    if (state?.snapshot) renderTrades(state.snapshot.trades || []);
+  }
+
   function render(snapshot) {
     latestSnapshot = snapshot;
     if (!ensureUi()) return;
@@ -240,6 +321,7 @@
   }
 
   function start() {
+    installTradeTimingUi();
     ensureUi();
     if (pollTimer) window.clearTimeout(pollTimer);
     poll();
