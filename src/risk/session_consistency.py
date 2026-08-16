@@ -7,6 +7,9 @@ import sqlite3
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
+SUPPORTED_EXECUTION_TIMEFRAMES = {"1m", "5m", "15m", "1h"}
+
+
 def _env_int(name: str, default: int) -> int:
     try:
         return int(os.getenv(name, str(default)))
@@ -45,10 +48,11 @@ def _parse_dt(value: str | None) -> datetime | None:
 class SessionConsistencyConfig:
     """Calibration profile for repeatable funded-style trading days.
 
-    The profile deliberately targets one focused execution timeframe and one
-    liquid daytime window. It never forces a trade. A day can finish PASS/NO
-    TRADE while rejected candidates remain available in setup history for
-    research.
+    The session governor controls when the bot may add risk, but setup quality is
+    graded separately by the A/A+ context engine. ``execution_timeframe`` can be
+    a single timeframe for controlled experiments or ``ALL`` to let 1m/5m/15m/1h
+    compete for execution as long as each setup passes its own quality rules.
+    It never forces a trade.
     """
 
     timezone_name: str = "America/New_York"
@@ -81,6 +85,10 @@ class SessionConsistencyConfig:
             return ZoneInfo(self.timezone_name)
         except ZoneInfoNotFoundError:
             return ZoneInfo("America/New_York")
+
+    @property
+    def all_timeframes_enabled(self) -> bool:
+        return self.execution_timeframe.strip().upper() in {"ALL", "ANY", "MULTI"}
 
 
 @dataclass(frozen=True)
@@ -189,18 +197,28 @@ def evaluate_session_consistency(
     local = created_at.astimezone(config.timezone)
 
     details = {
-        "profile": "SESSION_CONSISTENCY_5_1",
+        "profile": "SESSION_CONSISTENCY_5_2",
         "timezone": config.timezone_name,
         "local_day": local.strftime("%A"),
         "local_time": local.strftime("%H:%M"),
         "execution_timeframe": config.execution_timeframe,
+        "candidate_timeframe": setup.timeframe,
+        "multi_timeframe_execution": config.all_timeframes_enabled,
+        "supported_execution_timeframes": sorted(SUPPORTED_EXECUTION_TIMEFRAMES),
         "session_start": config.session_start,
         "session_end": config.session_end,
         "max_trades_per_day": config.max_trades_per_day,
         "base_win_lock_dollars": config.base_win_lock_dollars,
     }
 
-    if setup.timeframe != config.execution_timeframe:
+    if setup.timeframe not in SUPPORTED_EXECUTION_TIMEFRAMES:
+        return SessionConsistencyDecision(
+            False,
+            f"{setup.timeframe} is not a supported autonomous execution timeframe.",
+            details,
+        )
+
+    if not config.all_timeframes_enabled and setup.timeframe != config.execution_timeframe:
         return SessionConsistencyDecision(
             False,
             f"Calibration profile is executing {config.execution_timeframe}; {setup.timeframe} stays scanner/shadow only.",
@@ -250,11 +268,12 @@ def evaluate_session_consistency(
         if not second_ok:
             return SessionConsistencyDecision(False, second_reason, details)
 
+    execution_scope = "multi-timeframe" if config.all_timeframes_enabled else config.execution_timeframe
     return SessionConsistencyDecision(
         True,
         (
-            f"Selected {config.execution_timeframe} session window active; "
-            f"day is {stats['trades']}/{config.max_trades_per_day} trades and ${stats['realized_pnl']:+.2f}."
+            f"Selected {execution_scope} session window active; {setup.timeframe} candidate may proceed to A/A+ grading. "
+            f"Day is {stats['trades']}/{config.max_trades_per_day} trades and ${stats['realized_pnl']:+.2f}."
         ),
         details,
     )
@@ -268,7 +287,9 @@ def session_profile_snapshot(reference_time: datetime | None = None) -> dict:
     local = reference_time.astimezone(config.timezone)
     return {
         **asdict(config),
-        "profile": "SESSION_CONSISTENCY_5_1",
+        "profile": "SESSION_CONSISTENCY_5_2",
+        "multi_timeframe_execution": config.all_timeframes_enabled,
+        "supported_execution_timeframes": sorted(SUPPORTED_EXECUTION_TIMEFRAMES),
         "local_day": local.strftime("%A"),
         "local_time": local.strftime("%H:%M"),
     }
