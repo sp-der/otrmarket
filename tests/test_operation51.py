@@ -61,6 +61,29 @@ class Operation51SessionConsistencyTests(unittest.TestCase):
         self.assertFalse(decision.allowed)
         self.assertIn("executing 5m", decision.reason)
 
+    def test_all_mode_allows_supported_timeframes_to_reach_quality_gate(self):
+        for timeframe in ("1m", "5m", "15m", "1h"):
+            with self.subTest(timeframe=timeframe):
+                con = db()
+                decision = evaluate_session_consistency(
+                    con,
+                    setup(timeframe=timeframe),
+                    config(execution_timeframe="ALL"),
+                )
+                self.assertTrue(decision.allowed, decision.reason)
+                self.assertTrue(decision.details["multi_timeframe_execution"])
+                self.assertEqual(decision.details["candidate_timeframe"], timeframe)
+
+    def test_all_mode_still_rejects_unknown_timeframe(self):
+        con = db()
+        decision = evaluate_session_consistency(
+            con,
+            setup(timeframe="30s"),
+            config(execution_timeframe="ALL"),
+        )
+        self.assertFalse(decision.allowed)
+        self.assertIn("not a supported", decision.reason)
+
     def test_selected_session_window_only(self):
         con = db()
         # 13:00 UTC is 09:00 ET during August DST.
