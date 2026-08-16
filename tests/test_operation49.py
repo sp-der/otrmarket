@@ -24,6 +24,7 @@ def db():
 
 def setup(**overrides):
     values = dict(
+        setup_id="candidate",
         symbol="NQ",
         timeframe="1m",
         trigger_type="smt",
@@ -38,7 +39,12 @@ def setup(**overrides):
     return SimpleNamespace(**values)
 
 
-class Operation49QualityGateTests(unittest.TestCase):
+class Operation49QualityGateCompatibilityTests(unittest.TestCase):
+    def setUp(self):
+        from src import main_multi
+
+        main_multi.runtime.paper.positions.clear()
+
     def test_one_minute_nq_requires_smt(self):
         con = db()
         allowed, reason = _a_plus_quality_gate(
@@ -48,36 +54,20 @@ class Operation49QualityGateTests(unittest.TestCase):
         self.assertFalse(allowed)
         self.assertIn("requires SMT", reason)
 
-    def test_one_minute_nq_smt_needs_at_least_two_r(self):
+    def test_rr_no_longer_decides_a_plus_quality_above_one_r(self):
         con = db()
-        allowed, reason = _a_plus_quality_gate(con, setup(risk_reward=1.75))
-        self.assertFalse(allowed)
-        self.assertIn("2.00R", reason)
-
-    def test_five_minute_ict_accepts_one_point_five_r(self):
-        con = db()
-        allowed, reason = _a_plus_quality_gate(
-            con,
-            setup(timeframe="5m", trigger_type="liquidity_sweep", risk_reward=1.5),
-        )
+        allowed, reason = _a_plus_quality_gate(con, setup(risk_reward=1.25))
         self.assertTrue(allowed, reason)
 
-    def test_order_block_fallback_has_higher_threshold(self):
+    def test_sub_one_r_is_still_rejected(self):
         con = db()
-        allowed, reason = _a_plus_quality_gate(
-            con,
-            setup(
-                timeframe="5m",
-                risk_reward=1.75,
-                metadata={"strategy": "ICT_CONFLUENCE", "entry_type": "ORDER_BLOCK"},
-            ),
-        )
+        allowed, reason = _a_plus_quality_gate(con, setup(risk_reward=0.9))
         self.assertFalse(allowed)
-        self.assertIn("2.00R", reason)
+        self.assertIn("1.00R", reason)
 
     def test_loss_creates_sixty_minute_same_market_reset(self):
         con = db()
-        closed = datetime(2026, 8, 16, 13, 30, tzinfo=timezone.utc)
+        closed = datetime(2026, 8, 16, 13, 0, tzinfo=timezone.utc)
         con.execute(
             "INSERT INTO paper_trades VALUES (?,?,?,?,?)",
             ("loss", "NQ", "CLOSED", closed.isoformat(), "LOSS"),
@@ -85,10 +75,25 @@ class Operation49QualityGateTests(unittest.TestCase):
         con.commit()
         allowed, reason = _a_plus_quality_gate(
             con,
-            setup(created_at=closed + timedelta(minutes=30), risk_reward=3.0),
+            setup(created_at=closed + timedelta(minutes=45), risk_reward=3.0),
         )
         self.assertFalse(allowed)
-        self.assertIn("reset window", reason)
+        self.assertIn("Same-market reset", reason)
+
+    def test_cross_market_loss_creates_thirty_minute_global_reset(self):
+        con = db()
+        closed = datetime(2026, 8, 16, 13, 45, tzinfo=timezone.utc)
+        con.execute(
+            "INSERT INTO paper_trades VALUES (?,?,?,?,?)",
+            ("loss", "GC", "CLOSED", closed.isoformat(), "LOSS"),
+        )
+        con.commit()
+        allowed, reason = _a_plus_quality_gate(
+            con,
+            setup(symbol="NQ", created_at=closed + timedelta(minutes=20)),
+        )
+        self.assertFalse(allowed)
+        self.assertIn("Global post-loss", reason)
 
     def test_rejection_block_requires_full_ten_of_ten_and_three_r(self):
         con = db()
