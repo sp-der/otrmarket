@@ -56,6 +56,12 @@ class EvaluationConfig:
     no_new_trades_after_et: str = "16:30"
     resume_trading_et: str = "18:00"
 
+    # Keep the $3k target as the evaluation pass marker while optionally
+    # continuing the replay/paper run so a full week can be measured.
+    # The dataclass default remains conservative for direct/test construction;
+    # from_env enables continuation by default for the deployed research bot.
+    continue_after_target: bool = False
+
     @classmethod
     def from_env(cls) -> "EvaluationConfig":
         return cls(
@@ -78,6 +84,7 @@ class EvaluationConfig:
             max_concurrent_positions=_env_int("EVAL_MAX_CONCURRENT", 1),
             no_new_trades_after_et=os.getenv("EVAL_NO_NEW_AFTER_ET", "16:30").strip(),
             resume_trading_et=os.getenv("EVAL_RESUME_ET", "18:00").strip(),
+            continue_after_target=_env_bool("EVAL_CONTINUE_AFTER_TARGET", True),
         )
 
 
@@ -196,17 +203,18 @@ class EvaluationRiskGuard:
             else:
                 break
 
+        target_met = c.phase == "EVALUATION" and c.profit_target > 0 and realized >= c.profit_target
         profit_progress = max(0.0, min(1.0, realized / c.profit_target)) if c.profit_target > 0 else 0.0
         largest_day_profit = max([0.0] + [value for value in daily_results.values() if value > 0])
         positive_profit = max(0.0, realized)
         consistency = (largest_day_profit / positive_profit * 100.0) if positive_profit > 0 else None
 
+        # Safety locks always outrank the profit target. Hitting $3k is a pass
+        # marker, not permission to ignore the MLL/daily/concurrency governors.
         status = "ACTIVE"
         reason = "Within OTR evaluation risk limits."
         if not c.enabled:
             status, reason = "DISABLED", "Evaluation guard disabled."
-        elif c.phase == "EVALUATION" and realized >= c.profit_target:
-            status, reason = "PASSED", "Configured evaluation profit target reached."
         elif balance <= mll_floor:
             status, reason = "BREACHED", "Paper balance reached the modeled Max Loss Limit floor."
         elif day_pnl <= -abs(c.firm_daily_loss_limit):
@@ -226,6 +234,14 @@ class EvaluationRiskGuard:
         if stop_time <= local_t < resume_time and status == "ACTIVE":
             status, reason = "SESSION_LOCK", f"No new OTR trades between {c.no_new_trades_after_et} and {c.resume_trading_et} ET."
 
+        if target_met and status == "ACTIVE":
+            if c.continue_after_target:
+                status = "PASSED_CONTINUING"
+                reason = "Evaluation profit target reached; continuing the paper/replay run under normal risk locks."
+            else:
+                status = "PASSED"
+                reason = "Configured evaluation profit target reached."
+
         internal_loss_used = max(0.0, -day_pnl)
         internal_daily_headroom = max(0.0, abs(c.internal_daily_stop) - internal_loss_used)
         firm_daily_headroom = max(0.0, abs(c.firm_daily_loss_limit) - max(0.0, -day_pnl))
@@ -243,6 +259,8 @@ class EvaluationRiskGuard:
             "realized_pnl": realized,
             "profit_target": c.profit_target,
             "profit_progress": profit_progress,
+            "target_met": target_met,
+            "continue_after_target": c.continue_after_target,
             "mll_floor": mll_floor,
             "mll_cushion": cushion,
             "mll_safety_buffer": c.mll_safety_buffer,
@@ -269,11 +287,14 @@ class EvaluationRiskGuard:
         snap = self.snapshot(connection, reference_time)
         if not self.config.enabled:
             return EvaluationDecision(True, self.config.risk_per_trade, snap["status"], snap["reason"], snap)
-        if snap["status"] != "ACTIVE":
+        if snap["status"] not in {"ACTIVE", "PASSED_CONTINUING"}:
             return EvaluationDecision(False, 0.0, snap["status"], snap["reason"], snap)
         risk = float(snap["available_risk"] or 0.0)
         if risk < self.config.min_risk_per_trade:
             reason = f"Available risk ${risk:.2f} is below OTR minimum ${self.config.min_risk_per_trade:.2f}."
             snap = {**snap, "status": "RISK_LOCK", "reason": reason}
             return EvaluationDecision(False, 0.0, "RISK_LOCK", reason, snap)
+        if snap["status"] == "PASSED_CONTINUING":
+            reason = f"Evaluation target already reached; continuing weekly paper test with ${risk:.2f} risk."
+            return EvaluationDecision(True, risk, "PASSED_CONTINUING", reason, snap)
         return EvaluationDecision(True, risk, "ACTIVE", f"Approved with ${risk:.2f} paper risk.", snap)
