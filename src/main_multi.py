@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 
 from src import main as runtime
+from src.risk.session_consistency import evaluate_session_consistency
 from src.strategies.execution_quality import evaluate_ict_context
 from src.strategies.manager import MultiStrategyEngine
 
@@ -123,10 +124,16 @@ def _active_risk_gate(setup) -> tuple[bool, str]:
 def _a_plus_quality_gate(connection, setup, histories=None) -> tuple[bool, str]:
     """Execution-only A+ filter layered on top of the existing detectors.
 
-    Operation 5.0 grades market context and sequence first. Risk/reward remains
-    important for position sizing, but it is no longer used as a shortcut for
-    deciding whether an ICT setup is genuinely A+.
+    Operation 5.1 first asks whether this candidate belongs to the selected
+    funded-style session/timeframe. It then applies the Operation 5.0 context,
+    sequence, exposure, and reset requirements. R:R still sizes accepted risk;
+    it does not manufacture a trade when the market is poor.
     """
+    session_decision = evaluate_session_consistency(connection, setup)
+    setup.metadata["session_consistency"] = session_decision.details
+    if not session_decision.allowed:
+        return False, session_decision.reason
+
     strategy = str(setup.metadata.get("strategy", "ICT_CONFLUENCE"))
     rr = float(setup.risk_reward or 0.0)
 
@@ -170,7 +177,7 @@ def _a_plus_quality_gate(connection, setup, histories=None) -> tuple[bool, str]:
     if not cooldown_ok:
         return False, cooldown_reason
 
-    return True, "A+ context, sequence, exposure, and reset gates passed."
+    return True, "Selected session plus A+ context, sequence, exposure, and reset gates passed."
 
 
 def evaluate_strategy(connection, symbol: str, timeframe: str):
@@ -191,7 +198,7 @@ def evaluate_strategy(connection, symbol: str, timeframe: str):
         setup.metadata["execution_quality_gate"] = {
             "allowed": quality_allowed,
             "reason": quality_reason,
-            "profile": "A_PLUS_CONTEXT_5_0",
+            "profile": "SESSION_CONTEXT_5_1",
             "baseline_shadow_profile": "OPERATION_4_8_CANDIDATE",
         }
         if not quality_allowed:
@@ -233,8 +240,8 @@ def evaluate_strategy(connection, symbol: str, timeframe: str):
                 setup,
                 risk_dollars=applied_risk,
                 guard_reason=(
-                    f"{decision.reason} A+ context gate passed. Replay RR tier "
-                    f"{risk_multiplier:.0%} of ${decision.risk_dollars:.2f} cap."
+                    f"{decision.reason} Operation 5.1 session/context gate passed. "
+                    f"Replay RR tier {risk_multiplier:.0%} of ${decision.risk_dollars:.2f} cap."
                 ),
             )
         except ValueError as exc:
@@ -255,11 +262,19 @@ def evaluate_strategy(connection, symbol: str, timeframe: str):
         htf = context.get("context_timeframe")
         bias = context.get("higher_timeframe_bias")
         context_text = f" HTF {htf}:{bias}" if htf and bias else ""
+        session = setup.metadata.get("session_consistency", {})
+        session_text = (
+            f" {session.get('local_day')} {session.get('local_time')} "
+            f"{session.get('timezone')}"
+            if session
+            else ""
+        )
         runtime.console.log(
             f"SETUP REGISTERED {setup.symbol} {setup.timeframe} "
             f"[{setup.metadata.get('strategy', 'UNKNOWN')}] "
             f"{setup.direction.upper()} {setup.risk_reward:.2f}R "
-            f"risk ${applied_risk:.2f} ({risk_multiplier:.0%} tier){context_text}"
+            f"risk ${applied_risk:.2f} ({risk_multiplier:.0%} tier)"
+            f"{context_text}{session_text}"
         )
         handled.append(setup)
 
