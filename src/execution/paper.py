@@ -1,10 +1,27 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from src.risk.geometry import validate_trade_geometry
 from src.strategies.models import StrategySetup
+
+
+_PENDING_BARS = {
+    "1m": 6,
+    "5m": 4,
+    "15m": 3,
+    "1h": 2,
+}
+
+_BAR_SECONDS = {
+    "1m": 60,
+    "5m": 300,
+    "15m": 900,
+    "1h": 3600,
+}
+
+_MAX_PREENTRY_TARGET_PROGRESS = 0.75
 
 
 @dataclass
@@ -19,6 +36,43 @@ class PaperPosition:
     risk_dollars: float | None = None
     result_dollars: float | None = None
     guard_reason: str | None = None
+
+
+def _aware_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _pending_expiry(setup: StrategySetup) -> datetime:
+    bars = _PENDING_BARS.get(setup.timeframe, 4)
+    seconds = _BAR_SECONDS.get(setup.timeframe, 60) * bars
+    return _aware_utc(setup.created_at) + timedelta(seconds=seconds)
+
+
+def _preentry_target_progress(setup: StrategySetup, price: float) -> float:
+    target_distance = abs(setup.target_price - setup.entry_price)
+    if target_distance <= 0:
+        return 0.0
+    if setup.direction == "bullish" and price > setup.entry_price:
+        return (price - setup.entry_price) / target_distance
+    if setup.direction == "bearish" and price < setup.entry_price:
+        return (setup.entry_price - price) / target_distance
+    return 0.0
+
+
+def _invalidate_pending(
+    position: PaperPosition,
+    *,
+    timestamp: datetime,
+    price: float,
+    result: str,
+) -> None:
+    position.status = "INVALIDATED"
+    position.closed_at = timestamp
+    position.exit_price = price
+    position.result = result
+    position.result_dollars = 0.0 if position.risk_dollars is not None else None
 
 
 class PaperExecutor:
@@ -55,7 +109,7 @@ class PaperExecutor:
         return position
 
     def on_price(self, symbol: str, price: float, timestamp: datetime | None = None) -> list[PaperPosition]:
-        timestamp = timestamp or datetime.now(timezone.utc)
+        timestamp = _aware_utc(timestamp or datetime.now(timezone.utc))
         changed: list[PaperPosition] = []
 
         for setup_id, position in list(self.positions.items()):
@@ -64,11 +118,20 @@ class PaperExecutor:
                 continue
 
             if position.status == "PENDING":
-                touched = (
-                    price <= setup.entry_price
-                    if setup.direction == "bullish"
-                    else price >= setup.entry_price
-                )
+                # A limit idea does not stay valid forever. Replay speed does not
+                # affect this because expiry uses the market timestamp.
+                if timestamp > _pending_expiry(setup):
+                    _invalidate_pending(
+                        position,
+                        timestamp=timestamp,
+                        price=price,
+                        result="EXPIRED_BEFORE_ENTRY",
+                    )
+                    changed.append(position)
+                    self.closed.append(position)
+                    self.positions.pop(setup_id, None)
+                    continue
+
                 # Avoid fills that have already blown through the protective stop.
                 invalid = (
                     price <= setup.stop_price
@@ -76,15 +139,37 @@ class PaperExecutor:
                     else price >= setup.stop_price
                 )
                 if invalid:
-                    position.status = "INVALIDATED"
-                    position.closed_at = timestamp
-                    position.exit_price = price
-                    position.result = "INVALIDATED_BEFORE_ENTRY"
-                    position.result_dollars = 0.0 if position.risk_dollars is not None else None
+                    _invalidate_pending(
+                        position,
+                        timestamp=timestamp,
+                        price=price,
+                        result="INVALIDATED_BEFORE_ENTRY",
+                    )
                     changed.append(position)
                     self.closed.append(position)
                     self.positions.pop(setup_id, None)
                     continue
+
+                # If price completes most of the objective before retracing to the
+                # planned entry, the original imbalance is no longer an A+ idea.
+                progress = _preentry_target_progress(setup, price)
+                if progress >= _MAX_PREENTRY_TARGET_PROGRESS:
+                    _invalidate_pending(
+                        position,
+                        timestamp=timestamp,
+                        price=price,
+                        result="STALE_MOVE_BEFORE_ENTRY",
+                    )
+                    changed.append(position)
+                    self.closed.append(position)
+                    self.positions.pop(setup_id, None)
+                    continue
+
+                touched = (
+                    price <= setup.entry_price
+                    if setup.direction == "bullish"
+                    else price >= setup.entry_price
+                )
                 if touched:
                     position.status = "OPEN"
                     position.opened_at = timestamp
