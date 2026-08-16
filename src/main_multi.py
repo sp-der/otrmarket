@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 
 from src import main as runtime
+from src.strategies.execution_quality import evaluate_ict_context
 from src.strategies.manager import MultiStrategyEngine
 
 
@@ -36,12 +37,7 @@ def _parse_time(value: str | None) -> datetime | None:
 
 
 def _same_symbol_cooldown(connection, setup) -> tuple[bool, str]:
-    """Prevent rapid-fire re-entry on the same market after a completed trade.
-
-    A loss receives a longer reset window than a win. The clock uses replay
-    market time, not wall-clock time, so 10x replay does not make the bot behave
-    more aggressively than normal market speed.
-    """
+    """Prevent rapid-fire re-entry on the same market after a completed trade."""
     row = connection.execute(
         """
         SELECT closed_at, result
@@ -74,12 +70,62 @@ def _same_symbol_cooldown(connection, setup) -> tuple[bool, str]:
     return True, "Same-market reset window cleared."
 
 
-def _a_plus_quality_gate(connection, setup) -> tuple[bool, str]:
+def _global_loss_cooldown(connection, setup) -> tuple[bool, str]:
+    """After any futures loss, require a short market-wide reset before new risk."""
+    row = connection.execute(
+        """
+        SELECT symbol, closed_at
+        FROM paper_trades
+        WHERE status = 'CLOSED' AND result = 'LOSS' AND closed_at IS NOT NULL
+        ORDER BY closed_at DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    if row is None:
+        return True, "No global loss reset applies."
+
+    loss_symbol, closed_value = row
+    closed_at = _parse_time(closed_value)
+    created_at = setup.created_at
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    created_at = created_at.astimezone(timezone.utc)
+    if closed_at is None or created_at <= closed_at:
+        return True, "No global loss reset applies."
+
+    elapsed = (created_at - closed_at).total_seconds() / 60.0
+    if elapsed < 30:
+        return False, (
+            f"Global post-loss reset active after {loss_symbol}: "
+            f"{30 - elapsed:.0f} replay minutes remain before new futures risk."
+        )
+    return True, "Global post-loss reset cleared."
+
+
+def _active_risk_gate(setup) -> tuple[bool, str]:
+    """Avoid duplicate and NQ/ES correlated exposure while an idea is active."""
+    for position in runtime.paper.positions.values():
+        if position.status not in {"PENDING", "OPEN"}:
+            continue
+        other = position.setup
+        if other.setup_id == getattr(setup, "setup_id", None):
+            continue
+        if other.symbol == setup.symbol:
+            return False, f"{setup.symbol} already has an active paper idea."
+        if {other.symbol, setup.symbol} == {"NQ", "ES"}:
+            return False, (
+                f"Correlated exposure blocked: {other.symbol} already has "
+                f"an active {position.status.lower()} idea."
+            )
+    return True, "No duplicate/correlated active risk."
+
+
+def _a_plus_quality_gate(connection, setup, histories=None) -> tuple[bool, str]:
     """Execution-only A+ filter layered on top of the existing detectors.
 
-    The strategy engines may still identify looser research candidates so the
-    scanner can show what they saw, but only candidates meeting these stricter
-    execution standards become paper trades.
+    Operation 5.0 grades market context and sequence first. Risk/reward remains
+    important for position sizing, but it is no longer used as a shortcut for
+    deciding whether an ICT setup is genuinely A+.
     """
     strategy = str(setup.metadata.get("strategy", "ICT_CONFLUENCE"))
     rr = float(setup.risk_reward or 0.0)
@@ -92,60 +138,61 @@ def _a_plus_quality_gate(connection, setup) -> tuple[bool, str]:
         if rr < 3.0:
             return False, f"Rejection-block setup offers only {rr:.2f}R; require at least 3.00R."
     else:
-        # 1-minute entries need more room because they are the easiest place for
-        # replay noise to generate several technically-valid setups in a burst.
-        min_rr = 2.0 if setup.timeframe == "1m" else 1.5
-        entry_type = str(setup.metadata.get("entry_type", "FVG_MIDPOINT"))
+        # Flexible ICT targets are allowed from 1R upward. The existing replay
+        # RR tier reduces dollar risk on smaller objectives.
+        if rr < 1.0:
+            return False, f"ICT setup offers only {rr:.2f}R; structural minimum is 1.00R."
 
-        if rr < min_rr:
-            return False, (
-                f"ICT {setup.timeframe} setup offers {rr:.2f}R; tightened A+ minimum is "
-                f"{min_rr:.2f}R for this timeframe."
-            )
-
-        if entry_type == "ORDER_BLOCK":
-            order_block_min = 2.5 if setup.timeframe == "1m" else 2.0
-            if rr < order_block_min:
-                return False, (
-                    f"Order-block fallback offers {rr:.2f}R; require {order_block_min:.2f}R "
-                    "before using the fallback entry."
-                )
-
-        # For NQ/ES on the 1-minute chart, require SMT confirmation rather than
-        # accepting a sweep-only trigger. Higher timeframes and GC can still use
-        # the existing liquidity-sweep path.
         if (
             setup.timeframe == "1m"
             and setup.symbol in {"NQ", "ES"}
             and str(setup.trigger_type or "").lower() != "smt"
         ):
-            return False, "1m NQ/ES execution now requires SMT confirmation in addition to structure."
+            return False, "1m NQ/ES execution requires SMT confirmation in addition to structure."
+
+        if histories is not None:
+            context_ok, context_reason, context_details = evaluate_ict_context(
+                setup, histories
+            )
+            setup.metadata["a_plus_context"] = context_details
+            if not context_ok:
+                return False, context_reason
+
+    active_ok, active_reason = _active_risk_gate(setup)
+    if not active_ok:
+        return False, active_reason
+
+    global_ok, global_reason = _global_loss_cooldown(connection, setup)
+    if not global_ok:
+        return False, global_reason
 
     cooldown_ok, cooldown_reason = _same_symbol_cooldown(connection, setup)
     if not cooldown_ok:
         return False, cooldown_reason
 
-    return True, "Tightened A+ execution quality gate passed."
+    return True, "A+ context, sequence, exposure, and reset gates passed."
 
 
 def evaluate_strategy(connection, symbol: str, timeframe: str):
     if not runtime.session.strategy_enabled(symbol):
         return None
 
-    setups = runtime.strategy.on_candle_all(
-        symbol, timeframe, runtime.histories_snapshot()
-    )
+    histories = runtime.histories_snapshot()
+    setups = runtime.strategy.on_candle_all(symbol, timeframe, histories)
     runtime.save_diagnostic(
         connection, runtime.strategy.diagnostic(symbol, timeframe)
     )
 
     handled = []
     for setup in setups:
-        quality_allowed, quality_reason = _a_plus_quality_gate(connection, setup)
+        quality_allowed, quality_reason = _a_plus_quality_gate(
+            connection, setup, histories
+        )
         setup.metadata["execution_quality_gate"] = {
             "allowed": quality_allowed,
             "reason": quality_reason,
-            "profile": "A_PLUS_TIGHT_4_9",
+            "profile": "A_PLUS_CONTEXT_5_0",
+            "baseline_shadow_profile": "OPERATION_4_8_CANDIDATE",
         }
         if not quality_allowed:
             setup.status = "QUALITY_BLOCKED"
@@ -186,7 +233,7 @@ def evaluate_strategy(connection, symbol: str, timeframe: str):
                 setup,
                 risk_dollars=applied_risk,
                 guard_reason=(
-                    f"{decision.reason} A+ gate passed. Replay RR tier "
+                    f"{decision.reason} A+ context gate passed. Replay RR tier "
                     f"{risk_multiplier:.0%} of ${decision.risk_dollars:.2f} cap."
                 ),
             )
@@ -204,11 +251,15 @@ def evaluate_strategy(connection, symbol: str, timeframe: str):
         runtime.upsert_paper_trade(
             connection, position, setup.created_at.isoformat()
         )
+        context = setup.metadata.get("a_plus_context", {})
+        htf = context.get("context_timeframe")
+        bias = context.get("higher_timeframe_bias")
+        context_text = f" HTF {htf}:{bias}" if htf and bias else ""
         runtime.console.log(
             f"SETUP REGISTERED {setup.symbol} {setup.timeframe} "
             f"[{setup.metadata.get('strategy', 'UNKNOWN')}] "
             f"{setup.direction.upper()} {setup.risk_reward:.2f}R "
-            f"risk ${applied_risk:.2f} ({risk_multiplier:.0%} tier)"
+            f"risk ${applied_risk:.2f} ({risk_multiplier:.0%} tier){context_text}"
         )
         handled.append(setup)
 
