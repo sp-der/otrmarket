@@ -122,12 +122,11 @@ def _active_risk_gate(setup) -> tuple[bool, str]:
 
 
 def _a_plus_quality_gate(connection, setup, histories=None) -> tuple[bool, str]:
-    """Operation 5.0 A+ context/exposure filter.
+    """A/A+ context and exposure filter used by every enabled timeframe.
 
-    Operation 5.1's session/timeframe governor is intentionally applied by the
-    execution loop before this function. Keeping the layers separate preserves
-    direct regression coverage of the A+ engine while production execution must
-    pass both gates.
+    Operation 5.2 lets 1m, 5m, 15m and 1h candidates compete for execution.
+    Timeframe permission does not weaken setup quality: every candidate still
+    has to pass its own context, sequence, RR floor, exposure and reset rules.
     """
     strategy = str(setup.metadata.get("strategy", "ICT_CONFLUENCE"))
     rr = float(setup.risk_reward or 0.0)
@@ -143,6 +142,8 @@ def _a_plus_quality_gate(connection, setup, histories=None) -> tuple[bool, str]:
         if rr < 1.0:
             return False, f"ICT setup offers only {rr:.2f}R; structural minimum is 1.00R."
 
+        # The 1m index chart is noisy enough that SMT remains mandatory. Other
+        # timeframes may qualify through their normal ICT trigger plus HTF bias.
         if (
             setup.timeframe == "1m"
             and setup.symbol in {"NQ", "ES"}
@@ -170,7 +171,7 @@ def _a_plus_quality_gate(connection, setup, histories=None) -> tuple[bool, str]:
     if not cooldown_ok:
         return False, cooldown_reason
 
-    return True, "A+ context, sequence, exposure, and reset gates passed."
+    return True, "A/A+ context, sequence, exposure, and reset gates passed."
 
 
 def evaluate_strategy(connection, symbol: str, timeframe: str):
@@ -191,13 +192,13 @@ def evaluate_strategy(connection, symbol: str, timeframe: str):
             setup.metadata["execution_quality_gate"] = {
                 "allowed": False,
                 "reason": session_decision.reason,
-                "profile": "SESSION_CONTEXT_5_1",
+                "profile": "MULTI_TIMEFRAME_CONTEXT_5_2",
                 "baseline_shadow_profile": "OPERATION_4_8_CANDIDATE",
             }
-            setup.status = "QUALITY_BLOCKED"
+            setup.status = "SESSION_BLOCKED"
             runtime.save_setup(connection, setup)
             runtime.console.log(
-                f"SESSION 5.1 blocked {setup.symbol} {setup.timeframe} "
+                f"SESSION 5.2 blocked {setup.symbol} {setup.timeframe} "
                 f"[{setup.metadata.get('strategy', 'UNKNOWN')}]: {session_decision.reason}"
             )
             handled.append(setup)
@@ -209,14 +210,14 @@ def evaluate_strategy(connection, symbol: str, timeframe: str):
         setup.metadata["execution_quality_gate"] = {
             "allowed": quality_allowed,
             "reason": quality_reason,
-            "profile": "SESSION_CONTEXT_5_1",
+            "profile": "MULTI_TIMEFRAME_CONTEXT_5_2",
             "baseline_shadow_profile": "OPERATION_4_8_CANDIDATE",
         }
         if not quality_allowed:
             setup.status = "QUALITY_BLOCKED"
             runtime.save_setup(connection, setup)
             runtime.console.log(
-                f"A+ QUALITY blocked {setup.symbol} {setup.timeframe} "
+                f"A/A+ QUALITY blocked {setup.symbol} {setup.timeframe} "
                 f"[{setup.metadata.get('strategy', 'UNKNOWN')}]: {quality_reason}"
             )
             handled.append(setup)
@@ -251,7 +252,7 @@ def evaluate_strategy(connection, symbol: str, timeframe: str):
                 setup,
                 risk_dollars=applied_risk,
                 guard_reason=(
-                    f"{decision.reason} Operation 5.1 session/context gate passed. "
+                    f"{decision.reason} Operation 5.2 multi-timeframe A/A+ gate passed. "
                     f"Replay RR tier {risk_multiplier:.0%} of ${decision.risk_dollars:.2f} cap."
                 ),
             )
