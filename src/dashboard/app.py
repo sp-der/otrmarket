@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
@@ -97,7 +97,14 @@ async def root_redirect():
 @app.get(BASE_PATH)
 @app.get(f"{BASE_PATH}/")
 async def dashboard_index():
-    return FileResponse(STATIC_DIR / "index.html")
+    # Inject the 5.3 research panel at response time so the original static
+    # dashboard stays backward-compatible while the intelligence module can be
+    # developed independently.
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    intelligence_script = '<script src="/market/assets/trade-intelligence.js?v=5.3" defer></script>'
+    if intelligence_script not in html:
+        html = html.replace("</body>", f"{intelligence_script}\n</body>")
+    return HTMLResponse(html)
 
 
 def engine_process_status() -> tuple[bool, int | None]:
