@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 from src.bridge.futures import normalize_bridge_symbol, source_name
 from src.dashboard.queries import DashboardRepository
 from src.storage.database import get_connection, save_quotes_batch
+from src.storage.intelligence import intelligence_snapshot
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -216,6 +217,18 @@ async def snapshot(request: Request):
         return JSONResponse(
             status_code=500,
             content={"detail": f"Dashboard snapshot failed: {exc}"},
+        )
+
+
+@app.get(f"{BASE_PATH}/api/intelligence")
+async def intelligence(request: Request):
+    require_http_auth(request)
+    try:
+        return intelligence_snapshot(DB_PATH)
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Trade intelligence snapshot failed: {exc}"},
         )
 
 
