@@ -1,0 +1,322 @@
+.lucid-eval-wrap {
+  display: grid;
+  gap: 18px;
+  margin: 18px 0;
+}
+
+.lucid-progress-card,
+.lucid-calendar-panel {
+  background: linear-gradient(180deg, rgba(20, 22, 28, 0.98), rgba(15, 17, 22, 0.98));
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 18px;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.22);
+}
+
+.lucid-progress-card {
+  padding: 22px 26px 20px;
+}
+
+.lucid-progress-track {
+  position: relative;
+  height: 8px;
+  margin: 4px 0 18px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(239, 83, 80, 0.24), rgba(255,255,255,0.05) 38%, rgba(46, 213, 142, 0.16));
+  overflow: visible;
+}
+
+.lucid-progress-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  max-width: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #39d98a, #4ce6a0);
+  box-shadow: 0 0 18px rgba(57, 217, 138, 0.34);
+  transition: width 260ms ease;
+}
+
+.lucid-start-marker {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 2px;
+  height: 22px;
+  background: rgba(255,255,255,0.3);
+  transform: translate(-1px, -50%);
+}
+
+.lucid-start-marker::after {
+  content: "START";
+  position: absolute;
+  top: 15px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  color: #737782;
+}
+
+.lucid-progress-labels,
+.lucid-progress-bottom {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  align-items: center;
+  gap: 18px;
+}
+
+.lucid-progress-labels {
+  margin-bottom: 15px;
+}
+
+.lucid-progress-bottom {
+  padding-top: 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.055);
+}
+
+.lucid-progress-left { text-align: left; }
+.lucid-progress-center { text-align: center; }
+.lucid-progress-right { text-align: right; }
+
+.lucid-value-line {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+  font-weight: 800;
+  font-size: 17px;
+  color: #f5f6f8;
+}
+
+.lucid-value-line small {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #70747e;
+  font-weight: 700;
+}
+
+.lucid-value-line.loss { color: #ef6666; }
+.lucid-value-line.win { color: #35db8b; }
+
+.lucid-balance-main {
+  font-size: 18px;
+  font-weight: 850;
+  color: #f8f8fa;
+}
+
+.lucid-balance-main small {
+  margin-left: 6px;
+  color: #767b85;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.lucid-calendar-panel {
+  padding: 24px 26px 26px;
+}
+
+.lucid-calendar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.055);
+}
+
+.lucid-calendar-title-row {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  min-width: 0;
+}
+
+.lucid-calendar-title-row h2 {
+  margin: 0;
+  font-size: 22px;
+  letter-spacing: -0.02em;
+}
+
+.lucid-tabs {
+  display: inline-flex;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 9px;
+  overflow: hidden;
+  background: #1a1c22;
+}
+
+.lucid-tab {
+  border: 0;
+  padding: 10px 18px;
+  background: transparent;
+  color: #d2d4d9;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.lucid-tab.active {
+  background: #35d98a;
+  color: #07130d;
+}
+
+.lucid-month-nav {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.lucid-month-label {
+  min-width: 145px;
+  text-align: center;
+  font-weight: 820;
+  font-size: 18px;
+  color: #f1f2f4;
+}
+
+.lucid-nav-button {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.06);
+  background: #1a1c22;
+  color: #8d929c;
+  font-size: 23px;
+  cursor: pointer;
+}
+
+.lucid-nav-button:hover {
+  border-color: rgba(255,255,255,0.16);
+  color: #fff;
+}
+
+.lucid-calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 9px;
+  margin-top: 20px;
+}
+
+.lucid-weekday {
+  min-height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  background: #1b1d23;
+  color: #797d86;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.lucid-day {
+  position: relative;
+  min-height: 108px;
+  padding: 14px 12px 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: #17191e;
+  text-align: center;
+}
+
+.lucid-day.empty {
+  background: transparent;
+  border-color: transparent;
+}
+
+.lucid-day.has-pnl.positive {
+  background: rgba(35, 102, 72, 0.26);
+  border-color: rgba(53, 217, 138, 0.35);
+}
+
+.lucid-day.has-pnl.negative {
+  background: rgba(111, 49, 49, 0.25);
+  border-color: rgba(239, 102, 102, 0.34);
+}
+
+.lucid-day.today {
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.18);
+}
+
+.lucid-day-number {
+  font-weight: 820;
+  font-size: 16px;
+  color: #f2f3f5;
+}
+
+.lucid-day-pnl {
+  margin-top: 13px;
+  font-weight: 850;
+  font-size: 17px;
+  color: #35db8b;
+}
+
+.lucid-day.negative .lucid-day-pnl { color: #ef6e6e; }
+
+.lucid-day-meta {
+  margin-top: 6px;
+  font-size: 11px;
+  font-weight: 720;
+  color: #49c984;
+}
+
+.lucid-day.negative .lucid-day-meta { color: #e07b7b; }
+
+.lucid-events-placeholder {
+  min-height: 260px;
+  display: grid;
+  place-items: center;
+  padding: 35px;
+  margin-top: 20px;
+  border: 1px dashed rgba(255,255,255,0.09);
+  border-radius: 10px;
+  color: #7d828c;
+  text-align: center;
+}
+
+.lucid-hidden { display: none !important; }
+
+@media (max-width: 900px) {
+  .lucid-progress-labels,
+  .lucid-progress-bottom {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .lucid-progress-left,
+  .lucid-progress-center,
+  .lucid-progress-right { text-align: left; }
+
+  .lucid-calendar-head,
+  .lucid-calendar-title-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .lucid-month-nav {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .lucid-calendar-panel,
+  .lucid-progress-card { padding: 18px; }
+
+  .lucid-calendar-grid { gap: 5px; }
+  .lucid-weekday { min-height: 34px; font-size: 9px; }
+  .lucid-day { min-height: 86px; padding: 10px 5px; }
+  .lucid-day-number { font-size: 13px; }
+  .lucid-day-pnl { margin-top: 9px; font-size: 12px; }
+  .lucid-day-meta { font-size: 9px; }
+}
+
+@media (max-width: 560px) {
+  .lucid-calendar-title-row h2 { font-size: 19px; }
+  .lucid-tab { padding: 8px 14px; }
+  .lucid-month-label { min-width: 120px; font-size: 16px; }
+  .lucid-day { min-height: 76px; }
+  .lucid-day-pnl { font-size: 10px; }
+  .lucid-day-meta { display: none; }
+}
