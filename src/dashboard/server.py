@@ -11,6 +11,7 @@ from pathlib import Path
 import uvicorn
 
 from src.storage.database import get_connection, get_engine_state, set_engine_state
+from src.storage.intelligence import ensure_intelligence_schema
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -43,8 +44,16 @@ def _reset_evaluation_history_if_requested() -> None:
             print("Fresh-eval reset token already applied; preserving current test trades", flush=True)
             return
 
+        ensure_intelligence_schema(connection)
         counts = {}
-        for table in ("paper_trades", "strategy_setups", "strategy_diagnostics"):
+        tables = (
+            "paper_trades",
+            "strategy_setups",
+            "strategy_diagnostics",
+            "trade_intelligence",
+            "shadow_trades",
+        )
+        for table in tables:
             counts[table] = int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
             connection.execute(f"DELETE FROM {table}")
 
@@ -56,7 +65,9 @@ def _reset_evaluation_history_if_requested() -> None:
             "Fresh evaluation reset complete: "
             f"{counts['paper_trades']} trades, "
             f"{counts['strategy_setups']} setups, "
-            f"{counts['strategy_diagnostics']} scanner rows cleared",
+            f"{counts['strategy_diagnostics']} scanner rows, "
+            f"{counts['trade_intelligence']} intelligence rows, "
+            f"{counts['shadow_trades']} shadow rows cleared",
             flush=True,
         )
     finally:
