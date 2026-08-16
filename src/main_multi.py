@@ -122,18 +122,13 @@ def _active_risk_gate(setup) -> tuple[bool, str]:
 
 
 def _a_plus_quality_gate(connection, setup, histories=None) -> tuple[bool, str]:
-    """Execution-only A+ filter layered on top of the existing detectors.
+    """Operation 5.0 A+ context/exposure filter.
 
-    Operation 5.1 first asks whether this candidate belongs to the selected
-    funded-style session/timeframe. It then applies the Operation 5.0 context,
-    sequence, exposure, and reset requirements. R:R still sizes accepted risk;
-    it does not manufacture a trade when the market is poor.
+    Operation 5.1's session/timeframe governor is intentionally applied by the
+    execution loop before this function. Keeping the layers separate preserves
+    direct regression coverage of the A+ engine while production execution must
+    pass both gates.
     """
-    session_decision = evaluate_session_consistency(connection, setup)
-    setup.metadata["session_consistency"] = session_decision.details
-    if not session_decision.allowed:
-        return False, session_decision.reason
-
     strategy = str(setup.metadata.get("strategy", "ICT_CONFLUENCE"))
     rr = float(setup.risk_reward or 0.0)
 
@@ -145,8 +140,6 @@ def _a_plus_quality_gate(connection, setup, histories=None) -> tuple[bool, str]:
         if rr < 3.0:
             return False, f"Rejection-block setup offers only {rr:.2f}R; require at least 3.00R."
     else:
-        # Flexible ICT targets are allowed from 1R upward. The existing replay
-        # RR tier reduces dollar risk on smaller objectives.
         if rr < 1.0:
             return False, f"ICT setup offers only {rr:.2f}R; structural minimum is 1.00R."
 
@@ -177,7 +170,7 @@ def _a_plus_quality_gate(connection, setup, histories=None) -> tuple[bool, str]:
     if not cooldown_ok:
         return False, cooldown_reason
 
-    return True, "Selected session plus A+ context, sequence, exposure, and reset gates passed."
+    return True, "A+ context, sequence, exposure, and reset gates passed."
 
 
 def evaluate_strategy(connection, symbol: str, timeframe: str):
@@ -192,6 +185,24 @@ def evaluate_strategy(connection, symbol: str, timeframe: str):
 
     handled = []
     for setup in setups:
+        session_decision = evaluate_session_consistency(connection, setup)
+        setup.metadata["session_consistency"] = session_decision.details
+        if not session_decision.allowed:
+            setup.metadata["execution_quality_gate"] = {
+                "allowed": False,
+                "reason": session_decision.reason,
+                "profile": "SESSION_CONTEXT_5_1",
+                "baseline_shadow_profile": "OPERATION_4_8_CANDIDATE",
+            }
+            setup.status = "QUALITY_BLOCKED"
+            runtime.save_setup(connection, setup)
+            runtime.console.log(
+                f"SESSION 5.1 blocked {setup.symbol} {setup.timeframe} "
+                f"[{setup.metadata.get('strategy', 'UNKNOWN')}]: {session_decision.reason}"
+            )
+            handled.append(setup)
+            continue
+
         quality_allowed, quality_reason = _a_plus_quality_gate(
             connection, setup, histories
         )
