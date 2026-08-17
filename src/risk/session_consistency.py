@@ -8,6 +8,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 SUPPORTED_EXECUTION_TIMEFRAMES = {"1m", "5m", "15m", "1h"}
+FUTURES_SYMBOLS = {"NQ", "MNQ", "ES", "MES", "GC", "MGC"}
+ALWAYS_OPEN_SYMBOLS = {"BTC"}
+SUNDAY_FUTURES_OPEN = time(18, 0)
 
 
 def _env_int(name: str, default: int) -> int:
@@ -53,6 +56,12 @@ class SessionConsistencyConfig:
     a single timeframe for controlled experiments or ``ALL`` to let 1m/5m/15m/1h
     compete for execution as long as each setup passes its own quality rules.
     It never forces a trade.
+
+    Operation 5.4 keeps the weekday calibration window while making market-hours
+    eligibility instrument-aware: BTC can be evaluated 24/7, and supported CME
+    futures can begin taking qualified setups from the Sunday 18:00 ET Globex
+    open. A session being open never bypasses A/A+ quality, exposure, cooldown,
+    or evaluation-risk gates.
     """
 
     timezone_name: str = "America/New_York"
@@ -195,18 +204,37 @@ def evaluate_session_consistency(
         created_at = created_at.replace(tzinfo=timezone.utc)
     created_at = created_at.astimezone(timezone.utc)
     local = created_at.astimezone(config.timezone)
+    local_clock = local.time().replace(tzinfo=None)
+    symbol = str(getattr(setup, "symbol", "") or "").upper()
+    is_always_open = symbol in ALWAYS_OPEN_SYMBOLS
+    is_supported_futures = symbol in FUTURES_SYMBOLS
+    is_sunday_futures_session = (
+        local.weekday() == 6
+        and is_supported_futures
+        and local_clock >= SUNDAY_FUTURES_OPEN
+    )
+
+    if is_always_open:
+        market_session_mode = "24_7"
+    elif is_sunday_futures_session:
+        market_session_mode = "SUNDAY_GLOBEX"
+    else:
+        market_session_mode = "CALIBRATION_WINDOW"
 
     details = {
-        "profile": "SESSION_CONSISTENCY_5_2",
+        "profile": "SESSION_CONSISTENCY_5_4",
         "timezone": config.timezone_name,
         "local_day": local.strftime("%A"),
         "local_time": local.strftime("%H:%M"),
+        "symbol": symbol,
+        "market_session_mode": market_session_mode,
         "execution_timeframe": config.execution_timeframe,
         "candidate_timeframe": setup.timeframe,
         "multi_timeframe_execution": config.all_timeframes_enabled,
         "supported_execution_timeframes": sorted(SUPPORTED_EXECUTION_TIMEFRAMES),
         "session_start": config.session_start,
         "session_end": config.session_end,
+        "sunday_futures_open": SUNDAY_FUTURES_OPEN.strftime("%H:%M"),
         "max_trades_per_day": config.max_trades_per_day,
         "base_win_lock_dollars": config.base_win_lock_dollars,
     }
@@ -225,25 +253,36 @@ def evaluate_session_consistency(
             details,
         )
 
-    # Keep the calibration focused on the regular weekday futures session. The
-    # Sunday evening open is still ingested for context, but is not forced into
-    # a trade just to increase the sample count.
-    if local.weekday() >= 5:
-        return SessionConsistencyDecision(
-            False,
-            f"{local.strftime('%A')} is context-only in the calibration profile.",
-            details,
-        )
+    # Market-aware weekend handling. BTC can qualify 24/7. Futures remain
+    # context-only through Saturday and Sunday before the 18:00 ET Globex open.
+    if not is_always_open:
+        if local.weekday() == 5:
+            return SessionConsistencyDecision(
+                False,
+                "Saturday is context-only for futures execution.",
+                details,
+            )
+        if local.weekday() == 6 and not is_sunday_futures_session:
+            reason = (
+                f"Sunday futures execution begins at {SUNDAY_FUTURES_OPEN.strftime('%H:%M')} "
+                f"{config.timezone_name}; current local time is {local.strftime('%H:%M')}."
+                if is_supported_futures
+                else "Sunday is context-only for this market."
+            )
+            return SessionConsistencyDecision(False, reason, details)
 
+    # Weekday futures still use the calibrated cash-session window. BTC and the
+    # Sunday Globex futures session bypass only this clock gate, never quality or
+    # risk gates downstream.
     start = _parse_hhmm(config.session_start, time(9, 30))
     end = _parse_hhmm(config.session_end, time(13, 0))
-    local_clock = local.time().replace(tzinfo=None)
-    if not (start <= local_clock < end):
-        return SessionConsistencyDecision(
-            False,
-            f"Outside selected {config.session_start}-{config.session_end} {config.timezone_name} trade window.",
-            details,
-        )
+    if not is_always_open and not is_sunday_futures_session:
+        if not (start <= local_clock < end):
+            return SessionConsistencyDecision(
+                False,
+                f"Outside selected {config.session_start}-{config.session_end} {config.timezone_name} trade window.",
+                details,
+            )
 
     stats = _day_stats(connection, created_at, config.timezone)
     details["day_stats"] = stats
@@ -269,10 +308,17 @@ def evaluate_session_consistency(
             return SessionConsistencyDecision(False, second_reason, details)
 
     execution_scope = "multi-timeframe" if config.all_timeframes_enabled else config.execution_timeframe
+    if is_always_open:
+        session_text = "24/7 market session active"
+    elif is_sunday_futures_session:
+        session_text = "Sunday Globex session active"
+    else:
+        session_text = "selected weekday session window active"
+
     return SessionConsistencyDecision(
         True,
         (
-            f"Selected {execution_scope} session window active; {setup.timeframe} candidate may proceed to A/A+ grading. "
+            f"{session_text}; {execution_scope} execution lets this {setup.timeframe} candidate proceed to A/A+ grading. "
             f"Day is {stats['trades']}/{config.max_trades_per_day} trades and ${stats['realized_pnl']:+.2f}."
         ),
         details,
@@ -287,9 +333,12 @@ def session_profile_snapshot(reference_time: datetime | None = None) -> dict:
     local = reference_time.astimezone(config.timezone)
     return {
         **asdict(config),
-        "profile": "SESSION_CONSISTENCY_5_2",
+        "profile": "SESSION_CONSISTENCY_5_4",
         "multi_timeframe_execution": config.all_timeframes_enabled,
         "supported_execution_timeframes": sorted(SUPPORTED_EXECUTION_TIMEFRAMES),
+        "always_open_symbols": sorted(ALWAYS_OPEN_SYMBOLS),
+        "futures_symbols": sorted(FUTURES_SYMBOLS),
+        "sunday_futures_open": SUNDAY_FUTURES_OPEN.strftime("%H:%M"),
         "local_day": local.strftime("%A"),
         "local_time": local.strftime("%H:%M"),
     }
