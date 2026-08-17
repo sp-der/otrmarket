@@ -54,9 +54,9 @@ class Operation55ChartIntelligenceTests(unittest.TestCase):
         allowed, _, details = evaluate_ict_context(candidate("smt"), histories)
         self.assertTrue(allowed)
         self.assertEqual(details["quality_grade"], "A")
-        allowed, reason, _ = evaluate_ict_context(candidate("liquidity_sweep"), histories)
-        self.assertFalse(allowed)
-        self.assertIn("require A or A+", reason)
+        allowed, reason, details = evaluate_ict_context(candidate("liquidity_sweep"), histories)
+        self.assertTrue(allowed, reason)
+        self.assertEqual(details["quality_grade"], "B+")
 
     def test_narrative_warmup_does_not_silence_live_engine(self):
         setup = candidate()

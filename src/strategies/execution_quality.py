@@ -227,14 +227,14 @@ def evaluate_ict_context(setup, histories) -> tuple[bool, str, dict]:
         "neutral",
     }
 
-    if score < 80:
+    if score < 72:
         return (
             False,
-            f"Chart Intelligence score {score}/100 ({grade}); require A or A+ (80+).",
+            f"Chart Intelligence score {score}/100 ({grade}); below B+ execution research floor (72).",
             details,
         )
     return (
         True,
-        f"Chart Intelligence score {score}/100 ({grade}); local and narrative context graded.",
+        f"Chart Intelligence score {score}/100 ({grade}); eligible for its grade's risk tier.",
         details,
     )

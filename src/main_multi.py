@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from copy import deepcopy
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from src import main as runtime
 from src.execution.paper import PaperExecutor
@@ -229,6 +231,49 @@ def _active_risk_gate(setup) -> tuple[bool, str]:
     return True, "No duplicate/correlated active risk."
 
 
+def _trading_day(value) -> str | None:
+    parsed = value if isinstance(value, datetime) else _parse_time(value)
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(ZoneInfo("America/New_York")).date().isoformat()
+
+
+def _b_plus_execution_gate(connection, setup) -> tuple[bool, str]:
+    """Limit reduced-risk B+ attempts and disable them after a daily loss."""
+    candidate_day = _trading_day(setup.created_at)
+    rows = connection.execute(
+        """
+        SELECT p.result, p.closed_at, s.created_at, s.payload_json
+        FROM paper_trades p
+        LEFT JOIN strategy_setups s ON s.setup_id = p.setup_id
+        """
+    ).fetchall()
+
+    b_plus_count = 0
+    for result, closed_at, created_at, payload_json in rows:
+        if str(result or "").upper() == "LOSS" and _trading_day(closed_at) == candidate_day:
+            return False, "B+ tier disabled after a realized loss on this trading day."
+        if _trading_day(created_at) != candidate_day or not payload_json:
+            continue
+        try:
+            payload = json.loads(payload_json)
+        except (TypeError, ValueError):
+            continue
+        grade = (
+            payload.get("metadata", {})
+            .get("a_plus_context", {})
+            .get("quality_grade")
+        )
+        if grade == "B+":
+            b_plus_count += 1
+
+    if b_plus_count >= 2:
+        return False, "Daily B+ limit reached (2/2 reduced-risk trades)."
+    return True, f"B+ reduced-risk slot available ({b_plus_count}/2 used)."
+
+
 def _a_plus_quality_gate(connection, setup, histories=None) -> tuple[bool, str]:
     """A/A+ context and exposure filter used by every enabled timeframe.
 
@@ -266,6 +311,20 @@ def _a_plus_quality_gate(connection, setup, histories=None) -> tuple[bool, str]:
             setup.metadata["a_plus_context"] = context_details
             if not context_ok:
                 return False, context_reason
+            grade = context_details.get("quality_grade")
+            if grade == "B+":
+                if rr < 2.5:
+                    return False, f"B+ setup offers only {rr:.2f}R; require 2.50R to target $250+ on $100 risk."
+                b_plus_ok, b_plus_reason = _b_plus_execution_gate(connection, setup)
+                if not b_plus_ok:
+                    return False, b_plus_reason
+                try:
+                    existing_multiplier = float(setup.metadata.get("risk_multiplier", 1.0))
+                except (TypeError, ValueError):
+                    existing_multiplier = 1.0
+                setup.metadata["risk_multiplier"] = min(existing_multiplier, 0.40)
+                setup.metadata["execution_tier"] = "B_PLUS_REDUCED"
+                setup.metadata["tier_reason"] = b_plus_reason
 
     active_ok, active_reason = _active_risk_gate(setup)
     if not active_ok:
@@ -279,7 +338,8 @@ def _a_plus_quality_gate(connection, setup, histories=None) -> tuple[bool, str]:
     if not cooldown_ok:
         return False, cooldown_reason
 
-    return True, "A/A+ context, sequence, exposure, and reset gates passed."
+    grade = setup.metadata.get("a_plus_context", {}).get("quality_grade", "A/A+")
+    return True, f"{grade} context, sequence, exposure, and reset gates passed."
 
 
 def evaluate_strategy(connection, symbol: str, timeframe: str):
@@ -304,13 +364,13 @@ def evaluate_strategy(connection, symbol: str, timeframe: str):
             setup.metadata["execution_quality_gate"] = {
                 "allowed": False,
                 "reason": session_decision.reason,
-                "profile": "CHART_INTELLIGENCE_5_5",
+                "profile": "B_PLUS_RISK_TIER_5_6",
                 "baseline_shadow_profile": SHADOW_PROFILE,
             }
             setup.status = "SESSION_BLOCKED"
             runtime.save_setup(connection, setup)
             runtime.console.log(
-                f"SESSION 5.5 blocked {setup.symbol} {setup.timeframe} "
+                f"SESSION 5.6 blocked {setup.symbol} {setup.timeframe} "
                 f"[{setup.metadata.get('strategy', 'UNKNOWN')}]: {session_decision.reason}"
             )
             handled.append(setup)
@@ -322,7 +382,7 @@ def evaluate_strategy(connection, symbol: str, timeframe: str):
         setup.metadata["execution_quality_gate"] = {
             "allowed": quality_allowed,
             "reason": quality_reason,
-            "profile": "CHART_INTELLIGENCE_5_5",
+            "profile": "B_PLUS_RISK_TIER_5_6",
             "baseline_shadow_profile": SHADOW_PROFILE,
         }
         if not quality_allowed:
@@ -364,7 +424,7 @@ def evaluate_strategy(connection, symbol: str, timeframe: str):
                 setup,
                 risk_dollars=applied_risk,
                 guard_reason=(
-                    f"{decision.reason} Operation 5.5 chart-intelligence A/A+ gate passed. "
+                    f"{decision.reason} Operation 5.6 graded risk gate passed. "
                     f"Replay RR tier {risk_multiplier:.0%} of ${decision.risk_dollars:.2f} cap."
                 ),
             )
