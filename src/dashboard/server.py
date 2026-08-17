@@ -30,8 +30,9 @@ def _reset_evaluation_history_if_requested() -> None:
     wanted. The token is persisted in engine_state, so ordinary Railway
     restarts/redeploys cannot accidentally erase trades collected afterward.
 
-    Raw quotes and candles are intentionally preserved. Replay rewind handling
-    trims future in-memory candle/scanner state as the replay clock moves back.
+    Raw quotes, candles, and Operation 5.8 learning lessons are intentionally
+    preserved. Replay rewind handling trims future in-memory candle/scanner
+    state as the replay clock moves back.
     """
     token = os.getenv("OTR_RESET_EVAL_TOKEN", "").strip()
     if not token:
@@ -57,9 +58,6 @@ def _reset_evaluation_history_if_requested() -> None:
             counts[table] = int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
             connection.execute(f"DELETE FROM {table}")
 
-        # Persist the token only after the reset work succeeds. set_engine_state
-        # commits this transaction, making the deletes and marker durable before
-        # the strategy engine starts.
         set_engine_state(connection, RESET_STATE_KEY, token)
         print(
             "Fresh evaluation reset complete: "
@@ -67,7 +65,7 @@ def _reset_evaluation_history_if_requested() -> None:
             f"{counts['strategy_setups']} setups, "
             f"{counts['strategy_diagnostics']} scanner rows, "
             f"{counts['trade_intelligence']} intelligence rows, "
-            f"{counts['shadow_trades']} shadow rows cleared",
+            f"{counts['shadow_trades']} shadow rows cleared; learning memory preserved",
             flush=True,
         )
     finally:
@@ -105,33 +103,30 @@ def _monitor_engine(process: subprocess.Popen) -> None:
         "Stopping dashboard so Railway restarts the service.",
         flush=True,
     )
-
-    # Railway supervises the dashboard process. Terminating PID 1 here makes a
-    # strategy-engine failure become a service failure instead of a zombie UI.
     os.kill(os.getpid(), signal.SIGTERM)
 
 
 def _start_engine() -> None:
     global _engine_process
 
-    # Runtime metadata belongs on ephemeral storage. The persistent /app/data
-    # volume is reserved for the SQLite database and must not be required just
-    # to write a PID/log file during boot.
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
 
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
+    engine_module = os.getenv("OTR_ENGINE_MODULE", "src.main_58").strip() or "src.main_58"
 
-    # Inherit stdout/stderr so engine logs are captured by Railway directly.
     _engine_process = subprocess.Popen(
-        [sys.executable, "-u", "-m", "src.main_multi"],
+        [sys.executable, "-u", "-m", engine_module],
         cwd=str(ROOT),
         stdout=None,
         stderr=None,
         env=env,
     )
     ENGINE_PID_FILE.write_text(str(_engine_process.pid), encoding="utf-8")
-    print(f"OTR strategy engine started (PID {_engine_process.pid})", flush=True)
+    print(
+        f"OTR strategy engine started (PID {_engine_process.pid}, module {engine_module})",
+        flush=True,
+    )
     print("Engine logs stream directly into Railway deploy logs", flush=True)
 
     watcher = threading.Thread(
