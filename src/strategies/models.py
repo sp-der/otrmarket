@@ -115,7 +115,12 @@ class StrategySetup:
     direction: Direction
     created_at: datetime
     pd_array: FairValueGap
-    trigger_type: Literal["liquidity_sweep", "smt", "rejection_block"]
+    trigger_type: Literal[
+        "liquidity_sweep",
+        "smt",
+        "rejection_block",
+        "market_structure_shift",
+    ]
     trigger_details: dict[str, Any]
     displacement: Displacement
     entry_fvg: FairValueGap
