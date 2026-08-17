@@ -49,7 +49,7 @@ class RejectionBlockEngine:
         self,
         *,
         min_rr: float = 3.0,
-        displacement_expiry_bars: int = 8,
+        displacement_expiry_bars: int = 15,
         structure_expiry_bars: int = 18,
         retracement_expiry_bars: int = 10,
         stop_buffer_fraction: float = 0.0001,

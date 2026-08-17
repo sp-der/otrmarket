@@ -45,8 +45,8 @@ class ConfluenceEngine:
         self,
         min_rr: float = 3.0,
         context_expiry_bars: int = 16,
-        displacement_expiry_bars: int = 8,
-        entry_fvg_expiry_bars: int = 8,
+        displacement_expiry_bars: int = 15,
+        entry_fvg_expiry_bars: int = 15,
         stop_buffer_fraction: float = 0.0001,
     ):
         self.min_rr = min_rr
