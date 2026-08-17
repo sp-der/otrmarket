@@ -16,6 +16,7 @@ from src.bridge.futures import normalize_bridge_symbol, source_name
 from src.dashboard.queries import DashboardRepository
 from src.storage.database import get_connection, save_quotes_batch
 from src.storage.intelligence import intelligence_snapshot
+from src.storage.learning import learning_snapshot
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -97,13 +98,9 @@ async def root_redirect():
 @app.get(BASE_PATH)
 @app.get(f"{BASE_PATH}/")
 async def dashboard_index():
-    # Inject the 5.3 research panel at response time so the original static
-    # dashboard stays backward-compatible while the intelligence module can be
-    # developed independently.
+    # Keep verbose research intelligence off the normal dashboard. The data is
+    # still stored and available from protected APIs when we need to audit it.
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-    intelligence_script = '<script src="/market/assets/trade-intelligence.js?v=5.3" defer></script>'
-    if intelligence_script not in html:
-        html = html.replace("</body>", f"{intelligence_script}\n</body>")
     return HTMLResponse(html)
 
 
@@ -193,7 +190,6 @@ async def auth_status(request: Request):
 async def login(payload: LoginPayload, response: Response):
     if not auth_required():
         return {"ok": True}
-
     if not hmac.compare_digest(payload.password, DASHBOARD_PASSWORD):
         raise HTTPException(status_code=401, detail="Incorrect password")
 
@@ -221,10 +217,7 @@ async def snapshot(request: Request):
     try:
         return repository.snapshot()
     except Exception as exc:
-        return JSONResponse(
-            status_code=500,
-            content={"detail": f"Dashboard snapshot failed: {exc}"},
-        )
+        return JSONResponse(status_code=500, content={"detail": f"Dashboard snapshot failed: {exc}"})
 
 
 @app.get(f"{BASE_PATH}/api/intelligence")
@@ -233,10 +226,16 @@ async def intelligence(request: Request):
     try:
         return intelligence_snapshot(DB_PATH)
     except Exception as exc:
-        return JSONResponse(
-            status_code=500,
-            content={"detail": f"Trade intelligence snapshot failed: {exc}"},
-        )
+        return JSONResponse(status_code=500, content={"detail": f"Trade intelligence snapshot failed: {exc}"})
+
+
+@app.get(f"{BASE_PATH}/api/learning")
+async def learning(request: Request):
+    require_http_auth(request)
+    try:
+        return learning_snapshot(DB_PATH)
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"detail": f"Market learning snapshot failed: {exc}"})
 
 
 @app.websocket(f"{BASE_PATH}/ws")
@@ -244,9 +243,7 @@ async def websocket_stream(websocket: WebSocket):
     if not valid_cookie(websocket.cookies.get(COOKIE_NAME)):
         await websocket.close(code=4401)
         return
-
     await websocket.accept()
-
     try:
         while True:
             await websocket.send_json(repository.snapshot())
