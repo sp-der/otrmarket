@@ -304,13 +304,13 @@ def evaluate_strategy(connection, symbol: str, timeframe: str):
             setup.metadata["execution_quality_gate"] = {
                 "allowed": False,
                 "reason": session_decision.reason,
-                "profile": "TRADE_INTELLIGENCE_5_3",
+                "profile": "CHART_INTELLIGENCE_5_5",
                 "baseline_shadow_profile": SHADOW_PROFILE,
             }
             setup.status = "SESSION_BLOCKED"
             runtime.save_setup(connection, setup)
             runtime.console.log(
-                f"SESSION 5.3 blocked {setup.symbol} {setup.timeframe} "
+                f"SESSION 5.5 blocked {setup.symbol} {setup.timeframe} "
                 f"[{setup.metadata.get('strategy', 'UNKNOWN')}]: {session_decision.reason}"
             )
             handled.append(setup)
@@ -322,7 +322,7 @@ def evaluate_strategy(connection, symbol: str, timeframe: str):
         setup.metadata["execution_quality_gate"] = {
             "allowed": quality_allowed,
             "reason": quality_reason,
-            "profile": "TRADE_INTELLIGENCE_5_3",
+            "profile": "CHART_INTELLIGENCE_5_5",
             "baseline_shadow_profile": SHADOW_PROFILE,
         }
         if not quality_allowed:
@@ -364,7 +364,7 @@ def evaluate_strategy(connection, symbol: str, timeframe: str):
                 setup,
                 risk_dollars=applied_risk,
                 guard_reason=(
-                    f"{decision.reason} Operation 5.3 live A/A+ gate passed. "
+                    f"{decision.reason} Operation 5.5 chart-intelligence A/A+ gate passed. "
                     f"Replay RR tier {risk_multiplier:.0%} of ${decision.risk_dollars:.2f} cap."
                 ),
             )

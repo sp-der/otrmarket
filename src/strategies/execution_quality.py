@@ -12,12 +12,32 @@ PRIMARY_CONTEXT_TIMEFRAME = {
     "1h": "1h",
 }
 
+NARRATIVE_CONTEXT_TIMEFRAME = {
+    "1m": "30m",
+    "5m": "30m",
+    "15m": "1h",
+    "1h": "1h",
+}
+
 BAR_SECONDS = {
     "1m": 60,
     "5m": 300,
     "15m": 900,
+    "30m": 1800,
     "1h": 3600,
 }
+
+
+def _grade(score: int) -> str:
+    if score >= 90:
+        return "A+"
+    if score >= 80:
+        return "A"
+    if score >= 72:
+        return "B+"
+    if score >= 60:
+        return "B"
+    return "RESEARCH"
 
 
 def _history_at_or_before(candles, market_time):
@@ -120,6 +140,17 @@ def evaluate_ict_context(setup, histories) -> tuple[bool, str, dict]:
             details,
         )
 
+    narrative_timeframe = NARRATIVE_CONTEXT_TIMEFRAME.get(
+        setup.timeframe, context_timeframe
+    )
+    narrative_history = _history_at_or_before(
+        histories.get((setup.symbol, narrative_timeframe), []), setup.created_at
+    )
+    narrative_bias, narrative_details = _structure_bias(narrative_history)
+    details["narrative_timeframe"] = narrative_timeframe
+    details["narrative_bias"] = narrative_bias
+    details["narrative_details"] = narrative_details
+
     displacement = getattr(setup, "displacement", None)
     entry_fvg = getattr(setup, "entry_fvg", None)
     if displacement is None or entry_fvg is None:
@@ -170,5 +201,40 @@ def evaluate_ict_context(setup, histories) -> tuple[bool, str, dict]:
                 details,
             )
 
-    details["quality_score"] = "5/5"
-    return True, "Higher-timeframe context and A+ ICT sequence confirmed.", details
+    components = {
+        "local_context": 20,
+        "narrative_context": (
+            20
+            if narrative_bias == setup.direction
+            else 10
+            if narrative_bias in {"unknown", "neutral"}
+            else 0
+        ),
+        "displacement": 20,
+        "fresh_entry": 15 if fvg_age_bars <= 2.0 else 0,
+        "trigger": 10 if str(setup.trigger_type).lower() == "smt" else 8,
+        "entry_location": 5 if entry_type != "ORDER_BLOCK" else 4,
+        "target_room": min(10, max(0, round(float(setup.risk_reward or 0) * 5))),
+    }
+    score = min(100, int(sum(components.values())))
+    grade = _grade(score)
+    details["score_components"] = components
+    details["quality_score"] = score
+    details["quality_grade"] = grade
+    details["narrative_conflict"] = narrative_bias not in {
+        setup.direction,
+        "unknown",
+        "neutral",
+    }
+
+    if score < 80:
+        return (
+            False,
+            f"Chart Intelligence score {score}/100 ({grade}); require A or A+ (80+).",
+            details,
+        )
+    return (
+        True,
+        f"Chart Intelligence score {score}/100 ({grade}); local and narrative context graded.",
+        details,
+    )

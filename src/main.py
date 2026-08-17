@@ -35,7 +35,7 @@ COINBASE_URL = "wss://advanced-trade-ws.coinbase.com"
 
 console = Console()
 momentum = MomentumTracker()
-candles = CandleBuilder(timeframes=("1m", "5m", "15m", "1h"))
+candles = CandleBuilder(timeframes=("1m", "5m", "15m", "30m", "1h"))
 strategy = ConfluenceEngine()
 paper = PaperExecutor()
 clock = MarketClock()
@@ -411,7 +411,7 @@ async def main():
     seeded = load_recent_candles(
         connection,
         symbols=("NQ", "ES", "GC", "BTC-USD"),
-        timeframes=("1m", "5m", "15m", "1h"),
+        timeframes=("1m", "5m", "15m", "30m", "1h"),
         limit_per_series=500,
     )
     candles.seed_history(seeded)
