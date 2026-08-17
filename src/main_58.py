@@ -2,15 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import os
-from dataclasses import replace
 from datetime import time, timezone
 
 from src import main_multi as base
-from src.risk.session_consistency import (
-    SessionConsistencyConfig,
-    SessionConsistencyDecision,
-    evaluate_session_consistency as legacy_session_consistency,
-)
+from src.risk import session_consistency as session_rules
+from src.risk.session_consistency import SessionConsistencyConfig, SessionConsistencyDecision
 from src.storage.learning import observe_market_opportunity
 from src.strategies.adaptive_manager import AdaptiveStrategyEngine
 from src.strategies.execution_quality import evaluate_ict_context
@@ -18,6 +14,10 @@ from src.strategies.reversal import evaluate_reversal_context
 
 runtime = base.runtime
 runtime.strategy = AdaptiveStrategyEngine()
+
+BTC_SYMBOLS = {"BTC", "BTC-USD"}
+FUTURES_DAILY_CLOSE = time(17, 0)
+FUTURES_DAILY_REOPEN = time(18, 0)
 
 
 def _parse_hhmm(value: str, fallback: time) -> time:
@@ -28,53 +28,157 @@ def _parse_hhmm(value: str, fallback: time) -> time:
         return fallback
 
 
-def evaluate_session_consistency_58(connection, setup, config: SessionConsistencyConfig | None = None):
-    """Full-risk core hours plus reduced-risk extended execution."""
-    config = config or SessionConsistencyConfig.from_env()
-    extended_start = os.getenv("OTR_EXTENDED_SESSION_START", "08:30").strip()
-    extended_end = os.getenv("OTR_EXTENDED_SESSION_END", "15:30").strip()
-    broad_config = replace(config, session_start=extended_start, session_end=extended_end)
-    decision = legacy_session_consistency(connection, setup, broad_config)
-    if not decision.allowed:
-        return decision
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
 
+
+def _futures_market_state(local) -> tuple[bool, str]:
+    """Return whether the normal CME Globex session is available in ET.
+
+    Supported OTR futures use the standard Sunday-Friday Globex rhythm: reopen
+    Sunday at 18:00 ET, daily maintenance from 17:00-18:00 ET Monday-Thursday,
+    and weekly close Friday at 17:00 ET through Sunday reopen.
+    """
+    weekday = local.weekday()
+    clock = local.time().replace(tzinfo=None)
+
+    if weekday == 5:
+        return False, "WEEKLY_CLOSED"
+    if weekday == 6:
+        return (clock >= FUTURES_DAILY_REOPEN, "SUNDAY_GLOBEX" if clock >= FUTURES_DAILY_REOPEN else "WEEKLY_CLOSED")
+    if weekday == 4 and clock >= FUTURES_DAILY_CLOSE:
+        return False, "WEEKLY_CLOSED"
+    if FUTURES_DAILY_CLOSE <= clock < FUTURES_DAILY_REOPEN:
+        return False, "DAILY_MAINTENANCE"
+    return True, "GLOBEX_OPEN"
+
+
+def _session_tier_58(symbol: str, local, config: SessionConsistencyConfig) -> tuple[str, float]:
+    clock = local.time().replace(tzinfo=None)
+    core_start = _parse_hhmm(config.session_start, time(9, 30))
+    core_end = _parse_hhmm(config.session_end, time(13, 0))
+
+    if symbol in BTC_SYMBOLS:
+        if core_start <= clock < core_end:
+            return "BTC_CORE", _env_float("OTR_CORE_RISK_MULTIPLIER", 1.00)
+        return "BTC_OFFHOURS", _env_float("OTR_BTC_OFFHOURS_RISK_MULTIPLIER", 0.50)
+
+    if local.weekday() == 6 and clock >= FUTURES_DAILY_REOPEN:
+        return "SUNDAY_GLOBEX", _env_float("OTR_SUNDAY_GLOBEX_RISK_MULTIPLIER", 0.50)
+    if clock >= FUTURES_DAILY_REOPEN or clock < time(2, 0):
+        return "ASIA", _env_float("OTR_ASIA_RISK_MULTIPLIER", 0.50)
+    if time(2, 0) <= clock < time(8, 30):
+        return "LONDON", _env_float("OTR_LONDON_RISK_MULTIPLIER", 0.65)
+    if time(8, 30) <= clock < core_start:
+        return "PREMARKET", _env_float("OTR_PREMARKET_RISK_MULTIPLIER", 0.75)
+    if core_start <= clock < core_end:
+        return "NY_CORE", _env_float("OTR_CORE_RISK_MULTIPLIER", 1.00)
+    if core_end <= clock < time(16, 0):
+        return "NY_AFTERNOON", _env_float("OTR_AFTERNOON_RISK_MULTIPLIER", 0.75)
+    return "LATE_GLOBEX", _env_float("OTR_LATE_RISK_MULTIPLIER", 0.50)
+
+
+def evaluate_session_consistency_58(connection, setup, config: SessionConsistencyConfig | None = None):
+    """Allow quality setups across all live sessions, with session-aware risk.
+
+    Operation 5.8 no longer treats a cash-session clock, a small calibration
+    trade count, or a modest realized win as a reason to stop scanning for live
+    opportunities. Actual market closure/maintenance, timeframe eligibility,
+    post-loss quality, strategy quality, exposure/cooldowns, and the evaluation
+    guard remain hard protections.
+    """
+    config = config or SessionConsistencyConfig.from_env()
     created_at = setup.created_at
     if created_at.tzinfo is None:
         created_at = created_at.replace(tzinfo=timezone.utc)
+    created_at = created_at.astimezone(timezone.utc)
     local = created_at.astimezone(config.timezone)
-    local_clock = local.time().replace(tzinfo=None)
-    core_start = _parse_hhmm(config.session_start, time(9, 30))
-    core_end = _parse_hhmm(config.session_end, time(13, 0))
-    mode = str(decision.details.get("market_session_mode", ""))
+    symbol = str(getattr(setup, "symbol", "") or "").upper()
 
-    if mode == "SUNDAY_GLOBEX":
-        tier, multiplier = "GLOBEX_REDUCED", 0.40
-    elif setup.symbol == "BTC-USD":
-        tier, multiplier = ("CORE", 1.0) if core_start <= local_clock < core_end else ("ALWAYS_OPEN_REDUCED", 0.50)
-    elif core_start <= local_clock < core_end:
-        tier, multiplier = "CORE", 1.0
+    details = {
+        "profile": "ALL_SESSION_INTELLIGENCE_5_8",
+        "timezone": config.timezone_name,
+        "local_day": local.strftime("%A"),
+        "local_time": local.strftime("%H:%M"),
+        "symbol": symbol,
+        "execution_timeframe": config.execution_timeframe,
+        "candidate_timeframe": setup.timeframe,
+        "multi_timeframe_execution": config.all_timeframes_enabled,
+        "supported_execution_timeframes": sorted(session_rules.SUPPORTED_EXECUTION_TIMEFRAMES),
+        "core_session_start": config.session_start,
+        "core_session_end": config.session_end,
+        "daily_maintenance": "17:00-18:00 America/New_York",
+        "weekly_close": "Friday 17:00-Sunday 18:00 America/New_York",
+        "calibration_trade_cap_is_hard_block": False,
+        "base_win_lock_is_hard_block": False,
+        "prop_guard_controls_final_risk": True,
+    }
+
+    if setup.timeframe not in session_rules.SUPPORTED_EXECUTION_TIMEFRAMES:
+        return SessionConsistencyDecision(
+            False,
+            f"{setup.timeframe} is not a supported autonomous execution timeframe.",
+            details,
+        )
+
+    if not config.all_timeframes_enabled and setup.timeframe != config.execution_timeframe:
+        return SessionConsistencyDecision(
+            False,
+            f"Execution profile is set to {config.execution_timeframe}; {setup.timeframe} remains scanner/shadow only.",
+            details,
+        )
+
+    if symbol in BTC_SYMBOLS:
+        market_state = "24_7"
+    elif symbol in session_rules.FUTURES_SYMBOLS:
+        market_open, market_state = _futures_market_state(local)
+        if not market_open:
+            details["market_session_mode"] = market_state
+            if market_state == "DAILY_MAINTENANCE":
+                reason = "CME daily maintenance is active from 17:00-18:00 America/New_York; no new futures risk."
+            elif local.weekday() == 6:
+                reason = "Futures weekly session has not reopened yet; Sunday execution begins at 18:00 America/New_York."
+            else:
+                reason = "Futures weekly session is closed; new risk resumes Sunday at 18:00 America/New_York."
+            return SessionConsistencyDecision(False, reason, details)
     else:
-        tier, multiplier = "EXTENDED_REDUCED", 0.65
+        details["market_session_mode"] = "UNSUPPORTED_MARKET"
+        return SessionConsistencyDecision(False, f"{symbol or 'Unknown symbol'} is not enabled for autonomous all-session execution.", details)
 
+    stats = session_rules._day_stats(connection, created_at, config.timezone)
+    details["day_stats"] = stats
+
+    # Keep the stronger second-chance standard after a realized loss, but do not
+    # shut the bot down merely because it already traded or banked a modest win.
+    if stats["losses"] >= 1:
+        second_ok, second_reason, second_details = session_rules._second_chance_quality(setup, config)
+        details["second_chance"] = second_details
+        if not second_ok:
+            return SessionConsistencyDecision(False, second_reason, details)
+
+    tier, multiplier = _session_tier_58(symbol, local, config)
     try:
         current = float(setup.metadata.get("risk_multiplier", 1.0))
     except (TypeError, ValueError):
         current = 1.0
     setup.metadata["risk_multiplier"] = min(current, multiplier)
     setup.metadata["session_tier"] = tier
-    details = dict(decision.details)
     details.update(
-        profile="ADAPTIVE_SESSION_5_8",
-        core_session_start=config.session_start,
-        core_session_end=config.session_end,
-        extended_session_start=extended_start,
-        extended_session_end=extended_end,
+        market_session_mode=market_state,
         session_tier=tier,
         session_risk_multiplier=multiplier,
     )
+
+    execution_scope = "multi-timeframe" if config.all_timeframes_enabled else config.execution_timeframe
     return SessionConsistencyDecision(
         True,
-        f"Operation 5.8 {tier.replace('_', ' ').lower()} passed at {multiplier:.0%} max risk; quality and prop guards still apply.",
+        (
+            f"Operation 5.8 all-session {tier.replace('_', ' ').lower()} is open at {multiplier:.0%} max risk; "
+            f"{execution_scope} candidate proceeds to quality and evaluation guards."
+        ),
         details,
     )
 
