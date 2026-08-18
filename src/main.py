@@ -42,15 +42,17 @@ clock = MarketClock()
 session = StrategySession()
 evaluation_guard = EvaluationRiskGuard()
 
+# BTC is intentionally disabled for the active OTR futures test. Keeping it
+# out of market_state gives us a second hard stop because process_price ignores
+# any symbol that is not explicitly enabled here.
 market_state = {
-    "BTC-USD": {"name": "Bitcoin", "source": "Coinbase", "price": None, "bid": None, "ask": None, "quotes": 0},
     "NQ": {"name": "Nasdaq Futures", "source": "NinjaTrader", "price": None, "bid": None, "ask": None, "quotes": 0},
     "ES": {"name": "S&P 500 Futures", "source": "NinjaTrader", "price": None, "bid": None, "ask": None, "quotes": 0},
     "GC": {"name": "Gold Futures", "source": "NinjaTrader", "price": None, "bid": None, "ask": None, "quotes": 0},
 }
 
 feed_status = {
-    "Coinbase": "CONNECTING",
+    "Coinbase": "DISABLED",
     "NinjaTrader": "WAITING",
 }
 
@@ -96,14 +98,14 @@ def histories_snapshot():
 
 
 def isolate_btc_for_replay(connection) -> None:
-    """Keep BTC visible/stored while excluding it from futures replay research."""
+    """Legacy replay isolation retained for compatibility; BTC is disabled."""
     strategy.clear_symbol("BTC-USD")
     delete_diagnostics_for_symbol(connection, "BTC-USD")
-    console.log("Replay isolation enabled: BTC strategy + paper updates paused")
+    console.log("BTC execution is disabled; cleared any residual BTC scanner state")
 
 
 def evaluate_strategy(connection, symbol: str, timeframe: str):
-    if not session.strategy_enabled(symbol):
+    if symbol == "BTC-USD" or not session.strategy_enabled(symbol):
         return None
     setup = strategy.on_candle(symbol, timeframe, histories_snapshot())
     save_diagnostic(connection, strategy.diagnostic(symbol, timeframe))
@@ -217,7 +219,6 @@ def build_dashboard():
         )
 
     table.add_section()
-    table.add_row("Coinbase", feed_status["Coinbase"], "", "", "", "", "", "")
     table.add_row("NinjaTrader", feed_status["NinjaTrader"], "", "", "", "", "", "")
     table.add_row(
         "Paper",
@@ -271,6 +272,7 @@ def build_dashboard():
 
 
 async def coinbase_collector(connection):
+    """Legacy collector retained but intentionally not started while BTC is disabled."""
     while True:
         try:
             async with websockets.connect(
@@ -410,7 +412,7 @@ async def main():
     # to survive engine restarts. No historical trades are re-executed here.
     seeded = load_recent_candles(
         connection,
-        symbols=("NQ", "ES", "GC", "BTC-USD"),
+        symbols=("NQ", "ES", "GC"),
         timeframes=("1m", "5m", "15m", "30m", "1h"),
         limit_per_series=500,
     )
@@ -429,8 +431,8 @@ async def main():
         console.log(f"Quote retention startup prune deferred: {exc}")
 
     try:
+        console.log("BTC disabled for current test; active markets: NQ, ES, GC")
         await asyncio.gather(
-            coinbase_collector(connection),
             ninjatrader_collector(connection),
             dashboard(),
         )
