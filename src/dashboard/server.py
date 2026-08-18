@@ -30,9 +30,9 @@ def _reset_evaluation_history_if_requested() -> None:
     wanted. The token is persisted in engine_state, so ordinary Railway
     restarts/redeploys cannot accidentally erase trades collected afterward.
 
-    Raw quotes, candles, and Operation 5.8 learning lessons are intentionally
-    preserved. Replay rewind handling trims future in-memory candle/scanner
-    state as the replay clock moves back.
+    Raw quotes, candles, and learning lessons are intentionally preserved.
+    Replay rewind handling trims future in-memory candle/scanner state as the
+    replay clock moves back.
     """
     token = os.getenv("OTR_RESET_EVAL_TOKEN", "").strip()
     if not token:
@@ -113,7 +113,16 @@ def _start_engine() -> None:
 
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
-    engine_module = os.getenv("OTR_ENGINE_MODULE", "src.main_59").strip() or "src.main_59"
+
+    # Operation 6.1 is the current production engine. Railway may still retain
+    # an older explicit OTR_ENGINE_MODULE value from 5.8/5.9, so promote those
+    # known legacy values automatically instead of silently booting old logic.
+    requested_module = os.getenv("OTR_ENGINE_MODULE", "src.main_61").strip() or "src.main_61"
+    engine_module = (
+        "src.main_61"
+        if requested_module in {"src.main_58", "src.main_59"}
+        else requested_module
+    )
 
     _engine_process = subprocess.Popen(
         [sys.executable, "-u", "-m", engine_module],
