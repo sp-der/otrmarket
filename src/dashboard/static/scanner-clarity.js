@@ -182,6 +182,7 @@ scannerTimeframeCard = function scannerTimeframeCardClarity(d, symbol, timeframe
 // Make the market-level summary describe the current candidate rather than
 // repeating a stage label that can look inconsistent with cumulative progress.
 scannerMarketSection = function scannerMarketSectionClarity(symbol, diagnostics, runtime, timeframeFilter) {
+  if (symbol === "BTC-USD") return "";
   const byTimeframe = new Map((diagnostics || []).filter((d) => d.symbol === symbol).map((d) => [d.timeframe, d]));
   const visibleTimeframes = scannerTimeframeOrder.filter((tf) => timeframeFilter === "all" || timeframeFilter === tf);
   const candidates = visibleTimeframes.map((tf) => byTimeframe.get(tf)).filter(Boolean);
@@ -190,13 +191,10 @@ scannerMarketSection = function scannerMarketSectionClarity(symbol, diagnostics,
     if (scoreDiff) return scoreDiff;
     return Number(scannerStageOrder[b.stage] || 0) - Number(scannerStageOrder[a.stage] || 0);
   })[0];
-  const replayPaused = runtime?.mode === "REPLAY" && symbol === "BTC-USD";
-  const modeLabel = replayPaused ? "PAUSED IN REPLAY" : runtime?.mode === "REPLAY" && symbol !== "BTC-USD" ? "REPLAY SCAN" : "ACTIVE SCAN";
-  const summary = replayPaused
-    ? "Live BTC feed isolated from replay strategy"
-    : best
-      ? `Best sequence ${Number(best.score || 0)}/6 · ${scannerClarityState(best).short}`
-      : "Waiting for scanner history";
+  const modeLabel = runtime?.mode === "REPLAY" ? "REPLAY SCAN" : "ACTIVE SCAN";
+  const summary = best
+    ? `Best sequence ${Number(best.score || 0)}/6 · ${scannerClarityState(best).short}`
+    : "Waiting for scanner history";
 
   return `
     <section class="scanner-market-section" data-scanner-symbol="${symbol}">
@@ -208,7 +206,7 @@ scannerMarketSection = function scannerMarketSectionClarity(symbol, diagnostics,
             <div class="scanner-market-summary">${summary}</div>
           </div>
         </div>
-        <span class="scanner-market-mode ${replayPaused ? "paused" : ""}">${modeLabel}</span>
+        <span class="scanner-market-mode">${modeLabel}</span>
       </div>
       <div class="scanner-timeframe-grid">
         ${visibleTimeframes.map((tf) => scannerTimeframeCard(byTimeframe.get(tf), symbol, tf, runtime)).join("")}
@@ -294,6 +292,212 @@ scannerPreviewCard = function scannerPreviewCardClarity(d) {
     }
     @media (max-width: 720px) {
       .scanner-clarity-grid { grid-template-columns: 1fr; }
+    }
+  `;
+  document.head.appendChild(style);
+})();
+
+/* Operation 5.9: completed-decision trail + futures-only active UI. */
+const activeFuturesSymbols = new Set(["NQ", "ES", "GC"]);
+
+function setupDecisionReason(setup) {
+  const metadata = setup?.metadata || {};
+  return (
+    metadata?.execution_quality_gate?.reason ||
+    metadata?.evaluation_guard?.reason ||
+    metadata?.geometry_rejection ||
+    metadata?.post_loss_quality?.reason ||
+    "Candidate completed and was recorded by the execution engine."
+  );
+}
+
+function setupDecisionStatus(setup) {
+  const raw = String(setup?.status || "RECORDED").toUpperCase();
+  const reason = setupDecisionReason(setup).toLowerCase();
+  // Historical 5.8 rows used SESSION_BLOCKED for the post-loss quality test.
+  // Present those with the correct semantic label without rewriting history.
+  if (raw === "SESSION_BLOCKED" && reason.includes("after a loss")) return "QUALITY_BLOCKED";
+  if (raw === "PENDING") return "REGISTERED";
+  return raw;
+}
+
+function setupCompletionLabel(setup) {
+  const strategy = String(setup?.metadata?.strategy || "ICT_CONFLUENCE");
+  if (strategy === "REJECTION_BLOCK_10_10") return "10/10 COMPLETE";
+  if (strategy === "ICT_CONFLUENCE") return "6/6 COMPLETE";
+  return "SETUP COMPLETE";
+}
+
+function scannerDecisionCard(setup) {
+  const status = setupDecisionStatus(setup);
+  const trigger = String(setup?.trigger_type || "--").replaceAll("_", " ");
+  const rr = setup?.risk_reward === null || setup?.risk_reward === undefined ? "--" : `${Number(setup.risk_reward).toFixed(2)}R`;
+  const reason = setupDecisionReason(setup);
+  return `
+    <article class="scanner-decision-card">
+      <div class="scanner-decision-head">
+        <div>
+          <div class="scanner-decision-kicker">${setupCompletionLabel(setup)}</div>
+          <strong>${labelMap[setup.symbol] || setup.symbol} · ${String(setup.direction || "").toUpperCase()}</strong>
+          <span>${setup.timeframe || "--"} · ${trigger} · ${fmtTime(setup.created_at)}</span>
+        </div>
+        ${statusChip(status, null)}
+      </div>
+      <div class="scanner-decision-metrics">
+        <span>ENTRY <strong>${fmtPrice(setup.entry_price)}</strong></span>
+        <span>R:R <strong>${rr}</strong></span>
+      </div>
+      <div class="scanner-decision-reason"><span>DECISION REASON</span>${reason}</div>
+    </article>`;
+}
+
+function ensureScannerDecisionPanel() {
+  let panel = document.getElementById("scannerDecisionPanel");
+  if (panel) return panel;
+  const scannerCards = document.getElementById("scannerCards");
+  const scannerPanel = scannerCards?.closest(".panel");
+  if (!scannerPanel) return null;
+  panel = document.createElement("section");
+  panel.id = "scannerDecisionPanel";
+  panel.className = "panel scanner-decision-panel";
+  panel.innerHTML = `
+    <div class="panel-head">
+      <div>
+        <div class="section-kicker">COMPLETED CANDIDATES</div>
+        <h2>Recent Scanner Decisions</h2>
+      </div>
+      <span class="tiny-chip">WHY IT DID / DIDN'T TRADE</span>
+    </div>
+    <div id="scannerDecisionCards" class="scanner-decision-list"></div>`;
+  scannerPanel.insertAdjacentElement("afterend", panel);
+  return panel;
+}
+
+function renderScannerDecisionHistory(setups) {
+  const panel = ensureScannerDecisionPanel();
+  if (!panel) return;
+  const root = document.getElementById("scannerDecisionCards");
+  const decisions = (setups || [])
+    .filter((s) => activeFuturesSymbols.has(s.symbol))
+    .slice(0, 8);
+  root.innerHTML = decisions.length
+    ? decisions.map(scannerDecisionCard).join("")
+    : '<div class="empty-state">Completed 6/6 decisions will remain here after the live scanner resets.</div>';
+}
+
+const renderMarketsBefore59 = renderMarkets;
+renderMarkets = function renderMarkets59(markets) {
+  return renderMarketsBefore59((markets || []).filter((m) => activeFuturesSymbols.has(m.symbol)));
+};
+
+const renderTradesBefore59 = renderTrades;
+renderTrades = function renderTrades59(trades) {
+  return renderTradesBefore59((trades || []).filter((t) => activeFuturesSymbols.has(t.symbol)));
+};
+
+const setupCardBefore59 = setupCard;
+setupCard = function setupCard59(setup) {
+  const displaySetup = { ...setup, status: setupDecisionStatus(setup) };
+  const reason = setupDecisionReason(setup);
+  const card = setupCardBefore59(displaySetup);
+  return card.replace(
+    "</article>",
+    `<div class="setup-decision-reason"><span>WHY</span>${reason}</div></article>`
+  );
+};
+
+const renderSetupsBefore59 = renderSetups;
+renderSetups = function renderSetups59(setups) {
+  const active = (setups || []).filter((s) => activeFuturesSymbols.has(s.symbol));
+  renderSetupsBefore59(active);
+  renderScannerDecisionHistory(active);
+};
+
+(function installDecisionTrail() {
+  document.querySelectorAll('option[value="BTC-USD"]').forEach((option) => option.remove());
+  ensureScannerDecisionPanel();
+  const style = document.createElement("style");
+  style.textContent = `
+    .setup-decision-reason {
+      margin-top: 14px;
+      padding-top: 13px;
+      border-top: 1px solid rgba(255,255,255,.07);
+      color: #a4a4a9;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .setup-decision-reason span,
+    .scanner-decision-reason span {
+      display: block;
+      margin-bottom: 5px;
+      color: #6f6f73;
+      font-size: 9px;
+      font-weight: 800;
+      letter-spacing: .13em;
+    }
+    .scanner-decision-list {
+      display: grid;
+      gap: 10px;
+    }
+    .scanner-decision-card {
+      border: 1px solid rgba(255,255,255,.09);
+      border-radius: 14px;
+      background: rgba(255,255,255,.018);
+      padding: 16px;
+    }
+    .scanner-decision-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+    }
+    .scanner-decision-head strong {
+      display: block;
+      color: #f3f3f4;
+      font-size: 15px;
+      margin: 2px 0 4px;
+    }
+    .scanner-decision-head > div > span {
+      color: #838388;
+      font-size: 11px;
+    }
+    .scanner-decision-kicker {
+      color: #b8b8bc;
+      font-size: 9px;
+      font-weight: 900;
+      letter-spacing: .14em;
+    }
+    .scanner-decision-metrics {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 14px;
+    }
+    .scanner-decision-metrics span {
+      border: 1px solid rgba(255,255,255,.06);
+      border-radius: 9px;
+      padding: 9px 10px;
+      color: #707076;
+      font-size: 9px;
+      font-weight: 800;
+      letter-spacing: .1em;
+    }
+    .scanner-decision-metrics strong {
+      display: block;
+      margin-top: 4px;
+      color: #e9e9eb;
+      font-size: 12px;
+      letter-spacing: 0;
+    }
+    .scanner-decision-reason {
+      margin-top: 13px;
+      color: #b0b0b5;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    @media (max-width: 720px) {
+      .scanner-decision-head { align-items: flex-start; }
+      .scanner-decision-metrics { grid-template-columns: 1fr 1fr; }
     }
   `;
   document.head.appendChild(style);
