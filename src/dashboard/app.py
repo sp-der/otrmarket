@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
 from src.bridge.futures import normalize_bridge_symbol, source_name
-from src.dashboard.queries import DashboardRepository
+from src.dashboard.queries_59 import DashboardRepository
 from src.storage.database import get_connection, save_quotes_batch
 from src.storage.intelligence import intelligence_snapshot
 from src.storage.learning import learning_snapshot
