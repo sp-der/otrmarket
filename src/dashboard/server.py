@@ -114,13 +114,13 @@ def _start_engine() -> None:
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
 
-    # Operation 6.1 is the current production engine. Railway may still retain
-    # an older explicit OTR_ENGINE_MODULE value from 5.8/5.9, so promote those
-    # known legacy values automatically instead of silently booting old logic.
-    requested_module = os.getenv("OTR_ENGINE_MODULE", "src.main_61").strip() or "src.main_61"
+    # Operation 6.2 is the current production engine. Railway may still retain
+    # an older explicit OTR_ENGINE_MODULE value, so promote known legacy values
+    # automatically instead of silently booting old logic.
+    requested_module = os.getenv("OTR_ENGINE_MODULE", "src.main_62").strip() or "src.main_62"
     engine_module = (
-        "src.main_61"
-        if requested_module in {"src.main_58", "src.main_59"}
+        "src.main_62"
+        if requested_module in {"src.main_58", "src.main_59", "src.main_61"}
         else requested_module
     )
 
