@@ -10,17 +10,107 @@ from src.strategies.structure import detect_swings, nearest_target_swing
 
 
 class FlexibleConfluenceEngine(ConfluenceEngine):
-    """Preserve the existing six-stage ICT state machine and widen only entry choice.
+    """ICT confluence with flexible entries and adaptive setup lifetimes.
 
-    A setup still has to pass the original PD array -> signal -> displacement ->
-    qualifying FVG -> 50-79% retracement sequence. Once it reaches the final
-    geometry check, OTR evaluates the original FVG midpoint first, then a 79%
-    OTE entry, then a same-leg order-block mean-threshold entry. The first
-    structurally valid candidate offering at least ``min_rr`` is used.
+    Operation 6.0 keeps the original PD array -> signal -> displacement ->
+    qualifying FVG -> 50-79% retracement sequence, but no longer gives every
+    stage the same short lifespan. One-minute continuation ideas get more time
+    to mature after displacement, while five-minute structure can persist long
+    enough to provide a higher-timeframe narrative for a fresh one-minute
+    trigger. Late entries are still allowed, but they are automatically sized
+    more conservatively and prefer the cleanest available geometry.
     """
+
+    _ONE_MINUTE_LIMITS = {
+        "WAIT_SIGNAL": 24,
+        "WAIT_DISPLACEMENT": 15,
+        "WAIT_ENTRY_FVG": 25,
+        "WAIT_QUALIFYING_FVG": 25,
+        "WAIT_VALID_RR": 30,
+    }
+    _FIVE_MINUTE_LIMITS = {
+        "WAIT_SIGNAL": 18,
+        "WAIT_DISPLACEMENT": 15,
+        "WAIT_ENTRY_FVG": 18,
+        "WAIT_QUALIFYING_FVG": 18,
+        "WAIT_VALID_RR": 18,
+    }
 
     def __init__(self, *args, min_rr: float = 1.0, **kwargs) -> None:
         super().__init__(*args, min_rr=min_rr, **kwargs)
+
+    def _adaptive_stage_limit(self, context: PendingContext) -> int:
+        if context.timeframe == "1m":
+            return self._ONE_MINUTE_LIMITS.get(
+                context.stage,
+                self.stage_expiry_bars.get(context.stage, 16),
+            )
+        if context.timeframe == "5m":
+            return self._FIVE_MINUTE_LIMITS.get(
+                context.stage,
+                self.stage_expiry_bars.get(context.stage, 16),
+            )
+        return self.stage_expiry_bars.get(context.stage, 16)
+
+    def _stage_expired(
+        self,
+        context: PendingContext,
+        current_bar_count: int,
+    ) -> tuple[bool, int, int]:
+        """Use timeframe/stage-aware lifetimes instead of one flat timer."""
+        limit = self._adaptive_stage_limit(context)
+        elapsed = max(0, current_bar_count - context.stage_bar_count)
+        return elapsed > limit, elapsed, limit
+
+    @staticmethod
+    def _lifetime_profile(
+        context: PendingContext,
+        current_bar_count: int,
+    ) -> tuple[str, float, int]:
+        """Return setup-age tier, max risk multiplier and age in bars.
+
+        The post-displacement timer is intentionally preserved across FVG and
+        R:R retries, so age measures how long price has taken to offer a usable
+        entry instead of resetting every time a candidate appears.
+        """
+        age = max(0, current_bar_count - context.stage_bar_count)
+        if context.timeframe == "1m":
+            if age <= 15:
+                return "NORMAL", 1.00, age
+            if age <= 25:
+                return "MATURE", 0.75, age
+            return "LATE", 0.50, age
+        if context.timeframe == "5m":
+            if age <= 12:
+                return "NORMAL", 1.00, age
+            return "MATURE", 0.75, age
+        return "NORMAL", 1.00, age
+
+    @staticmethod
+    def _structural_invalidation_reason(
+        context: PendingContext,
+        latest: Candle,
+    ) -> str | None:
+        """Kill an old idea when confirmed displacement is fully negated.
+
+        Time alone should not erase a valid narrative, but a close through the
+        far side of the displacement candle is a concrete structural reason to
+        stop carrying the setup forward and wait for a fresh sequence.
+        """
+        displacement = context.displacement
+        if displacement is None:
+            return None
+        if context.direction == "bullish" and latest.close < displacement.low:
+            return (
+                "Bullish displacement was structurally negated by a close "
+                f"below {displacement.low:.2f}."
+            )
+        if context.direction == "bearish" and latest.close > displacement.high:
+            return (
+                "Bearish displacement was structurally negated by a close "
+                f"above {displacement.high:.2f}."
+            )
+        return None
 
     @staticmethod
     def _retracement_zone(context: PendingContext) -> tuple[float, float] | None:
@@ -99,8 +189,6 @@ class FlexibleConfluenceEngine(ConfluenceEngine):
             if overlap_low > overlap_high:
                 continue
 
-            # Mean threshold of the portion of the order-block body that sits
-            # inside the same displacement OTE zone.
             entry = (overlap_low + overlap_high) / 2.0
             return entry, {
                 "candle_time": candle.close_time.isoformat(),
@@ -113,7 +201,7 @@ class FlexibleConfluenceEngine(ConfluenceEngine):
 
     @staticmethod
     def _risk_tier(rr: float) -> tuple[str, float]:
-        """Conservative replay sizing; never exceeds the guard's risk cap."""
+        """Conservative sizing; never exceeds the evaluation guard's cap."""
         if rr >= 3.0:
             return "RR_3_PLUS", 1.00
         if rr >= 2.0:
@@ -253,9 +341,25 @@ class FlexibleConfluenceEngine(ConfluenceEngine):
             )
         ]
 
-        # Preserve the original behavior first. Alternate entries are fallbacks,
-        # not replacements: FVG midpoint -> 79% OTE -> associated order block.
-        chosen = next((attempt for attempt in attempts if attempt["valid"]), None)
+        lifetime_tier, lifetime_risk_cap, setup_age_bars = self._lifetime_profile(
+            context,
+            len(candles),
+        )
+        valid_attempts = [attempt for attempt in attempts if attempt["valid"]]
+
+        # During the normal window preserve entry priority. Once a setup has
+        # matured, prefer the strongest available geometry instead of blindly
+        # accepting the first valid candidate. This mimics zooming out and
+        # waiting for the cleaner entry while still respecting the same thesis.
+        if lifetime_tier == "NORMAL":
+            chosen = valid_attempts[0] if valid_attempts else None
+        else:
+            chosen = max(
+                valid_attempts,
+                key=lambda attempt: float(attempt.get("risk_reward") or 0.0),
+                default=None,
+            )
+
         if chosen is None:
             summaries = []
             for attempt in attempts:
@@ -273,6 +377,7 @@ class FlexibleConfluenceEngine(ConfluenceEngine):
 
         rr = float(chosen["risk_reward"])
         tier, multiplier = self._risk_tier(rr)
+        multiplier = min(multiplier, lifetime_risk_cap)
         entry_type = str(chosen["entry_type"])
         entry_rule = {
             "FVG_MIDPOINT": "qualifying FVG midpoint rounded to exchange tick",
@@ -323,21 +428,54 @@ class FlexibleConfluenceEngine(ConfluenceEngine):
                 "setup_quality": "A_PLUS_STRUCTURE",
                 "risk_tier": tier,
                 "risk_multiplier": multiplier,
-                "operation": 4.8,
+                "lifetime_profile": "ADAPTIVE_6_0",
+                "lifetime_tier": lifetime_tier,
+                "lifetime_risk_cap": lifetime_risk_cap,
+                "setup_age_bars": setup_age_bars,
+                "operation": 6.0,
             },
         )
 
     def on_candle(self, symbol: str, timeframe: str, histories):
+        candles = histories.get((symbol, timeframe), [])
+        context = self.contexts.get((symbol, timeframe))
+        if context is not None and candles:
+            invalidation = self._structural_invalidation_reason(context, candles[-1])
+            if invalidation:
+                self.contexts.pop((symbol, timeframe), None)
+                self._log(
+                    f"{symbol} {timeframe}: structurally invalidated - {invalidation}",
+                    candles[-1].close_time,
+                )
+                self._set_diag(
+                    symbol,
+                    timeframe,
+                    candles[-1].close_time,
+                    stage="INVALIDATED",
+                    direction=context.direction,
+                    pd_array=True,
+                    signal=context.trigger_type is not None,
+                    displacement=context.displacement is not None,
+                    entry_fvg=context.entry_fvg_seen,
+                    retracement=context.retracement_seen,
+                    trigger_type=context.trigger_type,
+                    note=invalidation + " Waiting for a fresh sequence.",
+                )
+                return None
+
         setup = super().on_candle(symbol, timeframe, histories)
         if setup:
             diag = self.diagnostics.get((symbol, timeframe))
             if diag is not None:
                 entry_type = setup.metadata.get("entry_type", "FVG_MIDPOINT")
                 multiplier = float(setup.metadata.get("risk_multiplier", 1.0))
+                lifetime_tier = setup.metadata.get("lifetime_tier", "NORMAL")
+                age = int(setup.metadata.get("setup_age_bars", 0) or 0)
                 diag["entry_type"] = entry_type
                 diag["risk_multiplier"] = multiplier
                 diag["note"] = (
                     f"Valid A+ setup via {entry_type.replace('_', ' ')} at "
-                    f"{setup.risk_reward:.2f}R; replay risk tier {multiplier:.0%}."
+                    f"{setup.risk_reward:.2f}R; {lifetime_tier.lower()} entry age "
+                    f"{age} bars, max risk tier {multiplier:.0%}."
                 )
         return setup
