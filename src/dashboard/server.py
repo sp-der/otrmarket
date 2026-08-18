@@ -113,7 +113,7 @@ def _start_engine() -> None:
 
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
-    engine_module = os.getenv("OTR_ENGINE_MODULE", "src.main_58").strip() or "src.main_58"
+    engine_module = os.getenv("OTR_ENGINE_MODULE", "src.main_59").strip() or "src.main_59"
 
     _engine_process = subprocess.Popen(
         [sys.executable, "-u", "-m", engine_module],
