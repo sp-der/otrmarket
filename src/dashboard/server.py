@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import atexit
+from datetime import datetime, timezone
+import json
 import os
 import signal
 import subprocess
@@ -17,10 +19,26 @@ from src.storage.intelligence import ensure_intelligence_schema
 ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_DIR = Path(os.getenv("OTR_RUNTIME_DIR", "/tmp/otrmarket"))
 ENGINE_PID_FILE = RUNTIME_DIR / "engine.pid"
+STATIC_DIR = ROOT / "src" / "dashboard" / "static"
+RUNTIME_MANIFEST_FILE = STATIC_DIR / "runtime-build.json"
 RESET_STATE_KEY = "last_evaluation_reset_token"
 
 _engine_process: subprocess.Popen | None = None
 _shutting_down = False
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
 
 
 def _reset_evaluation_history_if_requested() -> None:
@@ -106,6 +124,101 @@ def _monitor_engine(process: subprocess.Popen) -> None:
     os.kill(os.getpid(), signal.SIGTERM)
 
 
+def _write_runtime_manifest(engine_module: str) -> None:
+    """Publish a non-secret audit of the rules the production service is using.
+
+    This file is served by FastAPI's existing /market/assets mount. Values that
+    are configurable in Railway are read from the actual production environment;
+    strategy constants list their owning source file so the dashboard can be
+    checked against the code instead of relying on chat history.
+    """
+    execution_timeframe = os.getenv("OTR_EXECUTION_TIMEFRAME", "5m").strip() or "5m"
+    manifest = {
+        "build": {
+            "engine_module": engine_module,
+            "operation": "Operation 6.5",
+            "commit_sha": (
+                os.getenv("RAILWAY_GIT_COMMIT_SHA", "").strip()
+                or os.getenv("OTR_BUILD_SHA", "").strip()
+                or "unknown"
+            ),
+            "execution_mode": "PAPER ONLY",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        },
+        "rules": [
+            {
+                "name": "Active markets",
+                "value": "NQ / ES / GC (BTC execution disabled)",
+                "source": "src/main_59.py",
+            },
+            {
+                "name": "Autonomous timeframes",
+                "value": f"{execution_timeframe} profile; code supports 1m / 5m / 15m / 1h when set to ALL",
+                "source": "src/risk/session_consistency.py",
+            },
+            {
+                "name": "Base risk / trade",
+                "value": f"${_env_float('EVAL_RISK_PER_TRADE', 250.0):.0f}",
+                "source": "src/risk/evaluation.py",
+            },
+            {
+                "name": "Internal daily stop",
+                "value": f"${_env_float('EVAL_INTERNAL_DAILY_STOP', 750.0):.0f}",
+                "source": "src/risk/evaluation.py",
+            },
+            {
+                "name": "Daily / loss locks",
+                "value": (
+                    f"{_env_int('EVAL_MAX_TRADES_PER_DAY', 4)} trades max · "
+                    f"{_env_int('EVAL_MAX_CONSECUTIVE_LOSSES', 3)} consecutive losses max · 1 concurrent position"
+                ),
+                "source": "src/risk/evaluation.py",
+            },
+            {
+                "name": "ICT entry sequence",
+                "value": "PD array → sweep/SMT → displacement → FVG → 50-79% retracement → valid R:R",
+                "source": "src/strategies/confluence.py",
+            },
+            {
+                "name": "Entry development window",
+                "value": "15 bars after displacement for FVG / 50-79 / R:R development",
+                "source": "src/strategies/confluence.py",
+            },
+            {
+                "name": "Intrabar acceleration",
+                "value": "1m / 5m · probes every 0.25s · 3 confirmations · ≥0.75s stable",
+                "source": "src/main_65.py",
+            },
+            {
+                "name": "No-chase protection",
+                "value": "Suppress original entry once ≥75% of planned objective already traded",
+                "source": "src/main_64.py + src/execution/paper.py",
+            },
+            {
+                "name": "B+ tier",
+                "value": "Reduced risk only · 1.50R+ adaptive eligibility · max 2 B+ futures trades/day · disabled after a realized futures loss",
+                "source": "src/main_61.py + src/main_59.py",
+            },
+            {
+                "name": "Countertrend tier",
+                "value": "1m/5m only · 1.75R+ · 80/100 quality floor · reduced risk 35-50%",
+                "source": "src/main_64.py",
+            },
+            {
+                "name": "Post-loss behavior",
+                "value": "30-minute futures-wide reset plus stronger follow-up quality / reduced-risk logic",
+                "source": "src/main_59.py + src/main_61.py",
+            },
+        ],
+    }
+    STATIC_DIR.mkdir(parents=True, exist_ok=True)
+    RUNTIME_MANIFEST_FILE.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    print(
+        f"Runtime build manifest published for {engine_module} at {RUNTIME_MANIFEST_FILE}",
+        flush=True,
+    )
+
+
 def _start_engine() -> None:
     global _engine_process
 
@@ -130,6 +243,8 @@ def _start_engine() -> None:
         }
         else requested_module
     )
+    os.environ["OTR_ACTIVE_ENGINE_MODULE"] = engine_module
+    env["OTR_ACTIVE_ENGINE_MODULE"] = engine_module
 
     _engine_process = subprocess.Popen(
         [sys.executable, "-u", "-m", engine_module],
@@ -139,6 +254,7 @@ def _start_engine() -> None:
         env=env,
     )
     ENGINE_PID_FILE.write_text(str(_engine_process.pid), encoding="utf-8")
+    _write_runtime_manifest(engine_module)
     print(
         f"OTR strategy engine started (PID {_engine_process.pid}, module {engine_module})",
         flush=True,

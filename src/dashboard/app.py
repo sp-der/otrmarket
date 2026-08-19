@@ -101,6 +101,13 @@ async def dashboard_index():
     # Keep verbose research intelligence off the normal dashboard. The data is
     # still stored and available from protected APIs when we need to audit it.
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    # Force clients to fetch the final Operation 6.5 trade-history renderer.
+    # Keeping this server-side avoids another stale Safari/desktop asset after
+    # the load-order repair while leaving the static source file simple.
+    html = html.replace(
+        "/market/assets/trade-history-cleanup.js?v=6.5.2",
+        "/market/assets/trade-history-cleanup.js?v=6.5.4",
+    )
     return HTMLResponse(html)
 
 
