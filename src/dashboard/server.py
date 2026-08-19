@@ -125,18 +125,12 @@ def _monitor_engine(process: subprocess.Popen) -> None:
 
 
 def _write_runtime_manifest(engine_module: str) -> None:
-    """Publish a non-secret audit of the rules the production service is using.
-
-    This file is served by FastAPI's existing /market/assets mount. Values that
-    are configurable in Railway are read from the actual production environment;
-    strategy constants list their owning source file so the dashboard can be
-    checked against the code instead of relying on chat history.
-    """
-    execution_timeframe = os.getenv("OTR_EXECUTION_TIMEFRAME", "5m").strip() or "5m"
+    """Publish a non-secret audit of the rules the production service is using."""
+    execution_timeframe = os.getenv("OTR_EXECUTION_TIMEFRAME", "ALL").strip() or "ALL"
     manifest = {
         "build": {
             "engine_module": engine_module,
-            "operation": "Operation 6.5",
+            "operation": "Operation 6.6",
             "commit_sha": (
                 os.getenv("RAILWAY_GIT_COMMIT_SHA", "").strip()
                 or os.getenv("OTR_BUILD_SHA", "").strip()
@@ -153,24 +147,42 @@ def _write_runtime_manifest(engine_module: str) -> None:
             },
             {
                 "name": "Autonomous timeframes",
-                "value": f"{execution_timeframe} profile; code supports 1m / 5m / 15m / 1h when set to ALL",
+                "value": f"{execution_timeframe} · 1m / 5m / 15m / 1h supported and eligible when profile is ALL",
                 "source": "src/risk/session_consistency.py",
             },
             {
+                "name": "Intrabar acceleration",
+                "value": "1m / 5m / 15m / 1h · probes every 0.25s · 3 confirmations · ≥0.75s stable",
+                "source": "src/main_66.py + src/main_65.py",
+            },
+            {
                 "name": "Base risk / trade",
-                "value": f"${_env_float('EVAL_RISK_PER_TRADE', 250.0):.0f}",
+                "value": f"${_env_float('EVAL_RISK_PER_TRADE', 300.0):.0f}",
                 "source": "src/risk/evaluation.py",
             },
             {
+                "name": "Fast-eval session profit lock",
+                "value": (
+                    f"${_env_float('EVAL_SESSION_PROFIT_CAP', 1500.0):.0f} realized max per bucket · "
+                    "Asia 18-21 ET · Tokyo 21-02 ET · London 02-08 ET · New York 08-16:30 ET"
+                ),
+                "source": "src/risk/evaluation.py",
+            },
+            {
+                "name": "Fast-eval profit pacing",
+                "value": "Planned trade profit is tapered to the remaining session budget instead of intentionally oversizing past the session cap",
+                "source": "src/main_66.py",
+            },
+            {
                 "name": "Internal daily stop",
-                "value": f"${_env_float('EVAL_INTERNAL_DAILY_STOP', 750.0):.0f}",
+                "value": f"${_env_float('EVAL_INTERNAL_DAILY_STOP', 900.0):.0f}",
                 "source": "src/risk/evaluation.py",
             },
             {
                 "name": "Daily / loss locks",
                 "value": (
-                    f"{_env_int('EVAL_MAX_TRADES_PER_DAY', 4)} trades max · "
-                    f"{_env_int('EVAL_MAX_CONSECUTIVE_LOSSES', 3)} consecutive losses max · 1 concurrent position"
+                    f"{_env_int('EVAL_MAX_TRADES_PER_DAY', 8)} trades max · "
+                    f"{_env_int('EVAL_MAX_CONSECUTIVE_LOSSES', 2)} consecutive losses max · 1 concurrent position"
                 ),
                 "source": "src/risk/evaluation.py",
             },
@@ -183,11 +195,6 @@ def _write_runtime_manifest(engine_module: str) -> None:
                 "name": "Entry development window",
                 "value": "15 bars after displacement for FVG / 50-79 / R:R development",
                 "source": "src/strategies/confluence.py",
-            },
-            {
-                "name": "Intrabar acceleration",
-                "value": "1m / 5m · probes every 0.25s · 3 confirmations · ≥0.75s stable",
-                "source": "src/main_65.py",
             },
             {
                 "name": "No-chase protection",
@@ -227,12 +234,12 @@ def _start_engine() -> None:
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
 
-    # Operation 6.5 is the current production engine. Railway may still retain
-    # an older explicit OTR_ENGINE_MODULE value, so promote known legacy values
-    # automatically instead of silently booting old logic.
-    requested_module = os.getenv("OTR_ENGINE_MODULE", "src.main_65").strip() or "src.main_65"
+    # Operation 6.6 is the current production engine. Promote known legacy
+    # values automatically so an old Railway variable cannot silently boot an
+    # older strategy chain.
+    requested_module = os.getenv("OTR_ENGINE_MODULE", "src.main_66").strip() or "src.main_66"
     engine_module = (
-        "src.main_65"
+        "src.main_66"
         if requested_module in {
             "src.main_58",
             "src.main_59",
@@ -240,6 +247,7 @@ def _start_engine() -> None:
             "src.main_62",
             "src.main_63",
             "src.main_64",
+            "src.main_65",
         }
         else requested_module
     )
