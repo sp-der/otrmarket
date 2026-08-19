@@ -170,7 +170,7 @@ if __name__ == "__main__":
         "Operation 6.3 active: normalized setup handoff, extended pending-entry "
         "windows, 75% no-chase preserved, lifecycle + continuation tracing enabled."
     )
-    op62._restore_progress()
+    op62._restore_progress_62()
     try:
         asyncio.run(runtime.main())
     except KeyboardInterrupt:
