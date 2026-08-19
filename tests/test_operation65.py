@@ -73,9 +73,8 @@ class Operation65RegressionTests(unittest.TestCase):
         )
         self.assertIn("operation65-intrabar-ok", completed.stdout)
 
-    def test_dashboard_history_is_realized_only(self):
+    def test_dashboard_history_is_realized_only_after_all_ui_layers(self):
         cleanup = (ROOT / "src/dashboard/static/trade-history-cleanup.js").read_text()
-        index = (ROOT / "src/dashboard/static/index.html").read_text()
         server = (ROOT / "src/dashboard/server.py").read_text()
         trading_days = (ROOT / "src/dashboard/static/trading-days.js").read_text()
 
@@ -84,13 +83,43 @@ class Operation65RegressionTests(unittest.TestCase):
         self.assertIn("Missed / Rejected Attempts", cleanup)
         self.assertIn("MAX_AUDIT_ROWS_65 = 30", cleanup)
         self.assertIn("realizedOnlyRenderer65", cleanup)
-        self.assertIn('window.addEventListener("DOMContentLoaded", installRealizedTradeHistory65', cleanup)
+        self.assertIn('window.addEventListener("load"', cleanup)
+        self.assertIn("window.setTimeout(finalizeDashboard65, 0)", cleanup)
+        self.assertNotIn('window.addEventListener("DOMContentLoaded", installRealizedTradeHistory65', cleanup)
         self.assertNotIn("new MutationObserver(", cleanup)
         self.assertIn("nonExecutedTradesBody65", cleanup)
+        self.assertIn("finalDashboardRenderTrades65(realizedTrades)", cleanup)
         self.assertIn("renderTrades = function timedRenderTrades", trading_days)
-        self.assertIn("trade-history-cleanup.js?v=6.5.2", index)
         self.assertIn('"src.main_65"', server)
         self.assertIn('"src.main_64"', server)
+
+    def test_runtime_build_manifest_exposes_verified_rules(self):
+        cleanup = (ROOT / "src/dashboard/static/trade-history-cleanup.js").read_text()
+        server = (ROOT / "src/dashboard/server.py").read_text()
+        evaluation = (ROOT / "src/risk/evaluation.py").read_text()
+        confluence = (ROOT / "src/strategies/confluence.py").read_text()
+        op59 = (ROOT / "src/main_59.py").read_text()
+        op61 = (ROOT / "src/main_61.py").read_text()
+        op64 = (ROOT / "src/main_64.py").read_text()
+        op65 = (ROOT / "src/main_65.py").read_text()
+
+        self.assertIn("runtime-build.json", cleanup)
+        self.assertIn("Active Build / Trading Rules", cleanup)
+        self.assertIn("_write_runtime_manifest", server)
+        self.assertIn("RAILWAY_GIT_COMMIT_SHA", server)
+        self.assertIn('os.environ["OTR_ACTIVE_ENGINE_MODULE"] = engine_module', server)
+
+        self.assertIn("risk_per_trade: float = 250.0", evaluation)
+        self.assertIn("internal_daily_stop: float = 750.0", evaluation)
+        self.assertIn("entry_fvg_expiry_bars: int = 15", confluence)
+        self.assertIn("if b_plus_count >= 2", op59)
+        self.assertIn("rr >= 1.50", op61)
+        self.assertIn("score < 80", op64)
+        self.assertIn("rr < 1.75", op64)
+        self.assertIn('INTRABAR_TIMEFRAMES = {"1m", "5m"}', op65)
+        self.assertIn("INTRABAR_EVAL_INTERVAL_SECONDS = 0.25", op65)
+        self.assertIn("INTRABAR_MIN_STABILITY_SECONDS = 0.75", op65)
+        self.assertIn("INTRABAR_MIN_CONFIRMATIONS = 3", op65)
 
     def test_operation65_preserves_stable_state_and_no_chase(self):
         text = (ROOT / "src/main_65.py").read_text()
