@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from pathlib import Path
 
 from src import main_67 as op67
 
@@ -68,7 +70,50 @@ op58._adaptive_quality_gate = _adaptive_quality_gate_68
 op65.INTRABAR_TIMEFRAMES = {"5m"}
 
 
+# ---------------------------------------------------------------------------
+# Operation 6.8C: keep the dashboard's live build audit truthful even though
+# the supervisor's static manifest writer was introduced during Operation 6.7.
+# Railway pins OTR_ENGINE_MODULE=src.main_68; this patch updates only the
+# non-secret display manifest after the engine is started.
+# ---------------------------------------------------------------------------
+def _patch_runtime_manifest_68() -> None:
+    path = Path(__file__).resolve().parent / "dashboard" / "static" / "runtime-build.json"
+    if not path.exists():
+        return
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        manifest.setdefault("build", {})["operation"] = "Operation 6.8"
+        rules = manifest.setdefault("rules", [])
+        by_name = {str(item.get("name")): item for item in rules if isinstance(item, dict)}
+
+        if "Autonomous timeframes" in by_name:
+            by_name["Autonomous timeframes"]["value"] = (
+                "1m signal/scout only · 5m / 15m / 1h autonomous when quality and risk gates pass"
+            )
+            by_name["Autonomous timeframes"]["source"] = "src/main_68.py + src/risk/session_consistency.py"
+
+        if "Intrabar acceleration" in by_name:
+            by_name["Intrabar acceleration"]["value"] = (
+                "5m only · stable-state forming-candle probe; 15m/1h wait for completed candles"
+            )
+            by_name["Intrabar acceleration"]["source"] = "src/main_68.py + src/main_65.py"
+
+        if "1m quality firewall" not in by_name:
+            rules.append(
+                {
+                    "name": "1m quality firewall",
+                    "value": "1m candidates stay visible as intelligence but cannot originate autonomous paper risk; 5m+ confirmation required",
+                    "source": "src/main_68.py",
+                }
+            )
+
+        path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    except Exception as exc:
+        runtime.console.log(f"Operation 6.8 manifest audit warning: {exc}")
+
+
 if __name__ == "__main__":
+    _patch_runtime_manifest_68()
     runtime.console.log(
         "Operation 6.8 active: 1m is signal/scout-only, autonomous risk requires "
         "5m+ confirmation, 5m keeps stable-state intrabar acceleration, and "
