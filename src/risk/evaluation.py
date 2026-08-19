@@ -1,13 +1,23 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 import os
 import sqlite3
 from zoneinfo import ZoneInfo
 
 
 NY = ZoneInfo("America/New_York")
+
+# Fast-eval training buckets. They are intentionally non-overlapping so every
+# futures entry belongs to exactly one named session. 16:30-18:00 ET remains the
+# maintenance/no-new-risk window handled by the existing session lock.
+FAST_EVAL_SESSIONS = (
+    ("ASIA", time(18, 0), time(21, 0)),
+    ("TOKYO", time(21, 0), time(2, 0)),
+    ("LONDON", time(2, 0), time(8, 0)),
+    ("NEW_YORK", time(8, 0), time(16, 30)),
+)
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -44,8 +54,8 @@ class EvaluationConfig:
     locked_mll_balance: float = 50_100.0
     max_micros: int = 40
 
-    # OTR internal training limits. These are intentionally stricter than the
-    # firm limits and can be tuned after replay statistics are large enough.
+    # OTR internal training limits. Production can tune these from Railway
+    # without changing the prop-account hard limits above.
     risk_per_trade: float = 250.0
     min_risk_per_trade: float = 250.0
     internal_daily_stop: float = 750.0
@@ -56,10 +66,12 @@ class EvaluationConfig:
     no_new_trades_after_et: str = "16:30"
     resume_trading_et: str = "18:00"
 
+    # Fast-eval mode banks a strong session instead of handing profit back.
+    # This is a realized-profit lock, not a loss allowance.
+    session_profit_cap: float = 1_500.0
+
     # Keep the $3k target as the evaluation pass marker while optionally
-    # continuing the replay/paper run so a full week can be measured.
-    # The dataclass default remains conservative for direct/test construction;
-    # from_env enables continuation by default for the deployed research bot.
+    # continuing the replay/paper run for research after a simulated pass.
     continue_after_target: bool = False
 
     @classmethod
@@ -84,6 +96,7 @@ class EvaluationConfig:
             max_concurrent_positions=_env_int("EVAL_MAX_CONCURRENT", 1),
             no_new_trades_after_et=os.getenv("EVAL_NO_NEW_AFTER_ET", "16:30").strip(),
             resume_trading_et=os.getenv("EVAL_RESUME_ET", "18:00").strip(),
+            session_profit_cap=_env_float("EVAL_SESSION_PROFIT_CAP", 1_500.0),
             continue_after_target=_env_bool("EVAL_CONTINUE_AFTER_TARGET", True),
         )
 
@@ -115,6 +128,32 @@ def _parse_hhmm(value: str, fallback: time) -> time:
         return time(hour, minute)
     except Exception:
         return fallback
+
+
+def _session_bucket(value: datetime | None) -> dict | None:
+    """Return the non-overlapping fast-eval session containing ``value``.
+
+    The session date follows the evening Globex start. Tokyo therefore keeps
+    the prior local date for its 00:00-02:00 ET tail.
+    """
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    local = value.astimezone(NY)
+    clock = local.time().replace(tzinfo=None)
+    day = local.date()
+
+    if time(18, 0) <= clock < time(21, 0):
+        return {"name": "ASIA", "date": day.isoformat(), "start_et": "18:00", "end_et": "21:00"}
+    if clock >= time(21, 0) or clock < time(2, 0):
+        session_day = day if clock >= time(21, 0) else day - timedelta(days=1)
+        return {"name": "TOKYO", "date": session_day.isoformat(), "start_et": "21:00", "end_et": "02:00"}
+    if time(2, 0) <= clock < time(8, 0):
+        return {"name": "LONDON", "date": day.isoformat(), "start_et": "02:00", "end_et": "08:00"}
+    if time(8, 0) <= clock < time(16, 30):
+        return {"name": "NEW_YORK", "date": day.isoformat(), "start_et": "08:00", "end_et": "16:30"}
+    return None
 
 
 class EvaluationRiskGuard:
@@ -150,6 +189,7 @@ class EvaluationRiskGuard:
             reference_time = reference_time.replace(tzinfo=timezone.utc)
         reference_time = reference_time.astimezone(timezone.utc)
         current_day = reference_time.astimezone(NY).date()
+        current_session = _session_bucket(reference_time)
         rows = self._rows(connection)
 
         realized = 0.0
@@ -158,23 +198,44 @@ class EvaluationRiskGuard:
         committed_risk = 0.0
         active_positions = 0
         closed_sequence = []
+        session_pnl = 0.0
+        session_trades = 0
+        session_wins = 0
+        session_losses = 0
 
         for row in rows:
             result_dollars = float(row["result_dollars"] or 0.0)
+            opened_at = _parse_dt(row["opened_at"])
+            opened_session = _session_bucket(opened_at)
+            belongs_to_current_session = bool(
+                current_session
+                and opened_session
+                and opened_session["name"] == current_session["name"]
+                and opened_session["date"] == current_session["date"]
+            )
+
+            if opened_at:
+                day = opened_at.astimezone(NY).date()
+                trades_by_day[day] = trades_by_day.get(day, 0) + 1
+                if belongs_to_current_session:
+                    session_trades += 1
+
             if row["status"] == "CLOSED":
                 realized += result_dollars
                 closed_at = _parse_dt(row["closed_at"])
                 if closed_at:
                     day = closed_at.astimezone(NY).date()
                     daily_results[day] = daily_results.get(day, 0.0) + result_dollars
-                closed_sequence.append(str(row["result"] or ""))
+                marker = str(row["result"] or "")
+                closed_sequence.append(marker)
+                if belongs_to_current_session:
+                    session_pnl += result_dollars
+                    session_wins += int(marker == "WIN")
+                    session_losses += int(marker == "LOSS")
+
             if row["status"] in {"PENDING", "OPEN"}:
                 committed_risk += float(row["risk_dollars"] or 0.0)
                 active_positions += 1
-            opened_at = _parse_dt(row["opened_at"])
-            if opened_at:
-                day = opened_at.astimezone(NY).date()
-                trades_by_day[day] = trades_by_day.get(day, 0) + 1
 
         # End-of-day trailing MLL. Today's intraday gains do not move the floor;
         # only completed prior sessions can move the EOD trail.
@@ -208,6 +269,7 @@ class EvaluationRiskGuard:
         largest_day_profit = max([0.0] + [value for value in daily_results.values() if value > 0])
         positive_profit = max(0.0, realized)
         consistency = (largest_day_profit / positive_profit * 100.0) if positive_profit > 0 else None
+        session_profit_remaining = max(0.0, float(c.session_profit_cap) - max(0.0, session_pnl))
 
         # Safety locks always outrank the profit target. Hitting $3k is a pass
         # marker, not permission to ignore the MLL/daily/concurrency governors.
@@ -218,21 +280,15 @@ class EvaluationRiskGuard:
         elif balance <= mll_floor:
             status, reason = "BREACHED", "Paper balance reached the modeled Max Loss Limit floor."
         elif day_pnl <= -abs(c.firm_daily_loss_limit):
-            status, reason = "FIRM_DLL_LOCK", "Modeled firm daily loss limit reached; no more trades this session."
+            status, reason = "FIRM_DLL_LOCK", "Modeled firm daily loss limit reached; no more trades this trading day."
         elif day_pnl <= -abs(c.internal_daily_stop):
             status, reason = "DAILY_LOCK", "OTR internal daily stop reached."
         elif trades_today >= c.max_trades_per_day:
-            status, reason = "DAILY_LOCK", "OTR maximum trades for this session reached."
+            status, reason = "DAILY_LOCK", "OTR maximum trades for this trading day reached."
         elif consecutive_losses >= c.max_consecutive_losses:
             status, reason = "DAILY_LOCK", "OTR consecutive-loss circuit breaker reached."
         elif active_positions >= c.max_concurrent_positions:
             status, reason = "POSITION_LOCK", "OTR already has the maximum allowed active paper position."
-
-        local_t = reference_time.astimezone(NY).time().replace(tzinfo=None)
-        stop_time = _parse_hhmm(c.no_new_trades_after_et, time(16, 30))
-        resume_time = _parse_hhmm(c.resume_trading_et, time(18, 0))
-        if stop_time <= local_t < resume_time and status == "ACTIVE":
-            status, reason = "SESSION_LOCK", f"No new OTR trades between {c.no_new_trades_after_et} and {c.resume_trading_et} ET."
 
         if target_met and status == "ACTIVE":
             status = "PASSED"
@@ -240,6 +296,23 @@ class EvaluationRiskGuard:
                 reason = "Evaluation profit target reached; continuing the paper/replay run under normal risk locks."
             else:
                 reason = "Configured evaluation profit target reached."
+        elif (
+            status == "ACTIVE"
+            and current_session
+            and c.session_profit_cap > 0
+            and session_pnl >= c.session_profit_cap
+        ):
+            status = "SESSION_PROFIT_LOCK"
+            reason = (
+                f"{current_session['name']} fast-eval profit lock reached at ${session_pnl:.2f}; "
+                "bank the session and wait for the next session bucket."
+            )
+
+        local_t = reference_time.astimezone(NY).time().replace(tzinfo=None)
+        stop_time = _parse_hhmm(c.no_new_trades_after_et, time(16, 30))
+        resume_time = _parse_hhmm(c.resume_trading_et, time(18, 0))
+        if stop_time <= local_t < resume_time and status == "ACTIVE":
+            status, reason = "SESSION_LOCK", f"No new OTR trades between {c.no_new_trades_after_et} and {c.resume_trading_et} ET."
 
         internal_loss_used = max(0.0, -day_pnl)
         internal_daily_headroom = max(0.0, abs(c.internal_daily_stop) - internal_loss_used)
@@ -279,6 +352,13 @@ class EvaluationRiskGuard:
             "max_micros": c.max_micros,
             "largest_day_profit": largest_day_profit,
             "consistency_pct": consistency,
+            "session": current_session,
+            "session_pnl": session_pnl,
+            "session_trades": session_trades,
+            "session_wins": session_wins,
+            "session_losses": session_losses,
+            "session_profit_cap": c.session_profit_cap,
+            "session_profit_remaining": session_profit_remaining,
             "reference_time": reference_time.isoformat(),
         }
 
@@ -302,7 +382,9 @@ class EvaluationRiskGuard:
             return EvaluationDecision(False, 0.0, "RISK_LOCK", reason, snap)
 
         if can_continue_passed:
-            reason = f"Evaluation target already reached; continuing weekly paper test with ${risk:.2f} risk."
+            reason = f"Evaluation target already reached; continuing research with ${risk:.2f} risk."
             return EvaluationDecision(True, risk, "PASSED", reason, snap)
 
-        return EvaluationDecision(True, risk, "ACTIVE", f"Approved with ${risk:.2f} paper risk.", snap)
+        session_name = (snap.get("session") or {}).get("name")
+        suffix = f" · {session_name} remaining ${snap['session_profit_remaining']:.2f}" if session_name else ""
+        return EvaluationDecision(True, risk, "ACTIVE", f"Approved with ${risk:.2f} paper risk{suffix}.", snap)
