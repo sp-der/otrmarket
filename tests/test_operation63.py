@@ -2,9 +2,18 @@ import subprocess
 import sys
 import textwrap
 import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class Operation63RegressionTests(unittest.TestCase):
+    def test_production_entrypoint_uses_operation62_recovery_hook(self):
+        text = (ROOT / "src/main_63.py").read_text()
+        self.assertIn("op62._restore_progress_62()", text)
+        self.assertNotIn("op62._restore_progress()", text)
+
     def test_operation63_runtime_contracts_in_isolated_process(self):
         code = textwrap.dedent(
             r'''
