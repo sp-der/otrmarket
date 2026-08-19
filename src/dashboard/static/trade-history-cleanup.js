@@ -19,12 +19,81 @@ function isNonExecutedSetup65(setup) {
   return NON_EXECUTED_SETUP_STATUSES_65.has(String(setup?.status || "").toUpperCase());
 }
 
+function syncHtml65(root, html) {
+  if (root && root.innerHTML !== html) root.innerHTML = html;
+}
+
 const resultFilter65 = $("tradeResultFilter");
 if (resultFilter65) {
   resultFilter65.innerHTML = `
     <option value="all">All realized</option>
     <option value="WIN">Wins</option>
     <option value="LOSS">Losses</option>`;
+}
+
+function ensureNonExecutedTradePanel65() {
+  const tradesView = $("tradesView");
+  if (!tradesView || $("nonExecutedTradesBody65")) return;
+
+  const panel = document.createElement("section");
+  panel.className = "panel";
+  panel.innerHTML = `
+    <div class="panel-head">
+      <div>
+        <div class="section-kicker">EXECUTION AUDIT</div>
+        <h2>Missed / Rejected Attempts</h2>
+      </div>
+      <span class="tiny-chip">NO REALIZED P/L</span>
+    </div>
+    <div class="table-wrap tall-table">
+      <table>
+        <thead>
+          <tr><th>Market</th><th>TF</th><th>Direction</th><th>Status</th><th>Entry</th><th>Stop</th><th>Target</th><th>Exit</th><th>Result</th><th>R</th><th>P/L</th><th>Opened</th><th>Closed</th></tr>
+        </thead>
+        <tbody id="nonExecutedTradesBody65"></tbody>
+      </table>
+    </div>`;
+  tradesView.appendChild(panel);
+}
+
+function enforceRealizedTradeHistory65() {
+  const trades = state?.snapshot?.trades || [];
+  const symbolFilter = $("tradeSymbolFilter")?.value || "all";
+  const resultFilter = $("tradeResultFilter")?.value || "all";
+
+  const realized = trades.filter(isRealizedTrade65);
+  const recent = realized.slice(0, 8);
+  syncHtml65(
+    $("overviewTradesBody"),
+    recent.length
+      ? recent.map((t) => tradeRow(t, true)).join("")
+      : '<tr><td colspan="10" class="empty-state">No realized paper trades yet.</td></tr>',
+  );
+
+  const visibleRealized = realized.filter((t) => {
+    const symbolOk = symbolFilter === "all" || t.symbol === symbolFilter;
+    const marker = String(t.result || "").toUpperCase();
+    const resultOk = resultFilter === "all" || marker === resultFilter;
+    return symbolOk && resultOk;
+  });
+  syncHtml65(
+    $("tradesBody"),
+    visibleRealized.length
+      ? visibleRealized.map((t) => tradeRow(t, false)).join("")
+      : '<tr><td colspan="13" class="empty-state">No realized trades match these filters.</td></tr>',
+  );
+
+  ensureNonExecutedTradePanel65();
+  const nonExecuted = trades.filter((t) => {
+    const symbolOk = symbolFilter === "all" || t.symbol === symbolFilter;
+    return symbolOk && !isRealizedTrade65(t);
+  });
+  syncHtml65(
+    $("nonExecutedTradesBody65"),
+    nonExecuted.length
+      ? nonExecuted.map((t) => tradeRow(t, false)).join("")
+      : '<tr><td colspan="13" class="empty-state">No missed or rejected attempts for this market.</td></tr>',
+  );
 }
 
 const setupsView65 = $("setupsView");
@@ -47,45 +116,10 @@ if (setupsView65 && !$("missedSetupCards")) {
   setupsView65.appendChild(auditPanel);
 }
 
-renderTrades = function renderTrades65(trades) {
-  const realized = (trades || []).filter(isRealizedTrade65);
-  const recent = realized.slice(0, 8);
-
-  $("overviewTradesBody").innerHTML = recent.length
-    ? recent.map((t) => tradeRow(t, true)).join("")
-    : '<tr><td colspan="10" class="empty-state">No realized paper trades yet.</td></tr>';
-
-  const symbolFilter = $("tradeSymbolFilter").value;
-  const resultFilter = $("tradeResultFilter").value;
-  const filtered = realized.filter((t) => {
-    const symbolOk = symbolFilter === "all" || t.symbol === symbolFilter;
-    const marker = String(t.result || "").toUpperCase();
-    const resultOk = resultFilter === "all" || marker === resultFilter;
-    return symbolOk && resultOk;
-  });
-
-  $("tradesBody").innerHTML = filtered.length
-    ? filtered.map((t) => tradeRow(t, false)).join("")
-    : '<tr><td colspan="13" class="empty-state">No realized trades match these filters.</td></tr>';
-};
-
-renderSetups = function renderSetups65(setups) {
-  const all = setups || [];
-  const latest = all[0];
-  if (!latest) {
-    $("latestSetup").className = "latest-card empty-state";
-    $("latestSetup").textContent = "No strategy setups yet.";
-  } else {
-    $("latestSetup").className = "latest-card";
-    $("latestSetup").innerHTML = `
-      <strong>${labelMap[latest.symbol] || latest.symbol} · ${String(latest.direction).toUpperCase()}</strong>
-      <div class="latest-row"><span>Trigger</span><strong>${String(latest.trigger_type || "--").replaceAll("_", " ")}</strong></div>
-      <div class="latest-row"><span>Entry</span><strong>${fmtPrice(latest.entry_price)}</strong></div>
-      <div class="latest-row"><span>Risk / Reward</span><strong>${Number(latest.risk_reward || 0).toFixed(2)}R</strong></div>`;
-  }
-
-  const symbolFilter = $("setupSymbolFilter").value;
-  const triggerFilter = $("setupTriggerFilter").value;
+function enforceSetupSplit65() {
+  const all = state?.snapshot?.setups || [];
+  const symbolFilter = $("setupSymbolFilter")?.value || "all";
+  const triggerFilter = $("setupTriggerFilter")?.value || "all";
   const filtered = all.filter((s) => {
     const symbolOk = symbolFilter === "all" || s.symbol === symbolFilter;
     const triggerOk = triggerFilter === "all" || s.trigger_type === triggerFilter;
@@ -94,15 +128,38 @@ renderSetups = function renderSetups65(setups) {
 
   const active = filtered.filter((s) => !isNonExecutedSetup65(s));
   const rejected = filtered.filter(isNonExecutedSetup65);
-
-  $("setupCards").innerHTML = active.length
-    ? active.map(setupCard).join("")
-    : '<div class="empty-state">No active or executable setups match these filters.</div>';
-
-  const rejectedRoot = $("missedSetupCards");
-  if (rejectedRoot) {
-    rejectedRoot.innerHTML = rejected.length
+  syncHtml65(
+    $("setupCards"),
+    active.length
+      ? active.map(setupCard).join("")
+      : '<div class="empty-state">No active or executable setups match these filters.</div>',
+  );
+  syncHtml65(
+    $("missedSetupCards"),
+    rejected.length
       ? rejected.map(setupCard).join("")
-      : '<div class="empty-state">No missed or rejected setups match these filters.</div>';
-  }
-};
+      : '<div class="empty-state">No missed or rejected setups match these filters.</div>',
+  );
+}
+
+let scheduled65 = false;
+function scheduleCleanup65() {
+  if (scheduled65) return;
+  scheduled65 = true;
+  queueMicrotask(() => {
+    scheduled65 = false;
+    enforceRealizedTradeHistory65();
+    enforceSetupSplit65();
+  });
+}
+
+for (const id of ["overviewTradesBody", "tradesBody", "setupCards"]) {
+  const root = $(id);
+  if (root) new MutationObserver(scheduleCleanup65).observe(root, { childList: true });
+}
+
+for (const id of ["tradeSymbolFilter", "tradeResultFilter", "setupSymbolFilter", "setupTriggerFilter"]) {
+  $(id)?.addEventListener("change", scheduleCleanup65);
+}
+
+scheduleCleanup65();
