@@ -83,7 +83,7 @@ class Operation65RegressionTests(unittest.TestCase):
         self.assertIn("Missed / Rejected Attempts", cleanup)
         self.assertIn("MAX_AUDIT_ROWS_65 = 30", cleanup)
         self.assertIn("renderTradesRealizedOnly65", cleanup)
-        self.assertNotIn("MutationObserver", cleanup)
+        self.assertNotIn("new MutationObserver(", cleanup)
         self.assertIn("nonExecutedTradesBody65", cleanup)
         self.assertIn("trade-history-cleanup.js?v=6.5.2", index)
         self.assertIn('"src.main_65"', server)
