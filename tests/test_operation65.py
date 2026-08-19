@@ -85,7 +85,7 @@ class Operation65RegressionTests(unittest.TestCase):
         self.assertIn("No realized paper trades yet", cleanup)
         self.assertIn("MutationObserver", cleanup)
         self.assertIn("nonExecutedTradesBody65", cleanup)
-        self.assertIn("trade-history-cleanup.js?v=6.5", index)
+        self.assertIn("trade-history-cleanup.js?v=6.5.1", index)
         self.assertIn('"src.main_65"', server)
         self.assertIn('"src.main_64"', server)
 
