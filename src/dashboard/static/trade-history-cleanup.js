@@ -68,6 +68,10 @@ function installRealizedTradeHistory65() {
     ensureTradeFilters65();
     const allTrades = trades || [];
     const realizedTrades = allTrades.filter(isRealizedTrade65);
+
+    // The final dashboard renderer owns BOTH the Overview recent-activity table
+    // and the full Trades journal. Feeding only realized rows here guarantees
+    // WIN/LOSS-only history in both places, regardless of the timing UI layer.
     finalDashboardRenderTrades65(realizedTrades);
     renderAttemptAudit65(allTrades);
   };
@@ -79,8 +83,76 @@ function installRealizedTradeHistory65() {
   }
 }
 
-// trading-days.js intentionally replaces renderTrades later in the deferred
-// script chain to add trade duration. Install this wrapper only after every
-// deferred dashboard script has executed so the WIN/LOSS-only journal remains
-// the final renderer instead of being overwritten by the timing layer.
-window.addEventListener("DOMContentLoaded", installRealizedTradeHistory65, { once: true });
+function buildRuleRow65(rule) {
+  const source = rule.source ? `<small class="muted">${rule.source}</small>` : "";
+  return `<div><span>${rule.name}</span><strong>${rule.value}${source}</strong></div>`;
+}
+
+async function ensureActiveBuildPanel65() {
+  const systemView = document.getElementById("systemView");
+  if (!systemView || document.getElementById("activeBuildRules65")) return;
+
+  const panel = document.createElement("section");
+  panel.id = "activeBuildRules65";
+  panel.className = "panel";
+  panel.innerHTML = `
+    <div class="panel-head">
+      <div>
+        <div class="section-kicker">LIVE BUILD AUDIT</div>
+        <h2>Active Build / Trading Rules</h2>
+      </div>
+      <span id="activeBuildBadge65" class="tiny-chip">LOADING</span>
+    </div>
+    <div id="activeBuildMeta65" class="system-list">
+      <div><span>Status</span><strong>Loading runtime manifest…</strong></div>
+    </div>
+    <div class="divider"></div>
+    <div class="section-kicker">VERIFIED EXECUTION RULES</div>
+    <div id="activeBuildRuleList65" class="system-list"></div>`;
+  systemView.insertBefore(panel, systemView.firstChild);
+
+  try {
+    const response = await fetch(`/market/assets/runtime-build.json?t=${Date.now()}`, { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const manifest = await response.json();
+    const build = manifest.build || {};
+    const rules = manifest.rules || [];
+
+    const badge = document.getElementById("activeBuildBadge65");
+    if (badge) badge.textContent = build.operation || "ACTIVE";
+
+    const meta = document.getElementById("activeBuildMeta65");
+    if (meta) {
+      const shortSha = String(build.commit_sha || "unknown").slice(0, 10);
+      meta.innerHTML = `
+        <div><span>Engine</span><strong class="mono">${build.engine_module || "unknown"}</strong></div>
+        <div><span>Operation</span><strong>${build.operation || "--"}</strong></div>
+        <div><span>Deploy commit</span><strong class="mono">${shortSha}</strong></div>
+        <div><span>Execution mode</span><strong>${build.execution_mode || "PAPER"}</strong></div>
+        <div><span>Manifest generated</span><strong>${build.generated_at ? fmtTime(build.generated_at) : "--"}</strong></div>`;
+    }
+
+    const list = document.getElementById("activeBuildRuleList65");
+    if (list) list.innerHTML = rules.map(buildRuleRow65).join("");
+  } catch (error) {
+    const badge = document.getElementById("activeBuildBadge65");
+    if (badge) badge.textContent = "MANIFEST ERROR";
+    const meta = document.getElementById("activeBuildMeta65");
+    if (meta) meta.innerHTML = `<div><span>Status</span><strong>Runtime manifest unavailable: ${String(error)}</strong></div>`;
+  }
+}
+
+function finalizeDashboard65() {
+  installRealizedTradeHistory65();
+  ensureActiveBuildPanel65();
+}
+
+// Important: trading-days.js installs its own trade renderer from a later
+// DOMContentLoaded callback. Running on window.load and then queueing one final
+// task guarantees every deferred script and every DOMContentLoaded/load handler
+// has finished before OTR locks the final WIN/LOSS-only renderer in place.
+if (document.readyState === "complete") {
+  window.setTimeout(finalizeDashboard65, 0);
+} else {
+  window.addEventListener("load", () => window.setTimeout(finalizeDashboard65, 0), { once: true });
+}
