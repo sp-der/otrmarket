@@ -40,6 +40,10 @@ If price has already traveled 75% or more of the planned objective before regist
 
 If the protective stop was already broken, the setup remains a true invalidation rather than a missed-move classification.
 
+## Deployment test gate
+
+Railway runs the Operation 6.3 and 6.4 regression suites before future production deploys. A failed regression blocks the new release from replacing the healthy production instance.
+
 ## Result
 
 The bot remains selective, but it is less rigid around legitimate reversals and clearer about the difference between:
