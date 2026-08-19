@@ -174,6 +174,21 @@
     return days;
   }
 
+  function groupDailyRealized(rows) {
+    const days = new Map();
+    (rows || []).forEach((row) => {
+      const key = String(row?.date || "");
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) return;
+      days.set(key, {
+        pnl: Number(row.pnl || 0),
+        closed: Number(row.closed || 0),
+        wins: Number(row.wins || 0),
+        losses: Number(row.losses || 0),
+      });
+    });
+    return days;
+  }
+
   function renderCalendar(snapshot) {
     const reference = snapshot?.runtime?.market_time || snapshot?.evaluation?.reference_time || snapshot?.generated_at;
     const refParts = dateParts(reference);
@@ -190,7 +205,10 @@
     const grid = document.getElementById("lucidCalendarGrid");
     if (!grid) return;
 
-    const grouped = groupTrades(snapshot?.trades || []);
+    const fullLedger = snapshot?.daily_realized_pnl;
+    const grouped = Array.isArray(fullLedger)
+      ? groupDailyRealized(fullLedger)
+      : groupTrades(snapshot?.trades || []);
     const firstDay = new Date(Date.UTC(cursorYear, cursorMonth, 1)).getUTCDay();
     const daysInMonth = new Date(Date.UTC(cursorYear, cursorMonth + 1, 0)).getUTCDate();
     const todayKey = `${refParts.year}-${String(refParts.month + 1).padStart(2, "0")}-${String(refParts.day).padStart(2, "0")}`;
