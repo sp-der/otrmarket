@@ -90,6 +90,18 @@ class FullLedgerCalendarTests(unittest.TestCase):
         self.assertIn("Array.isArray(fullLedger)", source)
         self.assertIn("groupTrades(snapshot?.trades || [])", source)
 
+    def test_calendar_assets_are_cache_busted_and_mobile_safe(self):
+        index = (ROOT / "src/dashboard/static/index.html").read_text(encoding="utf-8")
+        css = (ROOT / "src/dashboard/static/trading-days.css").read_text(encoding="utf-8")
+
+        self.assertIn("trading-days.css?v=6.6.2", index)
+        self.assertIn("trading-days.js?v=6.6.2", index)
+        self.assertIn("@media (max-width: 560px)", css)
+        self.assertIn("@media (max-width: 390px)", css)
+        self.assertIn("white-space: nowrap", css)
+        self.assertIn("font-variant-numeric: tabular-nums", css)
+        self.assertIn("font-size: clamp(7px, 2.05vw, 9px)", css)
+
 
 if __name__ == "__main__":
     unittest.main()
