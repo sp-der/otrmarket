@@ -130,7 +130,7 @@ def _write_runtime_manifest(engine_module: str) -> None:
     manifest = {
         "build": {
             "engine_module": engine_module,
-            "operation": "Operation 6.6",
+            "operation": "Operation 6.7",
             "commit_sha": (
                 os.getenv("RAILWAY_GIT_COMMIT_SHA", "").strip()
                 or os.getenv("OTR_BUILD_SHA", "").strip()
@@ -156,8 +156,13 @@ def _write_runtime_manifest(engine_module: str) -> None:
                 "source": "src/main_66.py + src/main_65.py",
             },
             {
+                "name": "Operation 6.7 OTE entry policy",
+                "value": ".705-.79 standard OTE · .79 preferred · shallow entries require full aggressive confirmation at reduced risk",
+                "source": "src/main_67.py + src/strategies/ote_entry_policy_67.py",
+            },
+            {
                 "name": "Base risk / trade",
-                "value": f"${_env_float('EVAL_RISK_PER_TRADE', 300.0):.0f}",
+                "value": f"${_env_float('EVAL_RISK_PER_TRADE', 250.0):.0f}",
                 "source": "src/risk/evaluation.py",
             },
             {
@@ -175,25 +180,25 @@ def _write_runtime_manifest(engine_module: str) -> None:
             },
             {
                 "name": "Internal daily stop",
-                "value": f"${_env_float('EVAL_INTERNAL_DAILY_STOP', 900.0):.0f}",
+                "value": f"${_env_float('EVAL_INTERNAL_DAILY_STOP', 750.0):.0f}",
                 "source": "src/risk/evaluation.py",
             },
             {
                 "name": "Daily / loss locks",
                 "value": (
-                    f"{_env_int('EVAL_MAX_TRADES_PER_DAY', 8)} trades max · "
-                    f"{_env_int('EVAL_MAX_CONSECUTIVE_LOSSES', 2)} consecutive losses max · 1 concurrent position"
+                    f"{_env_int('EVAL_MAX_TRADES_PER_DAY', 4)} trades max · "
+                    f"{_env_int('EVAL_MAX_CONSECUTIVE_LOSSES', 3)} consecutive losses max · 1 concurrent position"
                 ),
                 "source": "src/risk/evaluation.py",
             },
             {
                 "name": "ICT entry sequence",
-                "value": "PD array → sweep/SMT → displacement → FVG → 50-79% retracement → valid R:R",
-                "source": "src/strategies/confluence.py",
+                "value": "PD array → sweep/SMT → displacement → FVG → .705-.79 OTE preferred (.79 favored) → valid R:R",
+                "source": "src/strategies/ote_entry_policy_67.py",
             },
             {
                 "name": "Entry development window",
-                "value": "15 bars after displacement for FVG / 50-79 / R:R development",
+                "value": "15 bars after displacement for FVG / retracement / R:R development",
                 "source": "src/strategies/confluence.py",
             },
             {
@@ -213,8 +218,8 @@ def _write_runtime_manifest(engine_module: str) -> None:
             },
             {
                 "name": "Post-loss behavior",
-                "value": "30-minute futures-wide reset plus stronger follow-up quality / reduced-risk logic",
-                "source": "src/main_59.py + src/main_61.py",
+                "value": "30-minute futures-wide reset plus stronger follow-up quality / reduced-risk logic; ≤60s shallow-entry losses activate same-day Operation 6.7 timing penalties",
+                "source": "src/main_59.py + src/main_61.py + src/main_67.py",
             },
         ],
     }
@@ -227,19 +232,20 @@ def _write_runtime_manifest(engine_module: str) -> None:
 
 
 def _start_engine() -> None:
-    global _engine_process
+    global _shutting_down, _engine_process
 
+    _shutting_down = False
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
 
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
 
-    # Operation 6.6 is the current production engine. Promote known legacy
+    # Operation 6.7 is the current production engine. Promote known legacy
     # values automatically so an old Railway variable cannot silently boot an
     # older strategy chain.
-    requested_module = os.getenv("OTR_ENGINE_MODULE", "src.main_66").strip() or "src.main_66"
+    requested_module = os.getenv("OTR_ENGINE_MODULE", "src.main_67").strip() or "src.main_67"
     engine_module = (
-        "src.main_66"
+        "src.main_67"
         if requested_module in {
             "src.main_58",
             "src.main_59",
@@ -248,6 +254,7 @@ def _start_engine() -> None:
             "src.main_63",
             "src.main_64",
             "src.main_65",
+            "src.main_66",
         }
         else requested_module
     )
