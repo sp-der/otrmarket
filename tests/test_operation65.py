@@ -79,9 +79,12 @@ class Operation65RegressionTests(unittest.TestCase):
         server = (ROOT / "src/dashboard/server.py").read_text()
 
         self.assertIn('new Set(["WIN", "LOSS"])', cleanup)
-        self.assertIn("MISSED_EXTENDED", cleanup)
+        self.assertIn("isRealizedTrade65", cleanup)
+        self.assertIn("Missed / Rejected Attempts", cleanup)
         self.assertIn("Missed / Rejected Setups", cleanup)
         self.assertIn("No realized paper trades yet", cleanup)
+        self.assertIn("MutationObserver", cleanup)
+        self.assertIn("nonExecutedTradesBody65", cleanup)
         self.assertIn("trade-history-cleanup.js?v=6.5", index)
         self.assertIn('"src.main_65"', server)
         self.assertIn('"src.main_64"', server)
