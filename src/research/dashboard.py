@@ -96,6 +96,11 @@ class ResearchDashboardRepository:
             return True
         try:
             with self._connect(self.historical_database) as connection:
+                manifest = connection.execute(
+                    "SELECT validation_status FROM capture_manifests WHERE capture_id=?", (capture_id,)
+                ).fetchone() if self._exists(connection, "capture_manifests") else None
+                if manifest and manifest[0] == "VALIDATED":
+                    return False
                 incomplete = connection.execute(
                     "SELECT COUNT(*) FROM canonical_candles WHERE capture_id=? AND (completeness_state!='COMPLETE' OR gap_state!='NONE')",
                     (capture_id,),
@@ -298,7 +303,7 @@ class ResearchDashboardRepository:
             for field in ("markets_json","contracts_json","canonical_counts_json","integrity_summary_json","roll_boundaries_json"):
                 manifest[field.removesuffix("_json")] = _json(manifest.pop(field, None), [] if field in {"markets_json","contracts_json","roll_boundaries_json"} else {})
         validated = bool(rows) and all(row.get("validation_status") == "VALIDATED" for row in rows)
-        paired_ready = pair["pair_coverage_percentage"] >= 99 and pair["nq_minutes"] and pair["es_minutes"]
+        paired_ready = pair.get("common_overlap_coverage_percentage", pair["pair_coverage_percentage"]) >= 99 and pair["nq_minutes"] and pair["es_minutes"]
         roots = {row["root"] for row in rows}
         starts = [datetime.fromisoformat(row["start"]) for row in rows if row.get("start")]
         ends = [datetime.fromisoformat(row["end"]) for row in rows if row.get("end")]

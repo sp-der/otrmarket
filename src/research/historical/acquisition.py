@@ -554,6 +554,33 @@ def verify_capture(database: str | Path, capture_id: str) -> dict:
 
 
 def paired_coverage(connection: sqlite3.Connection, capture_id: str | None = None) -> dict:
+    has_series = capture_id and connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='research_series_bars'"
+    ).fetchone() and connection.execute(
+        "SELECT 1 FROM research_series_bars WHERE capture_id=? LIMIT 1", (capture_id,)
+    ).fetchone()
+    if has_series:
+        nq = {row[0] for row in connection.execute(
+            "SELECT open_time FROM research_series_bars WHERE capture_id=? AND root_symbol='NQ'", (capture_id,))}
+        es = {row[0] for row in connection.execute(
+            "SELECT open_time FROM research_series_bars WHERE capture_id=? AND root_symbol='ES'", (capture_id,))}
+        union, paired = nq | es, nq & es
+        nq_contracts = [row[0] for row in connection.execute(
+            "SELECT DISTINCT contract FROM research_series_bars WHERE capture_id=? AND root_symbol='NQ' ORDER BY contract", (capture_id,))]
+        es_contracts = [row[0] for row in connection.execute(
+            "SELECT DISTINCT contract FROM research_series_bars WHERE capture_id=? AND root_symbol='ES' ORDER BY contract", (capture_id,))]
+        start = max(min(nq), min(es)) if nq and es else None
+        end = min(max(nq), max(es)) if nq and es else None
+        nq_overlap = {x for x in nq if start <= x <= end} if start and end else set()
+        es_overlap = {x for x in es if start <= x <= end} if start and end else set()
+        overlap_union, overlap_pair = nq_overlap | es_overlap, nq_overlap & es_overlap
+        return {"nq_minutes": len(nq), "es_minutes": len(es), "paired_minutes": len(paired),
+                "missing_nq_minutes": len(es-nq), "missing_es_minutes": len(nq-es),
+                "pair_coverage_percentage": 100.0*len(paired)/len(union) if union else 0.0,
+                "common_overlap_coverage_percentage": 100.0*len(overlap_pair)/len(overlap_union) if overlap_union else 0.0,
+                "common_overlap_start": start, "common_overlap_end": end,
+                "pair_label":"MNQ/ES PAIRED COVERAGE", "smt_source":"MNQ vs ES",
+                "nasdaq_source":"MNQ FAMILY PROXY", "nq_contracts":nq_contracts,"es_contracts":es_contracts}
     clause, args = (" AND capture_id=?", (capture_id,)) if capture_id else ("", ())
     nq = {row[0] for row in connection.execute("SELECT open_time FROM canonical_candles WHERE timeframe='1m' AND root_symbol='NQ'"+clause, args)}
     es = {row[0] for row in connection.execute("SELECT open_time FROM canonical_candles WHERE timeframe='1m' AND root_symbol='ES'"+clause, args)}

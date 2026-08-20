@@ -18,6 +18,7 @@ from src.research.historical.acquisition import (
     list_captures, verify_capture,
 )
 from src.research.historical.store import HistoricalStore
+from src.research.historical.databento import import_databento_package, verify_package
 
 
 def main() -> None:
@@ -45,6 +46,12 @@ def main() -> None:
     batch = commands.add_parser("import-ninjatrader-batch", help="Import a manifest-declared directory/capture")
     batch.add_argument("--manifest", required=True, help="JSON manifest containing capture_id and files")
     batch.add_argument("--dry-run", action="store_true")
+    dbn = commands.add_parser("import-databento", help="Import an immutable Databento DBN batch ZIP")
+    dbn.add_argument("--package", required=True)
+    dbn.add_argument("--capture-id", required=True)
+    dbn.add_argument("--dry-run", action="store_true")
+    verify_dbn = commands.add_parser("verify-databento-package")
+    verify_dbn.add_argument("--package", required=True)
     listing = commands.add_parser("list-captures")
     manifest = commands.add_parser("export-manifest")
     manifest.add_argument("--capture-id", required=True)
@@ -89,6 +96,11 @@ def main() -> None:
                 item.get("delimiter", "auto"))))
         print(json.dumps(import_ninjatrader_batch(items, store.path, definition["capture_id"],
                          dry_run=args.dry_run), indent=2, default=str))
+    elif args.command == "import-databento":
+        print(json.dumps(import_databento_package(args.package, store.path, args.capture_id,
+                         dry_run=args.dry_run), indent=2, default=str))
+    elif args.command == "verify-databento-package":
+        print(json.dumps(verify_package(args.package), indent=2, default=str))
     elif args.command == "list-captures":
         print(json.dumps(list_captures(store.path), indent=2))
     elif args.command == "export-manifest":

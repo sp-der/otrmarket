@@ -155,7 +155,17 @@ def execute(request: dict) -> dict:
         else:
             timeframes = request["enabled_timeframes"]
             tf_places = ",".join("?" for _ in timeframes)
-            rows = historical.execute(f"SELECT * FROM canonical_candles WHERE capture_id=? AND contract IN ({placeholders}) AND timeframe IN ({tf_places}) AND close_time>=? AND close_time<=? ORDER BY close_time", [request["capture_id"], *contracts, *timeframes, request["start_time"], request["end_time"]]).fetchall()
+            has_series = historical.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='research_series_bars'").fetchone() and historical.execute(
+                "SELECT 1 FROM research_series_bars WHERE capture_id=? LIMIT 1", (request["capture_id"],)).fetchone()
+            if has_series:
+                rows = historical.execute(f"""SELECT cc.* FROM canonical_candles cc
+                  JOIN research_series_bars rs ON rs.capture_id=cc.capture_id
+                   AND rs.root_symbol=cc.root_symbol AND rs.open_time=cc.open_time AND rs.contract=cc.contract
+                  WHERE cc.capture_id=? AND cc.contract IN ({placeholders}) AND cc.timeframe IN ({tf_places})
+                   AND cc.close_time>=? AND cc.close_time<=? ORDER BY cc.close_time""",
+                  [request["capture_id"], *contracts, *timeframes, request["start_time"], request["end_time"]]).fetchall()
+            else:
+                rows = historical.execute(f"SELECT * FROM canonical_candles WHERE capture_id=? AND contract IN ({placeholders}) AND timeframe IN ({tf_places}) AND close_time>=? AND close_time<=? ORDER BY close_time", [request["capture_id"], *contracts, *timeframes, request["start_time"], request["end_time"]]).fetchall()
             for close_time, group in synchronized_candle_groups(rows):
                 current_time["value"] = close_time
                 event_dt = datetime.fromisoformat(close_time)

@@ -1,0 +1,2 @@
+# Research-only market-data tooling. Not used by the production runtime.
+databento==0.82.0

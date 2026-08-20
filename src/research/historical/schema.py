@@ -171,6 +171,75 @@ BEFORE UPDATE ON capture_manifests BEGIN SELECT RAISE(ABORT, 'capture manifests 
 CREATE TRIGGER IF NOT EXISTS capture_manifests_no_delete
 BEFORE DELETE ON capture_manifests BEGIN SELECT RAISE(ABORT, 'capture manifests are immutable'); END;
 
+CREATE TABLE IF NOT EXISTS provider_capture_metadata (
+    capture_id TEXT PRIMARY KEY REFERENCES capture_sessions(capture_id),
+    provider TEXT NOT NULL,
+    dataset TEXT NOT NULL,
+    schema_name TEXT NOT NULL,
+    job_id TEXT NOT NULL,
+    source_package_sha256 TEXT NOT NULL,
+    payload_sha256 TEXT NOT NULL,
+    requested_start TEXT NOT NULL,
+    requested_end TEXT NOT NULL,
+    condition_json TEXT NOT NULL,
+    degraded_dates_json TEXT NOT NULL,
+    metadata_json TEXT NOT NULL
+);
+
+CREATE TRIGGER IF NOT EXISTS provider_capture_metadata_no_update
+BEFORE UPDATE ON provider_capture_metadata BEGIN SELECT RAISE(ABORT, 'provider metadata is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS provider_capture_metadata_no_delete
+BEFORE DELETE ON provider_capture_metadata BEGIN SELECT RAISE(ABORT, 'provider metadata is immutable'); END;
+
+CREATE TABLE IF NOT EXISTS databento_instruments (
+    capture_id TEXT NOT NULL REFERENCES capture_sessions(capture_id),
+    instrument_id INTEGER NOT NULL,
+    raw_symbol TEXT NOT NULL,
+    contract TEXT NOT NULL REFERENCES contracts(contract),
+    root_symbol TEXT NOT NULL CHECK(root_symbol IN ('NQ', 'ES', 'GC')),
+    mapping_start TEXT NOT NULL,
+    mapping_end TEXT NOT NULL,
+    PRIMARY KEY(capture_id, instrument_id)
+);
+
+CREATE TRIGGER IF NOT EXISTS databento_instruments_no_update
+BEFORE UPDATE ON databento_instruments BEGIN SELECT RAISE(ABORT, 'Databento instruments are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS databento_instruments_no_delete
+BEFORE DELETE ON databento_instruments BEGIN SELECT RAISE(ABORT, 'Databento instruments are immutable'); END;
+
+CREATE TABLE IF NOT EXISTS databento_bar_provenance (
+    raw_bar_id INTEGER PRIMARY KEY REFERENCES raw_import_bars(raw_bar_id),
+    capture_id TEXT NOT NULL,
+    instrument_id INTEGER NOT NULL,
+    raw_symbol TEXT NOT NULL,
+    publisher_id INTEGER,
+    FOREIGN KEY(capture_id, instrument_id) REFERENCES databento_instruments(capture_id, instrument_id)
+);
+
+CREATE TRIGGER IF NOT EXISTS databento_bar_provenance_no_update
+BEFORE UPDATE ON databento_bar_provenance BEGIN SELECT RAISE(ABORT, 'Databento provenance is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS databento_bar_provenance_no_delete
+BEFORE DELETE ON databento_bar_provenance BEGIN SELECT RAISE(ABORT, 'Databento provenance is immutable'); END;
+
+CREATE TABLE IF NOT EXISTS research_series_bars (
+    capture_id TEXT NOT NULL REFERENCES capture_sessions(capture_id),
+    root_symbol TEXT NOT NULL CHECK(root_symbol IN ('NQ', 'ES', 'GC')),
+    open_time TEXT NOT NULL,
+    candle_id INTEGER NOT NULL REFERENCES canonical_candles(candle_id),
+    instrument_id INTEGER NOT NULL,
+    contract TEXT NOT NULL,
+    selection_method TEXT NOT NULL,
+    PRIMARY KEY(capture_id, root_symbol, open_time)
+);
+
+CREATE INDEX IF NOT EXISTS idx_research_series_capture_root_time
+ON research_series_bars(capture_id, root_symbol, open_time);
+
+CREATE TRIGGER IF NOT EXISTS research_series_bars_no_update
+BEFORE UPDATE ON research_series_bars BEGIN SELECT RAISE(ABORT, 'research series is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS research_series_bars_no_delete
+BEFORE DELETE ON research_series_bars BEGIN SELECT RAISE(ABORT, 'research series is immutable'); END;
+
 CREATE TABLE IF NOT EXISTS canonical_bar_provenance (
     candle_id INTEGER PRIMARY KEY REFERENCES canonical_candles(candle_id),
     capture_id TEXT NOT NULL,
