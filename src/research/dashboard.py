@@ -8,6 +8,7 @@ from typing import Any
 
 from src.research.execution.metrics import raw_metrics
 from src.research.historical.coverage import coverage_rows
+from src.research.historical.acquisition import paired_coverage
 
 
 def _json(value: Any, fallback: Any = None) -> Any:
@@ -290,12 +291,25 @@ class ResearchDashboardRepository:
             args = (capture_id,) if capture_id else ()
             where = "WHERE capture_id=?" if capture_id else ""
             findings = self._rows(connection, f"SELECT * FROM integrity_findings {where} ORDER BY detected_at,finding_id", args) if self._exists(connection, "integrity_findings") else []
-        incomplete = not rows or any(row["coverage_percentage"] < 100 or row["gaps"] for row in rows) or bool(findings)
+            pair = paired_coverage(connection, capture_id)
+            manifests = self._rows(connection, f"SELECT * FROM capture_manifests {where} ORDER BY imported_at" , args) if self._exists(connection, "capture_manifests") else []
+        for manifest in manifests:
+            for field in ("markets_json","contracts_json","canonical_counts_json","integrity_summary_json","roll_boundaries_json"):
+                manifest[field.removesuffix("_json")] = _json(manifest.pop(field, None), [] if field in {"markets_json","contracts_json","roll_boundaries_json"} else {})
+        validated = bool(rows) and all(row.get("validation_status") == "VALIDATED" for row in rows)
+        paired_ready = pair["pair_coverage_percentage"] >= 99 and pair["nq_minutes"] and pair["es_minutes"]
+        roots = {row["root"] for row in rows}
+        ready = validated and paired_ready and {"NQ", "ES", "GC"}.issubset(roots)
+        incomplete = not ready
         return _finite({
             "rows": rows,
             "findings": findings,
+            "manifests": manifests,
+            "paired_coverage": pair,
+            "phase6_ready": ready,
+            "readiness": "READY FOR PHASE 6" if ready else "NOT READY FOR PHASE 6",
             "incomplete": incomplete,
-            "warning": "INCOMPLETE RETAINED DATA — NOT VALID FOR STRATEGY EVALUATION" if incomplete else None,
+            "warning": "NOT READY FOR PHASE 6 — incomplete or unvalidated futures coverage" if incomplete else None,
         })
 
     def experiments(self) -> list[dict]:

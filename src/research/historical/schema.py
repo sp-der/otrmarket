@@ -112,4 +112,87 @@ CREATE TABLE IF NOT EXISTS integrity_findings (
     detected_at TEXT NOT NULL,
     UNIQUE(capture_id, finding_type, contract, timeframe, start_time, end_time, details)
 );
+
+CREATE TABLE IF NOT EXISTS raw_import_bars (
+    raw_bar_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    capture_id TEXT NOT NULL REFERENCES capture_sessions(capture_id),
+    source_file TEXT NOT NULL,
+    source_row_number INTEGER NOT NULL,
+    root_symbol TEXT NOT NULL CHECK(root_symbol IN ('NQ', 'ES', 'GC')),
+    contract TEXT NOT NULL REFERENCES contracts(contract),
+    size_class TEXT NOT NULL CHECK(size_class IN ('MINI', 'MICRO')),
+    source_timezone TEXT NOT NULL,
+    original_timestamp TEXT NOT NULL,
+    normalized_timestamp TEXT NOT NULL,
+    interval_minutes INTEGER NOT NULL CHECK(interval_minutes = 1),
+    open REAL NOT NULL,
+    high REAL NOT NULL,
+    low REAL NOT NULL,
+    close REAL NOT NULL,
+    volume INTEGER NOT NULL,
+    row_digest TEXT NOT NULL,
+    integrity_status TEXT NOT NULL,
+    findings_json TEXT NOT NULL DEFAULT '[]',
+    UNIQUE(capture_id, source_file, source_row_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_raw_import_bars_contract_time
+ON raw_import_bars(capture_id, contract, normalized_timestamp);
+
+CREATE TRIGGER IF NOT EXISTS raw_import_bars_no_update
+BEFORE UPDATE ON raw_import_bars BEGIN SELECT RAISE(ABORT, 'raw import bars are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS raw_import_bars_no_delete
+BEFORE DELETE ON raw_import_bars BEGIN SELECT RAISE(ABORT, 'raw import bars are immutable'); END;
+
+CREATE TABLE IF NOT EXISTS capture_manifests (
+    capture_id TEXT PRIMARY KEY REFERENCES capture_sessions(capture_id),
+    source TEXT NOT NULL,
+    imported_at TEXT NOT NULL,
+    markets_json TEXT NOT NULL,
+    contracts_json TEXT NOT NULL,
+    start_time TEXT NOT NULL,
+    end_time TEXT NOT NULL,
+    source_timezone TEXT NOT NULL,
+    resolution TEXT NOT NULL,
+    raw_row_count INTEGER NOT NULL,
+    canonical_counts_json TEXT NOT NULL,
+    coverage_percentage REAL NOT NULL,
+    integrity_summary_json TEXT NOT NULL,
+    roll_boundaries_json TEXT NOT NULL,
+    git_commit TEXT NOT NULL,
+    construction_version TEXT NOT NULL,
+    validation_status TEXT NOT NULL CHECK(validation_status IN ('SMOKE_ONLY','INCOMPLETE','USABLE_WITH_WARNINGS','VALIDATED')),
+    holiday_calendar_status TEXT NOT NULL,
+    manifest_digest TEXT NOT NULL UNIQUE
+);
+
+CREATE TRIGGER IF NOT EXISTS capture_manifests_no_update
+BEFORE UPDATE ON capture_manifests BEGIN SELECT RAISE(ABORT, 'capture manifests are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS capture_manifests_no_delete
+BEFORE DELETE ON capture_manifests BEGIN SELECT RAISE(ABORT, 'capture manifests are immutable'); END;
+
+CREATE TABLE IF NOT EXISTS canonical_bar_provenance (
+    candle_id INTEGER PRIMARY KEY REFERENCES canonical_candles(candle_id),
+    capture_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    contract TEXT NOT NULL,
+    raw_first_id INTEGER,
+    raw_last_id INTEGER,
+    construction_version TEXT NOT NULL
+);
+
+CREATE TRIGGER IF NOT EXISTS canonical_bar_provenance_no_update
+BEFORE UPDATE ON canonical_bar_provenance BEGIN SELECT RAISE(ABORT, 'canonical provenance is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS canonical_bar_provenance_no_delete
+BEFORE DELETE ON canonical_bar_provenance BEGIN SELECT RAISE(ABORT, 'canonical provenance is immutable'); END;
+
+CREATE TABLE IF NOT EXISTS declared_roll_boundaries (
+    capture_id TEXT NOT NULL REFERENCES capture_sessions(capture_id),
+    root_symbol TEXT NOT NULL,
+    from_contract TEXT NOT NULL,
+    to_contract TEXT NOT NULL,
+    roll_timestamp TEXT NOT NULL,
+    method TEXT NOT NULL,
+    PRIMARY KEY(capture_id, root_symbol, from_contract, to_contract, roll_timestamp)
+);
 """

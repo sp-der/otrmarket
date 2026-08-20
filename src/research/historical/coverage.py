@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 
 TIMEFRAMES = ("1m", "5m", "15m", "30m", "1h")
 
@@ -21,7 +23,30 @@ def coverage_rows(connection, capture_id: str | None = None) -> list[dict]:
         gap_clause = "AND capture_id=?" if capture_id else ""
         gap_params = (root, contract, capture_id) if capture_id else (root, contract)
         gaps = connection.execute(f"SELECT COUNT(*) FROM integrity_findings WHERE root_symbol=? AND (contract=? OR contract IS NULL) AND finding_type IN ('MISSING_PERIOD','SEQUENCE_GAP','MISSING_NQ_ES_PAIR') {gap_clause}", gap_params).fetchone()[0]
-        result.append({"root": root, "contract": contract, "start": start, "end": end, "events": events, "bars": bar_counts, "gaps": gaps, "coverage_percentage": (100.0 * complete / total) if total else 0.0})
+        result.append({"root": root, "contract": contract, "start": start, "end": end, "events": events, "bars": bar_counts, "gaps": gaps, "coverage_percentage": (100.0 * complete / total) if total else 0.0,
+                       "source": "event/replay capture", "missing_bars": gaps, "duplicates": 0,
+                       "roll_boundary": None, "validation_status": "SMOKE_ONLY" if capture_id == "retained-operation70-phase1" else "INCOMPLETE"})
+    has_raw = connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_import_bars'").fetchone()
+    if has_raw:
+        raw_where, raw_args = ("WHERE r.capture_id=?", (capture_id,)) if capture_id else ("", ())
+        imported = connection.execute(f"""SELECT r.capture_id,r.root_symbol,r.contract,MIN(r.normalized_timestamp),
+          MAX(r.normalized_timestamp),COUNT(*),m.source,m.coverage_percentage,m.integrity_summary_json,
+          m.roll_boundaries_json,m.validation_status
+          FROM raw_import_bars r JOIN capture_manifests m ON m.capture_id=r.capture_id {raw_where}
+          GROUP BY r.capture_id,r.root_symbol,r.contract ORDER BY r.root_symbol,r.contract""", raw_args).fetchall()
+        for capture, root, contract, start, end, raw_count, source, percentage, integrity_json, rolls_json, status in imported:
+            counts = {}
+            for timeframe in TIMEFRAMES:
+                counts[timeframe] = int(connection.execute("SELECT COUNT(*) FROM canonical_candles WHERE capture_id=? AND contract=? AND timeframe=?", (capture, contract, timeframe)).fetchone()[0])
+            integrity = json.loads(integrity_json)
+            rolls = json.loads(rolls_json)
+            result.append({"capture_id": capture, "root": root, "contract": contract, "start": start,
+                           "end": end, "events": raw_count, "bars": counts,
+                           "gaps": int(integrity.get("MISSING_EXPECTED_MINUTE", 0)),
+                           "coverage_percentage": float(percentage), "source": source,
+                           "missing_bars": int(integrity.get("MISSING_EXPECTED_MINUTE", 0)),
+                           "duplicates": int(integrity.get("DUPLICATE_TIMESTAMP", 0)),
+                           "roll_boundary": rolls or None, "validation_status": status})
     return result
 
 
