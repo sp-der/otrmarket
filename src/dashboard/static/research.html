@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>OTR Strategy Lab</title>
+  <link rel="icon" href="/market/assets/favicon.png">
+  <link rel="stylesheet" href="/market/assets/research.css?v=4.0">
+</head>
+<body>
+<div class="lab-shell">
+  <aside class="lab-side">
+    <a class="brand" href="/market/"><img src="/market/assets/otr-logo.png" alt="OTR"><span>OTR Market<small>Strategy Lab</small></span></a>
+    <div class="research-badge">RESEARCH / BACKTEST LAB</div>
+    <nav id="labNav">
+      <button class="active" data-view="runs">Backtests</button>
+      <button data-view="report">Run Detail</button>
+      <button data-view="trades">Trades</button>
+      <button data-view="decisions">Decisions</button>
+      <button data-view="blocked">Blocked Setups</button>
+      <button data-view="coverage">Data Coverage</button>
+    </nav>
+    <div class="future"><span>FUTURE PHASES</span><button disabled>Experiments</button><button disabled>Walk Forward</button><button disabled>Shadow</button></div>
+    <a class="back-live" href="/market/">← Production dashboard</a>
+  </aside>
+  <main>
+    <header><div><div class="eyebrow">OTR FUTURES BACKTEST LAB V1</div><h1 id="pageTitle">Backtests</h1></div><div class="readonly">READ ONLY</div></header>
+    <div id="globalWarning" class="warning hidden">NOT VALID FOR STRATEGY EVALUATION</div>
+
+    <section id="runsView" class="view active"><div class="panel"><div class="panel-head"><div><span class="kicker">IMMUTABLE MANIFESTS</span><h2>Backtest Runs</h2></div><span id="runCount" class="chip">0 RUNS</span></div><div id="runList" class="run-list empty">No research runs found.</div></div></section>
+
+    <section id="reportView" class="view">
+      <div id="runMeta" class="manifest"></div><div id="summaryCards" class="metric-grid"></div>
+      <div class="chart-grid"><article class="panel"><div class="panel-head"><div><span class="kicker">MARK TO MARKET</span><h2>Balance &amp; Equity</h2></div><span class="legend"><i class="balance"></i> Balance <i class="equity"></i> Equity</span></div><div class="chart"><canvas id="equityChart"></canvas><div class="chart-empty">No equity series.</div><div class="tooltip"></div></div></article>
+      <article class="panel"><div class="panel-head"><div><span class="kicker">RISK PATH</span><h2>Drawdown</h2></div></div><div class="chart"><canvas id="drawdownChart"></canvas><div class="chart-empty">No drawdown series.</div><div class="tooltip"></div></div></article></div>
+      <article class="panel"><div class="panel-head"><div><span class="kicker">DIRECTION EDGE</span><h2>Long vs Short</h2></div></div><div id="directionCards" class="direction-grid"></div></article>
+      <article class="panel"><div class="panel-head"><div><span class="kicker">PERFORMANCE</span><h2>Breakdowns</h2></div></div><div id="breakdowns"></div></article>
+      <div class="two-col"><article class="panel"><div class="panel-head"><div><span class="kicker">ACCOUNT / PROP</span><h2>Evaluation State</h2></div></div><div id="accountStatus" class="kv-grid"></div></article><article class="panel"><div class="panel-head"><div><span class="kicker">REPLAY</span><h2>Assumptions</h2></div></div><div id="assumptions" class="kv-grid"></div></article></div>
+      <article class="panel"><div class="panel-head"><div><span class="kicker">CHRONOLOGY</span><h2>Recovery Timeline</h2></div></div><div id="recoveryTimeline" class="timeline empty">No recovery transitions.</div></article>
+    </section>
+
+    <section id="tradesView" class="view"><article class="panel"><div class="panel-head"><div><span class="kicker">EXECUTION LEDGER</span><h2>Trade Explorer</h2></div></div><div id="tradeFilters" class="filters"></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Market</th><th>Contract</th><th>Strategy</th><th>TF</th><th>Session</th><th>Side</th><th>Grade</th><th>Qty</th><th>Fill</th><th>Exit</th><th>R</th><th>Gross</th><th>Costs</th><th>Net</th><th>MFE / MAE</th><th>Exit reason</th><th>Ambiguity</th></tr></thead><tbody id="tradeBody"></tbody></table></div></article><aside id="tradeInspector" class="inspector hidden"></aside></section>
+
+    <section id="decisionsView" class="view"><article class="panel"><div class="panel-head"><div><span class="kicker">EVERY DECISION</span><h2>Decision Explorer</h2></div></div><div id="decisionFilters" class="filters"></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Event</th><th>Symbol</th><th>TF</th><th>Strategy</th><th>Grade</th><th>Decision</th><th>Reason</th><th>Score</th><th>R:R</th></tr></thead><tbody id="decisionBody"></tbody></table></div></article></section>
+
+    <section id="blockedView" class="view"><article class="panel"><div class="panel-head"><div><span class="kicker">MISSED / REJECTED</span><h2>Blocked Setups</h2></div></div><div id="blockedList" class="cards empty">No blocked setups.</div></article><div class="two-col"><article class="panel"><div class="panel-head"><div><span class="kicker">FRESHNESS CEILING</span><h2>Pending Expirations</h2></div></div><div id="expirationStats"></div><div id="expirationList" class="cards empty">No expired pending setups.</div></article><article class="panel"><div class="panel-head"><div><span class="kicker">NO DOUBLE APPLICATION</span><h2>Risk Audit</h2></div></div><div id="riskAudits" class="cards empty">No risk audits.</div></article></div></section>
+
+    <section id="coverageView" class="view"><article class="panel"><div class="panel-head"><div><span class="kicker">PHASE 1 FOUNDATION</span><h2>Historical Data Coverage</h2></div></div><div id="coverageWarning" class="warning hidden"></div><div id="coverageCards" class="coverage-grid empty">No historical coverage found.</div><div id="integrityFindings" class="cards"></div></article></section>
+  </main>
+</div>
+<script src="/market/assets/research.js?v=4.0"></script>
+</body></html>

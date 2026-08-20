@@ -17,12 +17,15 @@ from src.dashboard.queries_59 import DashboardRepository
 from src.storage.database import get_connection, save_quotes_batch
 from src.storage.intelligence import intelligence_snapshot
 from src.storage.learning import learning_snapshot
+from src.research.dashboard import ResearchDashboardRepository
 
 
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(ROOT / ".env")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 DB_PATH = Path(os.getenv("OTR_DB_PATH", ROOT / "data" / "otrmarket.db"))
+RESEARCH_DB_PATH = Path(os.getenv("OTR_RESEARCH_DB_PATH", ROOT / "data" / "otr_backtests.db"))
+HISTORICAL_DB_PATH = Path(os.getenv("OTR_HISTORICAL_DB_PATH", ROOT / "data" / "otr_historical.db"))
 
 BASE_PATH = "/market"
 COOKIE_NAME = "otr_market_session"
@@ -31,6 +34,7 @@ SESSION_SECRET = os.getenv("DASHBOARD_SESSION_SECRET", "").strip() or DASHBOARD_
 BRIDGE_KEY = os.getenv("OTR_BRIDGE_KEY", "").strip()
 
 repository = DashboardRepository(DB_PATH)
+research_repository = ResearchDashboardRepository(RESEARCH_DB_PATH, HISTORICAL_DB_PATH)
 
 app = FastAPI(
     title="OTR Market Dashboard",
@@ -116,6 +120,100 @@ async def dashboard_index():
             '<script src="/market/assets/decision-telemetry.js?v=7.0"></script>\n</body>',
         )
     return HTMLResponse(html)
+
+
+@app.get(f"{BASE_PATH}/research")
+@app.get(f"{BASE_PATH}/research/")
+async def research_index():
+    return HTMLResponse((STATIC_DIR / "research.html").read_text(encoding="utf-8"))
+
+
+@app.get(f"{BASE_PATH}/api/research/runs")
+async def research_runs(request: Request):
+    require_http_auth(request)
+    return {"runs": research_repository.list_runs(), "read_only": True}
+
+
+@app.get(f"{BASE_PATH}/api/research/runs/{{run_id}}")
+async def research_run_detail(run_id: str, request: Request):
+    require_http_auth(request)
+    detail = research_repository.run_detail(run_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Research run not found")
+    return detail
+
+
+@app.get(f"{BASE_PATH}/api/research/runs/{{run_id}}/equity")
+async def research_equity(run_id: str, request: Request):
+    require_http_auth(request)
+    return {"items": research_repository.equity(run_id)}
+
+
+@app.get(f"{BASE_PATH}/api/research/runs/{{run_id}}/trades")
+async def research_trades(
+    run_id: str, request: Request, market: str = "", strategy_type: str = "",
+    timeframe: str = "", setup_grade: str = "", direction: str = "",
+    session: str = "", result: str = "", recovery_state: str = "",
+):
+    require_http_auth(request)
+    return {"items": research_repository.trades(run_id, {
+        "symbol": market, "strategy_type": strategy_type, "timeframe": timeframe,
+        "setup_grade": setup_grade, "direction": direction, "session": session,
+        "result": result, "recovery_state": recovery_state,
+    })}
+
+
+@app.get(f"{BASE_PATH}/api/research/runs/{{run_id}}/trades/{{trade_id}}")
+async def research_trade_detail(run_id: str, trade_id: str, request: Request):
+    require_http_auth(request)
+    detail = research_repository.trade_detail(run_id, trade_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Research trade not found")
+    return detail
+
+
+@app.get(f"{BASE_PATH}/api/research/runs/{{run_id}}/decisions")
+async def research_decisions(
+    run_id: str, request: Request, symbol: str = "", timeframe: str = "",
+    strategy_type: str = "", grade: str = "", decision: str = "",
+    reason: str = "", session: str = "", recovery_state: str = "",
+):
+    require_http_auth(request)
+    return {"items": research_repository.decisions(run_id, {
+        "symbol": symbol, "timeframe": timeframe, "strategy_type": strategy_type,
+        "grade": grade, "decision": decision, "reason": reason,
+        "session": session, "recovery_state": recovery_state,
+    })}
+
+
+@app.get(f"{BASE_PATH}/api/research/runs/{{run_id}}/blocked")
+async def research_blocked(run_id: str, request: Request):
+    require_http_auth(request)
+    return {"items": research_repository.blocked_setups(run_id)}
+
+
+@app.get(f"{BASE_PATH}/api/research/runs/{{run_id}}/pending-expirations")
+async def research_pending_expirations(run_id: str, request: Request):
+    require_http_auth(request)
+    return research_repository.pending_expirations(run_id)
+
+
+@app.get(f"{BASE_PATH}/api/research/runs/{{run_id}}/risk-audits")
+async def research_risk_audits(run_id: str, request: Request):
+    require_http_auth(request)
+    return {"items": research_repository.risk_audits(run_id)}
+
+
+@app.get(f"{BASE_PATH}/api/research/runs/{{run_id}}/recovery")
+async def research_recovery(run_id: str, request: Request):
+    require_http_auth(request)
+    return {"items": research_repository.recovery_timeline(run_id)}
+
+
+@app.get(f"{BASE_PATH}/api/research/coverage")
+async def research_coverage(request: Request, capture_id: str = ""):
+    require_http_auth(request)
+    return research_repository.coverage(capture_id or None)
 
 
 def engine_process_status() -> tuple[bool, int | None]:
