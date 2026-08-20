@@ -121,11 +121,13 @@ class Operation66Tests(unittest.TestCase):
         self.assertEqual(later["session_pnl"], 0.0)
         self.assertEqual(later["status"], "ACTIVE")
 
-    def test_runtime_manifest_names_operation_66(self):
+    def test_runtime_manifest_is_promoted_to_operation_70(self):
         server = (ROOT / "src/dashboard/server.py").read_text()
-        self.assertIn('"operation": "Operation 6.6"', server)
-        self.assertIn('"src.main_66"', server)
-        self.assertIn("1m / 5m / 15m / 1h", server)
+        server70 = (ROOT / "src/dashboard/server_70.py").read_text()
+        operation70 = (ROOT / "src/main_70.py").read_text()
+        self.assertIn('return "src.main_70"', server70)
+        self.assertIn('manifest.setdefault("build", {})["operation"] = "Operation 7.0"', operation70)
+        self.assertIn("1m / 5m / 15m / 1h", operation70)
         self.assertIn("EVAL_SESSION_PROFIT_CAP", server)
 
 

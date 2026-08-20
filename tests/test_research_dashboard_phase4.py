@@ -6,8 +6,8 @@ from pathlib import Path
 import sqlite3
 import asyncio
 from types import SimpleNamespace
-
-import pytest
+import tempfile
+import unittest
 
 from src.research.dashboard import ResearchDashboardRepository
 from src.research.historical.schema import SCHEMA_SQL
@@ -18,7 +18,6 @@ def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-@pytest.fixture
 def research_stores(tmp_path):
     runs = tmp_path / "runs.db"
     historical = tmp_path / "historical.db"
@@ -83,7 +82,7 @@ def research_stores(tmp_path):
     return runs, historical
 
 
-def test_run_listing_detail_metrics_segments_and_empty_states(research_stores, tmp_path):
+def check_run_listing_detail_metrics_segments_and_empty_states(research_stores, tmp_path):
     repo = ResearchDashboardRepository(*research_stores)
     runs = repo.list_runs()
     assert runs[0]["run_id"] == "demo-run"
@@ -95,7 +94,7 @@ def test_run_listing_detail_metrics_segments_and_empty_states(research_stores, t
     assert ResearchDashboardRepository(tmp_path / "missing.db", tmp_path / "missing-h.db").list_runs() == []
 
 
-def test_equity_drawdown_trade_decision_block_expiration_risk_and_coverage(research_stores):
+def check_equity_drawdown_trade_decision_block_expiration_risk_and_coverage(research_stores):
     repo = ResearchDashboardRepository(*research_stores)
     assert repo.equity("demo-run")[0]["equity_drawdown"] == 80
     assert len(repo.trades("demo-run", {"symbol": "NQ", "direction": "bullish"})) == 1
@@ -109,27 +108,33 @@ def test_equity_drawdown_trade_decision_block_expiration_risk_and_coverage(resea
     assert coverage["rows"][0]["root"] == "NQ"
 
 
-def test_research_api_is_get_only_and_does_not_mutate_stores(monkeypatch, research_stores):
+def check_research_api_is_get_only_and_does_not_mutate_stores(research_stores):
     from src.dashboard import app as dashboard
-    monkeypatch.setattr(dashboard, "research_repository", ResearchDashboardRepository(*research_stores))
-    monkeypatch.setattr(dashboard, "DASHBOARD_PASSWORD", "")
+    original_repository = dashboard.research_repository
+    original_password = dashboard.DASHBOARD_PASSWORD
+    dashboard.research_repository = ResearchDashboardRepository(*research_stores)
+    dashboard.DASHBOARD_PASSWORD = ""
     before = [digest(path) for path in research_stores]
-    request = SimpleNamespace(cookies={})
-    assert "RESEARCH / BACKTEST LAB" in asyncio.run(dashboard.research_index()).body.decode()
-    assert asyncio.run(dashboard.research_runs(request))["read_only"] is True
-    assert asyncio.run(dashboard.research_run_detail("demo-run", request))["metrics"]["total_trades"] == 1
-    assert asyncio.run(dashboard.research_trades("demo-run", request, market="NQ"))["items"]
-    assert asyncio.run(dashboard.research_decisions("demo-run", request, timeframe="15m"))["items"]
-    assert asyncio.run(dashboard.research_blocked("demo-run", request))["items"]
-    assert asyncio.run(dashboard.research_pending_expirations("demo-run", request))["items"]
-    assert asyncio.run(dashboard.research_risk_audits("demo-run", request))["items"]
-    assert asyncio.run(dashboard.research_coverage(request, "incomplete-capture"))["warning"]
-    research_routes = [route for route in dashboard.app.routes if getattr(route, "path", "").startswith("/market/api/research")]
-    assert research_routes and all(route.methods == {"GET"} for route in research_routes)
-    assert before == [digest(path) for path in research_stores]
+    try:
+        request = SimpleNamespace(cookies={})
+        assert "RESEARCH / BACKTEST LAB" in asyncio.run(dashboard.research_index()).body.decode()
+        assert asyncio.run(dashboard.research_runs(request))["read_only"] is True
+        assert asyncio.run(dashboard.research_run_detail("demo-run", request))["metrics"]["total_trades"] == 1
+        assert asyncio.run(dashboard.research_trades("demo-run", request, market="NQ"))["items"]
+        assert asyncio.run(dashboard.research_decisions("demo-run", request, timeframe="15m"))["items"]
+        assert asyncio.run(dashboard.research_blocked("demo-run", request))["items"]
+        assert asyncio.run(dashboard.research_pending_expirations("demo-run", request))["items"]
+        assert asyncio.run(dashboard.research_risk_audits("demo-run", request))["items"]
+        assert asyncio.run(dashboard.research_coverage(request, "incomplete-capture"))["warning"]
+        research_routes = [route for route in dashboard.app.routes if getattr(route, "path", "").startswith("/market/api/research")]
+        assert research_routes and all(route.methods == {"GET"} for route in research_routes)
+        assert before == [digest(path) for path in research_stores]
+    finally:
+        dashboard.research_repository = original_repository
+        dashboard.DASHBOARD_PASSWORD = original_password
 
 
-def test_strategy_lab_static_surface_contains_required_views():
+def check_strategy_lab_static_surface_contains_required_views():
     root = Path(__file__).resolve().parents[1] / "src" / "dashboard" / "static"
     html = (root / "research.html").read_text()
     script = (root / "research.js").read_text()
@@ -137,3 +142,29 @@ def test_strategy_lab_static_surface_contains_required_views():
         assert label in html
     for feature in ("Long vs Short", "Pending Expirations", "Risk Audit", "Recovery Timeline", "Ambiguity policy", "NOT VALID FOR STRATEGY EVALUATION"):
         assert feature in html + script
+
+
+class Phase4ResearchDashboardTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary_directory.name)
+        self.stores = research_stores(self.root)
+
+    def tearDown(self):
+        self.temporary_directory.cleanup()
+
+    def test_run_listing_detail_metrics_segments_and_empty_states(self):
+        check_run_listing_detail_metrics_segments_and_empty_states(self.stores, self.root)
+
+    def test_equity_drawdown_trade_decision_block_expiration_risk_and_coverage(self):
+        check_equity_drawdown_trade_decision_block_expiration_risk_and_coverage(self.stores)
+
+    def test_research_api_is_get_only_and_does_not_mutate_stores(self):
+        check_research_api_is_get_only_and_does_not_mutate_stores(self.stores)
+
+    def test_strategy_lab_static_surface_contains_required_views(self):
+        check_strategy_lab_static_surface_contains_required_views()
+
+
+if __name__ == "__main__":
+    unittest.main()

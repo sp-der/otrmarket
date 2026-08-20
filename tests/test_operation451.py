@@ -8,10 +8,12 @@ ROOT = Path(__file__).resolve().parents[1]
 class Operation451SupervisorTests(unittest.TestCase):
     def test_dashboard_server_supervises_engine(self):
         text = (ROOT / "src/dashboard/server.py").read_text()
-        self.assertIn('requested_module = os.getenv("OTR_ENGINE_MODULE", "src.main_66")', text)
-        self.assertIn('"src.main_65"', text)
-        self.assertIn('"src.main_64"', text)
-        self.assertIn('"src.main_62"', text)
+        operation70 = (ROOT / "src/dashboard/server_70.py").read_text()
+        run_all = (ROOT / "run_all.sh").read_text()
+        self.assertIn('return "src.main_70"', operation70)
+        self.assertIn('"src.main_69"', operation70)
+        self.assertIn('"src.main_67"', operation70)
+        self.assertIn('src.dashboard.server_70', run_all)
         self.assertIn('[sys.executable, "-u", "-m", engine_module]', text)
         self.assertIn("otr-engine-watchdog", text)
         self.assertIn("ENGINE_PID_FILE", text)

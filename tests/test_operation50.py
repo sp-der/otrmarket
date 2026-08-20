@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from src.execution.paper import PaperExecutor
+from src.execution import paper as paper_module
 from src.main_multi import _a_plus_quality_gate
 from src.strategies.models import Candle, Displacement, FairValueGap, StrategySetup
 
@@ -159,17 +160,22 @@ class Operation50PendingLifecycleTests(unittest.TestCase):
         return setup
 
     def test_pending_entry_expires_in_replay_market_time(self):
-        executor = PaperExecutor()
-        setup = self._setup()
-        executor.register_setup(setup, risk_dollars=200)
-        changed = executor.on_price(
-            "NQ",
-            103.0,
-            BASE + timedelta(minutes=7),
-        )
-        self.assertEqual(len(changed), 1)
-        self.assertEqual(changed[0].result, "EXPIRED_BEFORE_ENTRY")
-        self.assertEqual(executor.pending_count, 0)
+        original = paper_module._PENDING_BARS["1m"]
+        try:
+            paper_module._PENDING_BARS["1m"] = 15
+            executor = PaperExecutor()
+            setup = self._setup()
+            executor.register_setup(setup, risk_dollars=200)
+            changed = executor.on_price(
+                "NQ",
+                103.0,
+                BASE + timedelta(minutes=16),
+            )
+            self.assertEqual(len(changed), 1)
+            self.assertEqual(changed[0].result, "EXPIRED_BEFORE_ENTRY")
+            self.assertEqual(executor.pending_count, 0)
+        finally:
+            paper_module._PENDING_BARS["1m"] = original
 
     def test_move_that_runs_seventy_five_percent_to_target_is_stale(self):
         executor = PaperExecutor()

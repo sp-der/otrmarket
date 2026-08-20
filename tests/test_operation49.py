@@ -1,9 +1,37 @@
 import sqlite3
 import unittest
+import importlib
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from src.main_multi import _a_plus_quality_gate
+
+
+def operation70_without_global_patch_leak():
+    """Load current helpers while restoring the inherited legacy test surface."""
+    from src import main_59 as op59
+    from src import main_61 as op61
+    from src.execution import paper
+
+    base = op59.op58.base
+    original = (
+        base._global_loss_cooldown,
+        base._same_symbol_cooldown,
+        base._b_plus_execution_gate,
+        op61._post_loss_risk,
+        dict(paper._PENDING_BARS),
+    )
+    op70 = importlib.import_module("src.main_70")
+    (
+        base._global_loss_cooldown,
+        base._same_symbol_cooldown,
+        base._b_plus_execution_gate,
+        op61._post_loss_risk,
+        pending_bars,
+    ) = original
+    paper._PENDING_BARS.clear()
+    paper._PENDING_BARS.update(pending_bars)
+    return op70
 
 
 def db():
@@ -65,7 +93,8 @@ class Operation49QualityGateCompatibilityTests(unittest.TestCase):
         self.assertFalse(allowed)
         self.assertIn("1.00R", reason)
 
-    def test_loss_creates_sixty_minute_same_market_reset(self):
+    def test_operation70_loss_creates_thirty_minute_same_market_reset(self):
+        op70 = operation70_without_global_patch_leak()
         con = db()
         closed = datetime(2026, 8, 16, 13, 0, tzinfo=timezone.utc)
         con.execute(
@@ -73,14 +102,18 @@ class Operation49QualityGateCompatibilityTests(unittest.TestCase):
             ("loss", "NQ", "CLOSED", closed.isoformat(), "LOSS"),
         )
         con.commit()
-        allowed, reason = _a_plus_quality_gate(
-            con,
-            setup(created_at=closed + timedelta(minutes=45), risk_reward=3.0),
+        blocked, reason = op70._same_symbol_cooldown_70(
+            con, setup(created_at=closed + timedelta(minutes=20), risk_reward=3.0)
         )
-        self.assertFalse(allowed)
-        self.assertIn("Same-market reset", reason)
+        allowed, _ = op70._same_symbol_cooldown_70(
+            con, setup(created_at=closed + timedelta(minutes=30), risk_reward=3.0)
+        )
+        self.assertFalse(blocked)
+        self.assertIn("10 market minutes", reason)
+        self.assertTrue(allowed)
 
-    def test_cross_market_loss_creates_thirty_minute_global_reset(self):
+    def test_operation70_cross_market_loss_does_not_freeze_unrelated_market(self):
+        op70 = operation70_without_global_patch_leak()
         con = db()
         closed = datetime(2026, 8, 16, 13, 45, tzinfo=timezone.utc)
         con.execute(
@@ -88,12 +121,11 @@ class Operation49QualityGateCompatibilityTests(unittest.TestCase):
             ("loss", "GC", "CLOSED", closed.isoformat(), "LOSS"),
         )
         con.commit()
-        allowed, reason = _a_plus_quality_gate(
-            con,
-            setup(symbol="NQ", created_at=closed + timedelta(minutes=20)),
+        allowed, reason = op70._no_cross_market_loss_cooldown(
+            con, setup(symbol="NQ", created_at=closed + timedelta(minutes=20))
         )
-        self.assertFalse(allowed)
-        self.assertIn("Global post-loss", reason)
+        self.assertTrue(allowed)
+        self.assertIn("unrelated", reason.lower())
 
     def test_rejection_block_requires_full_ten_of_ten_and_three_r(self):
         con = db()
