@@ -155,6 +155,8 @@ def _post_loss_risk_70(connection, setup) -> tuple[bool, str]:
         "cross_market_penalty": False,
     }
 
+    # Two back-to-back futures losses are an account-level warning, regardless
+    # of which symbols produced them. Keep only A/A+ ideas and cut exposure hard.
     if futures_loss_streak >= 2:
         if grade == "B+":
             return False, "Operation 7.0 recovery mode: B+ is disabled after two consecutive futures losses."
@@ -167,6 +169,8 @@ def _post_loss_risk_70(connection, setup) -> tuple[bool, str]:
         setup.metadata["recovery_control_70"].update(mode="ACCOUNT_RECOVERY", risk_cap=cap)
         return True, reason
 
+    # A loss now disciplines only the market that made the mistake. A/A+ ideas
+    # on that symbol may resume after the cooldown at reduced risk. B+ stays off.
     if symbol_losses >= 1:
         if grade == "B+":
             return False, f"Operation 7.0: B+ {setup.symbol} is disabled after a realized {setup.symbol} loss today."
@@ -179,11 +183,13 @@ def _post_loss_risk_70(connection, setup) -> tuple[bool, str]:
         setup.metadata["recovery_control_70"].update(mode="SYMBOL_RECOVERY", risk_cap=cap)
         return True, reason
 
+    # A loss in NQ should not automatically cripple ES/GC and vice versa.
     reason = "Operation 7.0 normal risk: no realized loss on this symbol today."
     setup.metadata["recovery_control_70"].update(mode="NORMAL", risk_cap=None)
     return True, reason
 
 
+# Patch the shared guards used by the inherited 6.1/6.9 quality chain.
 op59.op58.base._global_loss_cooldown = _no_cross_market_loss_cooldown
 op59.op58.base._same_symbol_cooldown = _same_symbol_cooldown_70
 op59.op58.base._b_plus_execution_gate = _b_plus_execution_gate_70

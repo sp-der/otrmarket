@@ -108,6 +108,13 @@ async def dashboard_index():
         "/market/assets/trade-history-cleanup.js?v=6.5.2",
         "/market/assets/trade-history-cleanup.js?v=6.5.4",
     )
+    # Operation 7.0 adds an independent decision-funnel panel. Injecting it here
+    # keeps the existing dashboard renderer untouched and cache-busts the new UI.
+    if "decision-telemetry.js" not in html:
+        html = html.replace(
+            "</body>",
+            '<script src="/market/assets/decision-telemetry.js?v=7.0"></script>\n</body>',
+        )
     return HTMLResponse(html)
 
 
