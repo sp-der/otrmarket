@@ -59,9 +59,10 @@ class ResearchDashboardRepository:
         "payload_json": "payload",
     }
 
-    def __init__(self, runs_database: str | Path, historical_database: str | Path):
+    def __init__(self, runs_database: str | Path, historical_database: str | Path, phase6_database: str | Path | None = None):
         self.runs_database = Path(runs_database).resolve()
         self.historical_database = Path(historical_database).resolve()
+        self.phase6_database = Path(phase6_database).resolve() if phase6_database else self.runs_database
 
     @staticmethod
     def _connect(path: Path) -> sqlite3.Connection:
@@ -388,6 +389,54 @@ class ResearchDashboardRepository:
         base["candidates"] = candidates
         base["not_valid_for_strategy_evaluation"] = base.get("data_quality_status") != "COMPLETE"
         return _finite(base)
+
+    def phase6_studies(self) -> list[dict]:
+        if not self.phase6_database.is_file(): return []
+        with self._connect(self.phase6_database) as connection:
+            if not self._exists(connection,"phase6_studies"): return []
+            rows=self._rows(connection,"""SELECT s.*,
+              (SELECT COUNT(*) FROM phase6_candidates c WHERE c.study_id=s.study_id) candidate_count,
+              (SELECT COUNT(*) FROM phase6_runs r WHERE r.study_id=s.study_id AND r.status='COMPLETE') completed_runs
+              FROM phase6_studies s ORDER BY created_at DESC""")
+        for row in rows:
+            row["limitations"]=_json(row.pop("limitations_json",None),[])
+            row["preregistration"]=_json(row.pop("preregistration_json",None),{})
+        return _finite(rows)
+
+    def phase6_study_detail(self, study_id: str) -> dict | None:
+        if not self.phase6_database.is_file(): return None
+        with self._connect(self.phase6_database) as connection:
+            if not self._exists(connection,"phase6_studies"): return None
+            study=connection.execute("SELECT * FROM phase6_studies WHERE study_id=?",(study_id,)).fetchone()
+            if study is None:return None
+            result=dict(study);result["limitations"]=_json(result.pop("limitations_json",None),[]);result["preregistration"]=_json(result.pop("preregistration_json",None),{})
+            result["candidates"]=self._rows(connection,"SELECT * FROM phase6_candidates WHERE study_id=? ORDER BY candidate_id",(study_id,))
+            for item in result["candidates"]:
+                item["configuration"]=_json(item.pop("configuration_json",None),{});item["configuration_diff"]=_json(item.pop("configuration_diff_json",None),[])
+                verdict=connection.execute("SELECT * FROM phase6_verdicts WHERE study_id=? AND candidate_id=?",(study_id,item["candidate_id"])).fetchone()
+                item["verdict"]=None if verdict is None else {**dict(verdict),"reasons":_json(verdict["reasons_json"],[]),"payload":_json(verdict["payload_json"],{})}
+                item["runs"]=self._rows(connection,"SELECT fold_id,sample_role,metrics_json,run_digest,decision_digest,trade_digest,status FROM phase6_runs WHERE study_id=? AND candidate_id=? ORDER BY fold_id",(study_id,item["candidate_id"]))
+                for run in item["runs"]:run["metrics"]=_json(run.pop("metrics_json",None),{})
+                item["results"]=self._rows(connection,"SELECT result_type,payload_json,digest FROM phase6_results WHERE study_id=? AND candidate_id=? ORDER BY result_id",(study_id,item["candidate_id"]))
+                for value in item["results"]:value["payload"]=_json(value.pop("payload_json",None),{})
+                walk=next((x["payload"] for x in item["results"] if x["result_type"]=="WALK_FORWARD_OOS"),{})
+                item["oos_metrics"]=walk.get("aggregate_metrics",{})
+                item["segments"]=walk.get("segments",{})
+                item["concentration"]=walk.get("concentration",{})
+                item["execution_stress_status"]="NOT RUN — NO FINALIST" if (item.get("verdict") or {}).get("verdict")!="ADVANCE_TO_FINAL_HOLDOUT" else "REQUIRED"
+                item["pending_divergence_count"]=walk.get("pending_divergence_count",0)
+                item["recovery_effect_count"]=walk.get("recovery_effect_count",0)
+            result["folds"]=self._rows(connection,"SELECT * FROM phase6_folds WHERE study_id=? ORDER BY fold_id",(study_id,))
+            result["study_results"]={}
+            if self._exists(connection,"phase6_study_results"):
+                for row in connection.execute("SELECT result_type,payload_json,digest,created_at FROM phase6_study_results WHERE study_id=? ORDER BY result_id",(study_id,)):
+                    result["study_results"][row["result_type"]]={"payload":_json(row["payload_json"],{}),"digest":row["digest"],"created_at":row["created_at"]}
+        verdicts=[(x.get("verdict") or {}).get("verdict") for x in result["candidates"]]
+        final=(result["study_results"].get("PHASE6_FINAL_VERDICT") or {}).get("payload",{})
+        result["verdict"]=final or {"verdict":"NO CANDIDATE ADVANCES" if verdicts and all(x not in {"ADVANCE_TO_FINAL_HOLDOUT","ADVANCE_TO_PHASE7"} for x in verdicts) else "FINAL HOLDOUT REQUIRED","status":"PROVISIONAL"}
+        result["roll_selector_version"]="PREVIOUS_UTC_DAY_VOLUME_V1"
+        result["research_only"]=True;result["holdout_firewall"]="UNTOUCHED unless a preregistered finalist advances"
+        return _finite(result)
 
     @staticmethod
     def _group_payloads(connection, table: str, comparison_id: int, dimension_column: str, segment_column: str) -> dict:

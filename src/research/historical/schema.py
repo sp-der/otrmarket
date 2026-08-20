@@ -240,6 +240,43 @@ BEFORE UPDATE ON research_series_bars BEGIN SELECT RAISE(ABORT, 'research series
 CREATE TRIGGER IF NOT EXISTS research_series_bars_no_delete
 BEFORE DELETE ON research_series_bars BEGIN SELECT RAISE(ABORT, 'research series is immutable'); END;
 
+CREATE TABLE IF NOT EXISTS causal_roll_decisions (
+    capture_id TEXT NOT NULL REFERENCES capture_sessions(capture_id),
+    root_symbol TEXT NOT NULL CHECK(root_symbol IN ('NQ','ES','GC')),
+    effective_date TEXT NOT NULL,
+    decision_timestamp TEXT NOT NULL,
+    selected_contract TEXT NOT NULL,
+    instrument_id INTEGER NOT NULL,
+    evidence_end_time TEXT,
+    evidence_json TEXT NOT NULL,
+    selector_version TEXT NOT NULL,
+    PRIMARY KEY(capture_id, root_symbol, effective_date)
+);
+
+CREATE TABLE IF NOT EXISTS causal_research_series_bars (
+    capture_id TEXT NOT NULL REFERENCES capture_sessions(capture_id),
+    root_symbol TEXT NOT NULL CHECK(root_symbol IN ('NQ','ES','GC')),
+    open_time TEXT NOT NULL,
+    candle_id INTEGER NOT NULL REFERENCES canonical_candles(candle_id),
+    instrument_id INTEGER NOT NULL,
+    contract TEXT NOT NULL,
+    roll_decision_date TEXT NOT NULL,
+    selector_version TEXT NOT NULL,
+    PRIMARY KEY(capture_id, root_symbol, open_time)
+);
+
+CREATE INDEX IF NOT EXISTS idx_causal_series_capture_root_time
+ON causal_research_series_bars(capture_id, root_symbol, open_time);
+
+CREATE TRIGGER IF NOT EXISTS causal_roll_decisions_no_update BEFORE UPDATE ON causal_roll_decisions
+BEGIN SELECT RAISE(ABORT, 'causal roll decisions are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS causal_roll_decisions_no_delete BEFORE DELETE ON causal_roll_decisions
+BEGIN SELECT RAISE(ABORT, 'causal roll decisions are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS causal_series_no_update BEFORE UPDATE ON causal_research_series_bars
+BEGIN SELECT RAISE(ABORT, 'causal research series is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS causal_series_no_delete BEFORE DELETE ON causal_research_series_bars
+BEGIN SELECT RAISE(ABORT, 'causal research series is immutable'); END;
+
 CREATE TABLE IF NOT EXISTS canonical_bar_provenance (
     candle_id INTEGER PRIMARY KEY REFERENCES canonical_candles(candle_id),
     capture_id TEXT NOT NULL,

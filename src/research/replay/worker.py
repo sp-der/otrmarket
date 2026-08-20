@@ -104,7 +104,16 @@ def execute(request: dict) -> dict:
     original_upsert = runtime.upsert_paper_trade
 
     def save_setup(connection, setup):
-        original_save_setup(connection, setup)
+        # Research-only isolated persistence: production's serializer does not
+        # accept replay-time datetimes nested inside Operation 7 metadata.
+        connection.execute("""INSERT OR REPLACE INTO strategy_setups(
+          setup_id,symbol,timeframe,direction,created_at,trigger_type,entry_price,
+          stop_price,target_price,risk_reward,status,payload_json)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",(
+          setup.setup_id,setup.symbol,setup.timeframe,setup.direction,setup.created_at.isoformat(),
+          setup.trigger_type,setup.entry_price,setup.stop_price,setup.target_price,setup.risk_reward,
+          setup.status,json.dumps(setup.to_dict(),sort_keys=True,default=_json)))
+        connection.commit()
         traces.append(_trace_setup(setup, current_time["value"]))
 
     def save_diagnostic(connection, diagnostic):
@@ -155,11 +164,14 @@ def execute(request: dict) -> dict:
         else:
             timeframes = request["enabled_timeframes"]
             tf_places = ",".join("?" for _ in timeframes)
-            has_series = historical.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='research_series_bars'").fetchone() and historical.execute(
-                "SELECT 1 FROM research_series_bars WHERE capture_id=? LIMIT 1", (request["capture_id"],)).fetchone()
+            causal = historical.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='causal_research_series_bars'").fetchone() and historical.execute(
+                "SELECT 1 FROM causal_research_series_bars WHERE capture_id=? LIMIT 1", (request["capture_id"],)).fetchone()
+            series_table = "causal_research_series_bars" if causal else "research_series_bars"
+            has_series = causal or (historical.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='research_series_bars'").fetchone() and historical.execute(
+                "SELECT 1 FROM research_series_bars WHERE capture_id=? LIMIT 1", (request["capture_id"],)).fetchone())
             if has_series:
                 rows = historical.execute(f"""SELECT cc.* FROM canonical_candles cc
-                  JOIN research_series_bars rs ON rs.capture_id=cc.capture_id
+                  JOIN {series_table} rs ON rs.capture_id=cc.capture_id
                    AND rs.root_symbol=cc.root_symbol AND rs.open_time=cc.open_time AND rs.contract=cc.contract
                   WHERE cc.capture_id=? AND cc.contract IN ({placeholders}) AND cc.timeframe IN ({tf_places})
                    AND cc.close_time>=? AND cc.close_time<=? ORDER BY cc.close_time""",

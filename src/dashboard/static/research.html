@@ -20,6 +20,7 @@
       <button data-view="blocked">Blocked Setups</button>
       <button data-view="coverage">Data Coverage</button>
       <button data-view="experiments">Experiments</button>
+      <button data-view="phase6">Phase 6 Validation</button>
     </nav>
     <div class="future"><span>FUTURE PHASES</span><button disabled>Walk Forward</button><button disabled>Shadow</button></div>
     <a class="back-live" href="/market/">← Production dashboard</a>
@@ -48,6 +49,16 @@
 
     <section id="coverageView" class="view"><article class="panel"><div class="panel-head"><div><span class="kicker">PHASE 5.5 · REAL FUTURES DATA</span><h2>Historical Data Coverage</h2></div><strong id="phase6Readiness" class="invalid">NOT READY FOR PHASE 6</strong></div><div id="coverageWarning" class="warning hidden"></div><div id="pairedCoverage" class="summary-grid"></div><div id="coverageCards" class="coverage-grid empty">No historical coverage found.</div><h3>Capture manifests</h3><div id="captureManifests" class="cards"></div><h3>Integrity findings</h3><div id="integrityFindings" class="cards"></div></article></section>
     <section id="experimentsView" class="view"><article class="panel"><div class="panel-head"><div><span class="kicker">CONTROLLED RESEARCH</span><h2>Experiment List</h2></div><span class="chip">NO AUTO-PROMOTION</span></div><div id="experimentList" class="run-list empty">No experiments yet.</div></article></section>
+    <section id="phase6View" class="view"><article class="panel"><div class="panel-head"><div><span class="kicker">ROBUSTNESS / WALK-FORWARD</span><h2>Phase 6 Studies</h2></div><span class="chip">RESEARCH ONLY</span></div><div id="phase6List" class="run-list empty">No Phase 6 studies yet.</div></article></section>
+    <section id="phase6DetailView" class="view">
+      <div id="phase6Header" class="manifest"></div>
+      <article class="panel"><div class="panel-head"><div><span class="kicker">CAUSALITY FIREWALL</span><h2>Causality Audit &amp; Limitations</h2></div><span id="phase6Verdict" class="chip">UNASSESSED</span></div><div id="phase6Audit" class="cards"></div></article>
+      <div class="two-col"><article class="panel"><div class="panel-head"><div><span class="kicker">WALK-FORWARD</span><h2>IS / OOS Folds</h2></div></div><div id="phase6Folds" class="cards"></div></article><article class="panel"><div class="panel-head"><div><span class="kicker">FIREWALLED</span><h2>Final Holdout</h2></div></div><div id="phase6Holdout" class="cards"></div></article></div>
+      <article class="panel"><div class="panel-head"><div><span class="kicker">BASELINE VS CANDIDATES</span><h2>OOS Metrics</h2></div></div><div id="phase6Metrics" class="table-wrap"></div></article>
+      <article class="panel"><div class="panel-head"><div><span class="kicker">GENERALIZATION</span><h2>Segments, Regimes &amp; Concentration</h2></div></div><div id="phase6Segments" class="cards"></div></article>
+      <article class="panel"><div class="panel-head"><div><span class="kicker">ROBUSTNESS</span><h2>Execution Stress, Recovery &amp; Pending-Lifetime Divergence</h2></div></div><div id="phase6Robustness" class="cards"></div></article>
+      <article class="panel"><div class="panel-head"><div><span class="kicker">COMPLETED ANALYSIS</span><h2>IS/OOS, Ambiguity, Evaluation &amp; Finalist Decision</h2></div></div><div id="phase6StudyResults" class="cards"></div></article>
+    </section>
 
     <section id="experimentView" class="view">
       <div id="experimentWarning" class="warning hidden">NOT VALID FOR STRATEGY EVALUATION</div><div id="experimentHeader" class="manifest"></div>

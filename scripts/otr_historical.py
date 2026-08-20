@@ -19,6 +19,7 @@ from src.research.historical.acquisition import (
 )
 from src.research.historical.store import HistoricalStore
 from src.research.historical.databento import import_databento_package, verify_package
+from src.research.historical.causal_roll import build_causal_series
 
 
 def main() -> None:
@@ -52,6 +53,8 @@ def main() -> None:
     dbn.add_argument("--dry-run", action="store_true")
     verify_dbn = commands.add_parser("verify-databento-package")
     verify_dbn.add_argument("--package", required=True)
+    causal = commands.add_parser("build-causal-series")
+    causal.add_argument("--capture-id", required=True)
     listing = commands.add_parser("list-captures")
     manifest = commands.add_parser("export-manifest")
     manifest.add_argument("--capture-id", required=True)
@@ -101,6 +104,8 @@ def main() -> None:
                          dry_run=args.dry_run), indent=2, default=str))
     elif args.command == "verify-databento-package":
         print(json.dumps(verify_package(args.package), indent=2, default=str))
+    elif args.command == "build-causal-series":
+        print(json.dumps(build_causal_series(store.path, args.capture_id), indent=2, default=str))
     elif args.command == "list-captures":
         print(json.dumps(list_captures(store.path), indent=2))
     elif args.command == "export-manifest":

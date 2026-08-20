@@ -554,21 +554,27 @@ def verify_capture(database: str | Path, capture_id: str) -> dict:
 
 
 def paired_coverage(connection: sqlite3.Connection, capture_id: str | None = None) -> dict:
-    has_series = capture_id and connection.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='research_series_bars'"
+    causal = capture_id and connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='causal_research_series_bars'"
     ).fetchone() and connection.execute(
-        "SELECT 1 FROM research_series_bars WHERE capture_id=? LIMIT 1", (capture_id,)
+        "SELECT 1 FROM causal_research_series_bars WHERE capture_id=? LIMIT 1", (capture_id,)
+    ).fetchone()
+    series_table = "causal_research_series_bars" if causal else "research_series_bars"
+    has_series = capture_id and connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (series_table,)
+    ).fetchone() and connection.execute(
+        f"SELECT 1 FROM {series_table} WHERE capture_id=? LIMIT 1", (capture_id,)
     ).fetchone()
     if has_series:
         nq = {row[0] for row in connection.execute(
-            "SELECT open_time FROM research_series_bars WHERE capture_id=? AND root_symbol='NQ'", (capture_id,))}
+            f"SELECT open_time FROM {series_table} WHERE capture_id=? AND root_symbol='NQ'", (capture_id,))}
         es = {row[0] for row in connection.execute(
-            "SELECT open_time FROM research_series_bars WHERE capture_id=? AND root_symbol='ES'", (capture_id,))}
+            f"SELECT open_time FROM {series_table} WHERE capture_id=? AND root_symbol='ES'", (capture_id,))}
         union, paired = nq | es, nq & es
         nq_contracts = [row[0] for row in connection.execute(
-            "SELECT DISTINCT contract FROM research_series_bars WHERE capture_id=? AND root_symbol='NQ' ORDER BY contract", (capture_id,))]
+            f"SELECT DISTINCT contract FROM {series_table} WHERE capture_id=? AND root_symbol='NQ' ORDER BY contract", (capture_id,))]
         es_contracts = [row[0] for row in connection.execute(
-            "SELECT DISTINCT contract FROM research_series_bars WHERE capture_id=? AND root_symbol='ES' ORDER BY contract", (capture_id,))]
+            f"SELECT DISTINCT contract FROM {series_table} WHERE capture_id=? AND root_symbol='ES' ORDER BY contract", (capture_id,))]
         start = max(min(nq), min(es)) if nq and es else None
         end = min(max(nq), max(es)) if nq and es else None
         nq_overlap = {x for x in nq if start <= x <= end} if start and end else set()

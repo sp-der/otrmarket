@@ -26,6 +26,7 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 DB_PATH = Path(os.getenv("OTR_DB_PATH", ROOT / "data" / "otrmarket.db"))
 RESEARCH_DB_PATH = Path(os.getenv("OTR_RESEARCH_DB_PATH", ROOT / "data" / "otr_backtests.db"))
 HISTORICAL_DB_PATH = Path(os.getenv("OTR_HISTORICAL_DB_PATH", ROOT / "data" / "otr_historical.db"))
+PHASE6_DB_PATH = Path(os.getenv("OTR_PHASE6_DB_PATH", ROOT / "data" / "otr_phase6_results.db"))
 
 BASE_PATH = "/market"
 COOKIE_NAME = "otr_market_session"
@@ -34,7 +35,7 @@ SESSION_SECRET = os.getenv("DASHBOARD_SESSION_SECRET", "").strip() or DASHBOARD_
 BRIDGE_KEY = os.getenv("OTR_BRIDGE_KEY", "").strip()
 
 repository = DashboardRepository(DB_PATH)
-research_repository = ResearchDashboardRepository(RESEARCH_DB_PATH, HISTORICAL_DB_PATH)
+research_repository = ResearchDashboardRepository(RESEARCH_DB_PATH, HISTORICAL_DB_PATH, PHASE6_DB_PATH)
 
 app = FastAPI(
     title="OTR Market Dashboard",
@@ -228,6 +229,20 @@ async def research_experiment_detail(experiment_id: str, request: Request):
     detail = research_repository.experiment_detail(experiment_id)
     if detail is None:
         raise HTTPException(status_code=404, detail="Research experiment not found")
+    return detail
+
+
+@app.get(f"{BASE_PATH}/api/research/phase6/studies")
+async def research_phase6_studies(request: Request):
+    require_http_auth(request)
+    return {"items":research_repository.phase6_studies(),"read_only":True}
+
+
+@app.get(f"{BASE_PATH}/api/research/phase6/studies/{{study_id}}")
+async def research_phase6_study(study_id: str, request: Request):
+    require_http_auth(request)
+    detail=research_repository.phase6_study_detail(study_id)
+    if detail is None:raise HTTPException(status_code=404,detail="Phase 6 study not found")
     return detail
 
 
