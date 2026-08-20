@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
+
+from .acquisition import expected_minutes
 
 
 TIMEFRAMES = ("1m", "5m", "15m", "30m", "1h")
@@ -40,12 +43,19 @@ def coverage_rows(connection, capture_id: str | None = None) -> list[dict]:
                 counts[timeframe] = int(connection.execute("SELECT COUNT(*) FROM canonical_candles WHERE capture_id=? AND contract=? AND timeframe=?", (capture, contract, timeframe)).fetchone()[0])
             integrity = json.loads(integrity_json)
             rolls = json.loads(rolls_json)
+            timestamps = {datetime.fromisoformat(row[0]) for row in connection.execute(
+                "SELECT normalized_timestamp FROM raw_import_bars WHERE capture_id=? AND contract=?",
+                (capture, contract))}
+            expected = set(expected_minutes(datetime.fromisoformat(start), datetime.fromisoformat(end)))
+            missing = len(expected - timestamps)
+            contract_coverage = 100.0 * len(expected & timestamps) / len(expected) if expected else 0.0
+            duplicates = int(connection.execute("""SELECT COALESCE(SUM(n-1),0) FROM (
+              SELECT COUNT(*) n FROM raw_import_bars WHERE capture_id=? AND contract=?
+              GROUP BY normalized_timestamp HAVING COUNT(*)>1)""", (capture, contract)).fetchone()[0])
             result.append({"capture_id": capture, "root": root, "contract": contract, "start": start,
                            "end": end, "events": raw_count, "bars": counts,
-                           "gaps": int(integrity.get("MISSING_EXPECTED_MINUTE", 0)),
-                           "coverage_percentage": float(percentage), "source": source,
-                           "missing_bars": int(integrity.get("MISSING_EXPECTED_MINUTE", 0)),
-                           "duplicates": int(integrity.get("DUPLICATE_TIMESTAMP", 0)),
+                           "gaps": missing, "coverage_percentage": contract_coverage, "source": source,
+                           "missing_bars": missing, "duplicates": duplicates,
                            "roll_boundary": rolls or None, "validation_status": status})
     return result
 

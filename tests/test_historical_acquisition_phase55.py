@@ -60,6 +60,16 @@ class HistoricalAcquisitionPhase55Tests(unittest.TestCase):
         report = inspect_import(path, self._meta(symbol="ES", contract="ES JUN26", timestamp_format="ninjatrader"))
         self.assertEqual(report["detected"]["delimiter"], "tab")
 
+    def test_native_headerless_ninjatrader_and_numeric_contract_identity(self):
+        path = self.root / "ES 09-26.Last.txt"
+        path.write_text("20260802 220100;7550;7557.5;7545.5;7553;3556\n", encoding="utf-8")
+        report = inspect_import(path, self._meta(symbol="ES", contract="ES 09-26",
+                                                source_timezone="UTC", timestamp_format="ninjatrader",
+                                                delimiter="semicolon"))
+        self.assertTrue(report["detected"]["headerless_ninjatrader"])
+        self.assertEqual(report["start"], "2026-08-02T22:01:00+00:00")
+        self.assertEqual(report["contract"], "ES 09-26")
+
     def test_dst_boundaries(self):
         spring = self._write(rows=[("03/08/2026 02:30:00",20000,20001,19999,20000.25,1)])
         with self.assertRaisesRegex(ImportValidationError, "Nonexistent local time"):
@@ -169,6 +179,7 @@ class HistoricalAcquisitionPhase55Tests(unittest.TestCase):
             paired = paired_coverage(connection)
         self.assertEqual(paired["paired_minutes"], 2)
         self.assertEqual(paired["pair_coverage_percentage"], 100)
+        self.assertEqual(paired["pair_label"], "NQ/ES PAIRED COVERAGE")
 
     def test_manifest_batch_preserves_markets_contracts_and_pairing(self):
         nq = self._write("nq.csv")
@@ -184,7 +195,9 @@ class HistoricalAcquisitionPhase55Tests(unittest.TestCase):
         self.assertEqual(manifest["markets"], ["ES","GC","NQ"])
         self.assertEqual(set(manifest["contracts"]), {"NQ JUN26","ES JUN26","GC JUN26"})
         with HistoricalStore(self.db).connect() as connection:
-            self.assertEqual(paired_coverage(connection, "portfolio")["pair_coverage_percentage"], 100)
+            paired = paired_coverage(connection, "portfolio")
+            self.assertEqual(paired["pair_coverage_percentage"], 100)
+            self.assertEqual(paired["smt_source"], "NQ vs ES")
         self.assertEqual(result["validation_status"], "USABLE_WITH_WARNINGS")
 
     def test_retained_capture_cannot_be_upgraded(self):

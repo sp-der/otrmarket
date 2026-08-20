@@ -4,6 +4,7 @@ import csv
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import hashlib
+import itertools
 import json
 from pathlib import Path
 import re
@@ -132,20 +133,33 @@ def parse_ninjatrader_file(path: str | Path, metadata: ImportMetadata) -> tuple[
     delimiter = _delimiter(sample, metadata.delimiter)
     reader = csv.reader(handle, delimiter=delimiter)
     try:
-        header = next(reader)
+        first_row = next(reader)
     except StopIteration as exc:
         handle.close()
         raise ImportValidationError("Historical export is empty") from exc
-    try:
-        columns = _column_map(header)
-    except Exception:
-        handle.close()
-        raise
+    headerless = bool(first_row and re.fullmatch(r"\d{8}\s+\d{4,6}", first_row[0].strip()))
+    if headerless:
+        if len(first_row) != 6:
+            handle.close()
+            raise ImportValidationError("Headerless NinjaTrader rows must contain exactly timestamp,OHLCV")
+        header = ["timestamp", "open", "high", "low", "close", "volume"]
+        columns = {name: index for index, name in enumerate(header)}
+        pending_first = first_row
+    else:
+        header = first_row
+        pending_first = None
+        try:
+            columns = _column_map(header)
+        except Exception:
+            handle.close()
+            raise
     zone = ZoneInfo(metadata.source_timezone)
 
     def rows() -> Iterator[ParsedBar]:
         try:
-            for row_number, row in enumerate(reader, start=2):
+            source_rows = itertools.chain((pending_first,), reader) if pending_first is not None else reader
+            start_number = 1 if pending_first is not None else 2
+            for row_number, row in enumerate(source_rows, start=start_number):
                 if not row or not any(cell.strip() for cell in row):
                     continue
                 try:
@@ -163,7 +177,9 @@ def parse_ninjatrader_file(path: str | Path, metadata: ImportMetadata) -> tuple[
 
     detected = {"delimiter": {",": "comma", "\t": "tab", ";": "semicolon"}[delimiter],
                 "columns": {name: header[index] for name, index in columns.items()},
-                "source_timezone": metadata.source_timezone}
+                "source_timezone": metadata.source_timezone,
+                "timestamp_parser": metadata.timestamp_format,
+                "headerless_ninjatrader": headerless}
     return detected, rows()
 
 
@@ -543,9 +559,16 @@ def paired_coverage(connection: sqlite3.Connection, capture_id: str | None = Non
     es = {row[0] for row in connection.execute("SELECT open_time FROM canonical_candles WHERE timeframe='1m' AND root_symbol='ES'"+clause, args)}
     union = nq | es
     paired = nq & es
+    nq_contracts = [row[0] for row in connection.execute("SELECT DISTINCT contract FROM canonical_candles WHERE timeframe='1m' AND root_symbol='NQ'"+clause+" ORDER BY contract", args)]
+    es_contracts = [row[0] for row in connection.execute("SELECT DISTINCT contract FROM canonical_candles WHERE timeframe='1m' AND root_symbol='ES'"+clause+" ORDER BY contract", args)]
+    nq_instrument = "MNQ" if nq_contracts and all(item.startswith("MNQ ") for item in nq_contracts) else "NQ"
+    es_instrument = "MES" if es_contracts and all(item.startswith("MES ") for item in es_contracts) else "ES"
     return {"nq_minutes": len(nq), "es_minutes": len(es), "paired_minutes": len(paired),
             "missing_nq_minutes": len(es - nq), "missing_es_minutes": len(nq - es),
-            "pair_coverage_percentage": 100.0 * len(paired) / len(union) if union else 0.0}
+            "pair_coverage_percentage": 100.0 * len(paired) / len(union) if union else 0.0,
+            "pair_label": f"{nq_instrument}/{es_instrument} PAIRED COVERAGE",
+            "smt_source": f"{nq_instrument} vs {es_instrument}",
+            "nq_contracts": nq_contracts, "es_contracts": es_contracts}
 
 
 def observed_roll_boundaries(connection: sqlite3.Connection, root_symbol: str,

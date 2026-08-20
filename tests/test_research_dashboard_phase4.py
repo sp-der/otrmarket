@@ -106,6 +106,7 @@ def check_equity_drawdown_trade_decision_block_expiration_risk_and_coverage(rese
     coverage = repo.coverage("incomplete-capture")
     assert coverage["incomplete"] is True and coverage["warning"]
     assert coverage["rows"][0]["root"] == "NQ"
+    assert coverage["history_status"] == "INSUFFICIENT_HISTORY_FOR_PHASE6"
 
 
 def check_research_api_is_get_only_and_does_not_mutate_stores(research_stores):

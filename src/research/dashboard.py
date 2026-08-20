@@ -5,6 +5,7 @@ import math
 from pathlib import Path
 import sqlite3
 from typing import Any
+from datetime import datetime
 
 from src.research.execution.metrics import raw_metrics
 from src.research.historical.coverage import coverage_rows
@@ -299,7 +300,11 @@ class ResearchDashboardRepository:
         validated = bool(rows) and all(row.get("validation_status") == "VALIDATED" for row in rows)
         paired_ready = pair["pair_coverage_percentage"] >= 99 and pair["nq_minutes"] and pair["es_minutes"]
         roots = {row["root"] for row in rows}
-        ready = validated and paired_ready and {"NQ", "ES", "GC"}.issubset(roots)
+        starts = [datetime.fromisoformat(row["start"]) for row in rows if row.get("start")]
+        ends = [datetime.fromisoformat(row["end"]) for row in rows if row.get("end")]
+        duration_days = (max(ends) - min(starts)).total_seconds() / 86400 if starts and ends else 0
+        history_ready = duration_days >= 90
+        ready = validated and paired_ready and history_ready and {"NQ", "ES", "GC"}.issubset(roots)
         incomplete = not ready
         return _finite({
             "rows": rows,
@@ -307,6 +312,9 @@ class ResearchDashboardRepository:
             "manifests": manifests,
             "paired_coverage": pair,
             "phase6_ready": ready,
+            "history_duration_days": duration_days,
+            "minimum_history_days": 90,
+            "history_status": "SUFFICIENT_HISTORY_FOR_PHASE6" if history_ready else "INSUFFICIENT_HISTORY_FOR_PHASE6",
             "readiness": "READY FOR PHASE 6" if ready else "NOT READY FOR PHASE 6",
             "incomplete": incomplete,
             "warning": "NOT READY FOR PHASE 6 — incomplete or unvalidated futures coverage" if incomplete else None,

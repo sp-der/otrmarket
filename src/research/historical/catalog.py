@@ -48,16 +48,16 @@ def parse_contract(contract: str) -> tuple[InstrumentSpec, date | None]:
     and are explicitly marked ESTIMATED by the catalog writer.
     """
     value = " ".join((contract or "").strip().upper().split())
-    match = re.fullmatch(r"(MNQ|NQ|MES|ES|MGC|GC)(?:\s+([A-Z]{3})(\d{2,4}))?", value)
+    match = re.fullmatch(r"(MNQ|NQ|MES|ES|MGC|GC)(?:\s+(?:([A-Z]{3})(\d{2,4})|(0[1-9]|1[0-2])-(\d{2,4})))?", value)
     if not match:
         raise ValueError(f"Unsupported or unparseable futures contract: {contract}")
     spec = contract_spec(match.group(1))
-    if not match.group(2):
+    if not match.group(2) and not match.group(4):
         return spec, None
-    month = MONTH_CODES.get(match.group(2))
+    month = MONTH_CODES.get(match.group(2)) if match.group(2) else int(match.group(4))
     if month is None:
         raise ValueError(f"Unknown contract month: {match.group(2)}")
-    raw_year = int(match.group(3))
+    raw_year = int(match.group(3) or match.group(5))
     year = raw_year + 2000 if raw_year < 100 else raw_year
     if month == 12:
         following = date(year + 1, 1, 1)
