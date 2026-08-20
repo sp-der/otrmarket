@@ -18,6 +18,7 @@ data/*.sqlite
 data/*.sqlite3
 data/*.csv
 data/*.parquet
+data/*-runs/
 
 # OS/editor junk
 .DS_Store
