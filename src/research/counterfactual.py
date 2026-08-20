@@ -20,6 +20,16 @@ def _upper(value) -> str:
     return str(value or "").upper()
 
 
+def _direction(value) -> str:
+    """Normalize production strategy directions to execution-style LONG/SHORT."""
+    direction = _upper(value)
+    if direction in {"BULLISH", "LONG", "BUY"}:
+        return "LONG"
+    if direction in {"BEARISH", "SHORT", "SELL"}:
+        return "SHORT"
+    return direction
+
+
 def _finite(value) -> bool:
     try:
         return math.isfinite(float(value))
@@ -63,7 +73,7 @@ def geometry(trace: dict) -> tuple[float, float, float] | None:
     if not all(_finite(value) for value in (entry, stop, target)):
         return None
     entry, stop, target = map(float, (entry, stop, target))
-    direction = _upper(trace.get("direction"))
+    direction = _direction(trace.get("direction"))
     valid = (direction == "LONG" and stop < entry < target) or (direction == "SHORT" and target < entry < stop)
     return (entry, stop, target) if valid else None
 
@@ -133,7 +143,7 @@ def evaluate_shadow(trace: dict, bars: list[dict], run_end: str) -> dict:
         "symbol": trace.get("symbol"),
         "timeframe": trace.get("timeframe"),
         "strategy": trace.get("strategy_type"),
-        "direction": _upper(trace.get("direction")),
+        "direction": _direction(trace.get("direction")),
         "grade": trace.get("setup_grade"),
         "quality_score": trace.get("quality_score"),
         "risk_reward": trace.get("risk_reward"),
