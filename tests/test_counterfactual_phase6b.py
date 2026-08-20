@@ -21,21 +21,34 @@ class CounterfactualPhase6BTests(unittest.TestCase):
         )
 
     def test_geometry_requires_directional_ordering(self):
-        self.assertEqual(
-            geometry(
-                {
-                    "direction": "LONG",
-                    "planned_entry": 100,
-                    "stop": 99,
-                    "target": 102,
-                }
-            ),
-            (100.0, 99.0, 102.0),
-        )
+        for direction in ("LONG", "bullish"):
+            self.assertEqual(
+                geometry(
+                    {
+                        "direction": direction,
+                        "planned_entry": 100,
+                        "stop": 99,
+                        "target": 102,
+                    }
+                ),
+                (100.0, 99.0, 102.0),
+            )
+        for direction in ("SHORT", "bearish"):
+            self.assertEqual(
+                geometry(
+                    {
+                        "direction": direction,
+                        "planned_entry": 100,
+                        "stop": 101,
+                        "target": 98,
+                    }
+                ),
+                (100.0, 101.0, 98.0),
+            )
         self.assertIsNone(
             geometry(
                 {
-                    "direction": "LONG",
+                    "direction": "bullish",
                     "planned_entry": 100,
                     "stop": 101,
                     "target": 102,
@@ -49,7 +62,7 @@ class CounterfactualPhase6BTests(unittest.TestCase):
             "event_time": "2026-06-01T10:00:00+00:00",
             "symbol": "NQ",
             "timeframe": "1m",
-            "direction": "LONG",
+            "direction": "bullish",
             "planned_entry": 100,
             "stop": 99,
             "target": 102,
@@ -71,6 +84,7 @@ class CounterfactualPhase6BTests(unittest.TestCase):
             ],
             "2026-06-01T11:00:00+00:00",
         )
+        self.assertEqual(win["direction"], "LONG")
         self.assertEqual(win["outcome"], "WIN")
 
         ambiguous = evaluate_shadow(
