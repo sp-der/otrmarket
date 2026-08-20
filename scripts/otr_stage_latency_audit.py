@@ -19,7 +19,7 @@ from src.research.missed_move import audit_run
 from src.research.stage_latency import load_scanner_states, enrich_stage_latency, summarize_stage_latency
 
 EXPECTED_PRODUCTION_DB_SHA256 = "801b763fa788486f0ee682bbf4033417078f4da85cf85e861c7f620013cad116"
-SUPPORTED_STUDY = "stage-latency-v1"
+SUPPORTED_STUDIES = ("stage-latency-v1", "stage-latency-v2")
 HOLDOUT_START = "2026-08-07T00:00:00+00:00"
 
 
@@ -43,7 +43,7 @@ def run_check(command: list[str]) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--study", required=True, choices=[SUPPORTED_STUDY])
+    parser.add_argument("--study", required=True, choices=SUPPORTED_STUDIES)
     parser.add_argument("--historical-db", default="data/otr_historical.db")
     parser.add_argument("--baseline-work-dir", default="data/phase6-study-work-v2")
     parser.add_argument("--output-dir", default="data/phase6-stage-latency")
@@ -84,7 +84,7 @@ def main() -> int:
     summary = summarize_stage_latency(all_rows)
     payload = {
         "study_id": args.study,
-        "study_type": "SCANNER_STAGE_LATENCY_POSTHOC",
+        "study_type": "SCANNER_STAGE_LATENCY_POSTHOC_CORRECTED",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "source": {
             "baseline": "Operation 7.0 / BASELINE_15_8_4_2",
@@ -95,9 +95,23 @@ def main() -> int:
         },
         "methodology": {
             "population": "Only MISSED_MOVE_BEFORE_ENTRY setups from the prior counterfactual audit.",
-            "episode_linkage": "Scanner states are linked by symbol/timeframe and bounded by the most recent WAIT_PD_ARRAY/WARMUP/EXPIRED scanner state before the blocking decision.",
+            "episode_linkage": (
+                "Scanner states are linked by exact symbol/timeframe/strategy. Strategy-specific idle, reset, "
+                "expiry, invalidation and prior SETUP_READY states bound independent episodes."
+            ),
+            "plausibility_bound": (
+                "A loose strategy/timeframe maximum episode age prevents missing scanner diagnostics from "
+                "creating impossible multi-day latency. Truncated episodes are counted explicitly."
+            ),
             "latency": "Observed causal elapsed minutes in scanner stages before the setup decision. No setup gates are bypassed and no trade is simulated here.",
-            "interpretation": "WAIT_SIGNAL/WAIT_DISPLACEMENT time indicates confirmation latency; WAIT_ENTRY_FVG/WAIT_QUALIFYING_FVG/WAIT_VALID_RR time indicates entry-formation or geometry latency.",
+            "interpretation": (
+                "Strategy-specific signal/displacement stages measure confirmation latency; retrace/FVG/geometry "
+                "stages measure entry-formation or entry-depth latency."
+            ),
+            "correction": (
+                "stage-latency-v1 mixed scanner states from different strategies under the same symbol/timeframe, "
+                "which could inflate episodes to thousands of minutes. stage-latency-v2 supersedes that linkage."
+            ),
             "promotion": "Diagnostic research only. Cannot change production or unlock Phase 7.",
         },
         "runs": run_payloads,
@@ -136,21 +150,24 @@ def main() -> int:
         "output": str(output_file),
         "digest": payload["digest"],
         "setups": summary["setups"],
+        "exact_strategy_state_available": summary["exact_strategy_state_available"],
         "matched_stage_episodes": summary["matched_stage_episodes"],
         "matched_stage_episode_pct": summary["matched_stage_episode_pct"],
+        "truncated_to_plausibility_bound": summary["truncated_to_plausibility_bound"],
         "median_episode_minutes": summary["median_episode_minutes"],
         "median_pre_entry_minutes": summary["median_pre_entry_minutes"],
         "median_entry_search_minutes": summary["median_entry_search_minutes"],
         "dominant_stage_counts": summary["dominant_stage_counts"],
         "median_stage_dwell_minutes": summary["median_stage_dwell_minutes"],
         "primary_latency_bucket": summary["primary_latency_bucket"],
+        "by_strategy": summary["by_strategy"],
         "by_timeframe": summary["by_timeframe"],
         "by_gate": summary["by_gate"],
         "final_holdout": "UNTOUCHED",
         "production_db_sha256_before": before,
         "production_db_sha256_after": after,
         "verification": checks,
-        "next_decision": "TARGET_THE_DOMINANT_PRE_DECISION_STAGE; DO_NOT_LOOSEN_PROTECTIVE_GATES",
+        "next_decision": "USE_CORRECTED_STRATEGY_AWARE_STAGE_EVIDENCE_ONLY; DO_NOT_LOOSEN_PROTECTIVE_GATES",
     }
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0
