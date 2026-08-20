@@ -24,8 +24,8 @@ else
   export DASHBOARD_PORT="${DASHBOARD_PORT:-8000}"
 fi
 
-# src.dashboard.server owns and supervises the strategy-engine child process.
-# Keeping one supervisor path prevents local/production process drift and
-# guarantees the host sees an engine crash as a service failure.
-echo "Starting OTR supervised runtime on port ${DASHBOARD_PORT}..."
-exec "$PYTHON_BIN" -m src.dashboard.server
+# Operation 7.0 owns production promotion before handing off to the existing
+# dashboard supervisor. Legacy OTR_ENGINE_MODULE values are upgraded to
+# src.main_70 so an old Railway pin cannot silently boot an earlier strategy.
+echo "Starting OTR Operation 7.0 supervised runtime on port ${DASHBOARD_PORT}..."
+exec "$PYTHON_BIN" -m src.dashboard.server_70
