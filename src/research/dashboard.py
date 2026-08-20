@@ -297,3 +297,74 @@ class ResearchDashboardRepository:
             "incomplete": incomplete,
             "warning": "INCOMPLETE RETAINED DATA — NOT VALID FOR STRATEGY EVALUATION" if incomplete else None,
         })
+
+    def experiments(self) -> list[dict]:
+        if not self.runs_database.is_file():
+            return []
+        with self._connect(self.runs_database) as connection:
+            if not self._exists(connection, "experiments"):
+                return []
+            rows = self._rows(connection, """SELECT e.*,v.verdict,
+              (SELECT GROUP_CONCAT(candidate_name, ', ') FROM experiment_candidates c WHERE c.experiment_id=e.experiment_id) candidate_names
+              FROM experiments e
+              LEFT JOIN experiment_candidates c ON c.experiment_id=e.experiment_id
+              LEFT JOIN experiment_comparisons x ON x.candidate_id=c.candidate_id
+              LEFT JOIN experiment_verdicts v ON v.comparison_id=x.comparison_id
+              GROUP BY e.experiment_id ORDER BY e.created_at DESC""")
+        for row in rows:
+            for source, target, fallback in (
+                ("markets_json", "markets", []), ("contracts_json", "contracts", []),
+                ("account_profile_json", "account_profile", {}), ("execution_config_json", "execution_config", {}),
+                ("baseline_configuration_json", "baseline_configuration", {}),
+            ):
+                row[target] = _json(row.pop(source, None), fallback)
+            row["not_valid_for_strategy_evaluation"] = row.get("data_quality_status") != "COMPLETE"
+        return _finite(rows)
+
+    def experiment_detail(self, experiment_id: str) -> dict | None:
+        if not self.runs_database.is_file():
+            return None
+        with self._connect(self.runs_database) as connection:
+            if not self._exists(connection, "experiments"):
+                return None
+            experiment = connection.execute("SELECT * FROM experiments WHERE experiment_id=?", (experiment_id,)).fetchone()
+            if experiment is None:
+                return None
+            base = dict(experiment)
+            for source, target, fallback in (
+                ("markets_json", "markets", []), ("contracts_json", "contracts", []),
+                ("account_profile_json", "account_profile", {}), ("execution_config_json", "execution_config", {}),
+                ("baseline_configuration_json", "baseline_configuration", {}),
+            ):
+                base[target] = _json(base.pop(source, None), fallback)
+            candidates = self._rows(connection, "SELECT * FROM experiment_candidates WHERE experiment_id=? ORDER BY created_at,candidate_id", (experiment_id,))
+            for candidate in candidates:
+                candidate["configuration"] = _json(candidate.pop("configuration_json", None), {})
+                candidate["configuration_diff"] = _json(candidate.pop("configuration_diff_json", None), [])
+                comparison = connection.execute("SELECT * FROM experiment_comparisons WHERE candidate_id=? ORDER BY comparison_id DESC LIMIT 1", (candidate["candidate_id"],)).fetchone()
+                if comparison is None:
+                    candidate["comparison"] = None
+                    continue
+                comp = dict(comparison)
+                comp["first_divergence"] = _json(comp.pop("first_divergence_json", None), None)
+                comparison_id = comp["comparison_id"]
+                comp["metric_deltas"] = {row["metric"]: dict(row) for row in connection.execute("SELECT * FROM experiment_metric_deltas WHERE comparison_id=?", (comparison_id,)).fetchall()}
+                comp["behavior_deltas"] = {row["metric"]: dict(row) for row in connection.execute("SELECT * FROM experiment_behavior_deltas WHERE comparison_id=?", (comparison_id,)).fetchall()}
+                comp["segments"] = self._group_payloads(connection, "experiment_segment_deltas", comparison_id, "dimension", "segment")
+                comp["timeframes"] = {row["timeframe"]: _json(row["payload_json"], {}) for row in connection.execute("SELECT * FROM experiment_timeframe_analysis WHERE comparison_id=?", (comparison_id,)).fetchall()}
+                comp["matches"] = self._rows(connection, "SELECT * FROM experiment_setup_matches WHERE comparison_id=? ORDER BY match_id", (comparison_id,))
+                for match in comp["matches"]:
+                    match["payload"] = _json(match.pop("payload_json", None), {})
+                verdict = connection.execute("SELECT * FROM experiment_verdicts WHERE comparison_id=? ORDER BY verdict_id DESC LIMIT 1", (comparison_id,)).fetchone()
+                comp["verdict"] = None if verdict is None else {**dict(verdict), "reasons": _json(verdict["reasons_json"], []), "sample_counts": _json(verdict["sample_counts_json"], {})}
+                candidate["comparison"] = comp
+        base["candidates"] = candidates
+        base["not_valid_for_strategy_evaluation"] = base.get("data_quality_status") != "COMPLETE"
+        return _finite(base)
+
+    @staticmethod
+    def _group_payloads(connection, table: str, comparison_id: int, dimension_column: str, segment_column: str) -> dict:
+        result: dict[str, dict] = {}
+        for row in connection.execute(f"SELECT * FROM {table} WHERE comparison_id=?", (comparison_id,)).fetchall():
+            result.setdefault(row[dimension_column], {})[row[segment_column]] = _json(row["payload_json"], {})
+        return result

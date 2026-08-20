@@ -26,7 +26,7 @@ def raw_metrics(trades, equity=()):
     closed=[t for t in trades if t.get("status")=="CLOSED"]
     core=_core_metrics(closed,equity)
     segments={}
-    for field in ("symbol","direction","strategy_type","setup_grade","timeframe","session"):
+    for field in ("symbol","direction","strategy_type","setup_grade","timeframe","session","recovery_state"):
         values=defaultdict(list)
         for trade in closed: values[str(trade.get(field) or "UNKNOWN")].append(trade)
         segments[field]={key:_core_metrics(items,()) for key,items in values.items()}

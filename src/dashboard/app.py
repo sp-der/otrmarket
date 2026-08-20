@@ -216,6 +216,21 @@ async def research_coverage(request: Request, capture_id: str = ""):
     return research_repository.coverage(capture_id or None)
 
 
+@app.get(f"{BASE_PATH}/api/research/experiments")
+async def research_experiments(request: Request):
+    require_http_auth(request)
+    return {"items": research_repository.experiments(), "read_only": True}
+
+
+@app.get(f"{BASE_PATH}/api/research/experiments/{{experiment_id}}")
+async def research_experiment_detail(experiment_id: str, request: Request):
+    require_http_auth(request)
+    detail = research_repository.experiment_detail(experiment_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Research experiment not found")
+    return detail
+
+
 def engine_process_status() -> tuple[bool, int | None]:
     pid_file = Path(os.getenv("OTR_RUNTIME_DIR", "/tmp/otrmarket")) / "engine.pid"
     if not pid_file.exists():

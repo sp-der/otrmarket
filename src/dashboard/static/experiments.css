@@ -1,0 +1,8 @@
+.comparison-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
+.comparison-head,.comparison-cell { padding:10px; border:1px solid var(--line); border-radius:8px; }
+.comparison-head { color:var(--muted); font-size:10px; }
+.delta-positive { color:#9ad6a4; }
+.delta-negative { color:#dc9090; }
+.experiment-match { border-left:3px solid #777; }
+.verdict { font-size:18px; font-weight:800; letter-spacing:.06em; }
+@media(max-width:700px) { .comparison-grid { grid-template-columns:1fr; } }

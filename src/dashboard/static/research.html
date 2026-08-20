@@ -5,6 +5,7 @@
   <title>OTR Strategy Lab</title>
   <link rel="icon" href="/market/assets/favicon.png">
   <link rel="stylesheet" href="/market/assets/research.css?v=4.0">
+  <link rel="stylesheet" href="/market/assets/experiments.css?v=5.0">
 </head>
 <body>
 <div class="lab-shell">
@@ -18,8 +19,9 @@
       <button data-view="decisions">Decisions</button>
       <button data-view="blocked">Blocked Setups</button>
       <button data-view="coverage">Data Coverage</button>
+      <button data-view="experiments">Experiments</button>
     </nav>
-    <div class="future"><span>FUTURE PHASES</span><button disabled>Experiments</button><button disabled>Walk Forward</button><button disabled>Shadow</button></div>
+    <div class="future"><span>FUTURE PHASES</span><button disabled>Walk Forward</button><button disabled>Shadow</button></div>
     <a class="back-live" href="/market/">← Production dashboard</a>
   </aside>
   <main>
@@ -45,6 +47,18 @@
     <section id="blockedView" class="view"><article class="panel"><div class="panel-head"><div><span class="kicker">MISSED / REJECTED</span><h2>Blocked Setups</h2></div></div><div id="blockedList" class="cards empty">No blocked setups.</div></article><div class="two-col"><article class="panel"><div class="panel-head"><div><span class="kicker">FRESHNESS CEILING</span><h2>Pending Expirations</h2></div></div><div id="expirationStats"></div><div id="expirationList" class="cards empty">No expired pending setups.</div></article><article class="panel"><div class="panel-head"><div><span class="kicker">NO DOUBLE APPLICATION</span><h2>Risk Audit</h2></div></div><div id="riskAudits" class="cards empty">No risk audits.</div></article></div></section>
 
     <section id="coverageView" class="view"><article class="panel"><div class="panel-head"><div><span class="kicker">PHASE 1 FOUNDATION</span><h2>Historical Data Coverage</h2></div></div><div id="coverageWarning" class="warning hidden"></div><div id="coverageCards" class="coverage-grid empty">No historical coverage found.</div><div id="integrityFindings" class="cards"></div></article></section>
+    <section id="experimentsView" class="view"><article class="panel"><div class="panel-head"><div><span class="kicker">CONTROLLED RESEARCH</span><h2>Experiment List</h2></div><span class="chip">NO AUTO-PROMOTION</span></div><div id="experimentList" class="run-list empty">No experiments yet.</div></article></section>
+
+    <section id="experimentView" class="view">
+      <div id="experimentWarning" class="warning hidden">NOT VALID FOR STRATEGY EVALUATION</div><div id="experimentHeader" class="manifest"></div>
+      <article class="panel"><div class="panel-head"><div><span class="kicker">Configuration Diff</span><h2>Baseline vs Candidate</h2></div><span id="experimentVerdict" class="chip">UNASSESSED</span></div><p id="experimentHypothesis" class="muted"></p><div id="configDiff" class="comparison-grid"></div></article>
+      <div class="two-col"><article class="panel"><div class="panel-head"><div><span class="kicker">MONETARY</span><h2>Metric Deltas</h2></div></div><div id="experimentMetrics" class="table-wrap"></div></article><article class="panel"><div class="panel-head"><div><span class="kicker">WHY IT CHANGED</span><h2>Behavior Deltas</h2></div></div><div id="experimentBehaviors" class="table-wrap"></div></article></div>
+      <div class="chart-grid"><article class="panel"><div class="panel-head"><div><span class="kicker">EVENT-AWARE</span><h2>Equity Comparison</h2></div></div><div class="chart"><canvas id="experimentEquityChart"></canvas><div id="experimentEquityEmpty" class="chart-empty">No paired equity series.</div></div><div id="equityDeltaSummary" class="muted"></div></article><article class="panel"><div class="panel-head"><div><span class="kicker">QUALITY PRESERVED</span><h2>Drawdown Comparison</h2></div></div><div class="chart"><canvas id="experimentDrawdownChart"></canvas><div id="experimentDrawdownEmpty" class="chart-empty">No paired drawdown series.</div></div></article></div>
+      <article class="panel"><div class="panel-head"><div><span class="kicker">Pending Lifetime</span><h2>Pending Lifetime Analysis</h2></div></div><div id="lifetimeAnalysis" class="segment-grid"></div></article>
+      <article class="panel"><div class="panel-head"><div><span class="kicker">PAIRED THESES</span><h2>Matched Setup Explorer</h2></div></div><div id="matchedSetups" class="cards empty">No matched setups.</div></article>
+      <article class="panel"><div class="panel-head"><div><span class="kicker">CAUSAL BOUNDARY</span><h2>Divergence Timeline</h2></div></div><div id="divergenceTimeline" class="timeline empty">No divergence recorded.</div></article>
+      <article class="panel"><div class="panel-head"><div><span class="kicker">SEGMENTS</span><h2>Segment Comparison</h2></div></div><div id="experimentSegments"></div></article>
+    </section>
   </main>
 </div>
 <script src="/market/assets/research.js?v=4.0"></script>
