@@ -59,7 +59,9 @@ class EntryDepthPhase6GTests(unittest.TestCase):
         self.assertTrue(shallow["eligible"])
         self.assertEqual(shallow["outcome"], "WIN")
         self.assertIsNotNone(shallow["entry_time"])
-        self.assertEqual(original["outcome"], "NO_ENTRY_WITHIN_HORIZON")
+        # The original deep limit never trades before the target is reached.
+        # That is a missed move, not merely an unfilled order at horizon.
+        self.assertEqual(original["outcome"], "MISSED_MOVE_BEFORE_ENTRY")
 
     def test_marketable_candidate_is_rejected_as_chase(self):
         trace = self._trace()
