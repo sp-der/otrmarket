@@ -9,6 +9,7 @@
   <link rel="apple-touch-icon" sizes="180x180" href="/market/assets/apple-touch-icon.png?v=4.4.1">
   <link rel="stylesheet" href="/market/assets/styles.css?v=4.5">
   <link rel="stylesheet" href="/market/assets/trading-days.css?v=6.6.2">
+  <link rel="stylesheet" href="/market/assets/execution-chart.css?v=7.1">
 </head>
 <body>
 <div id="app" class="app-shell">
@@ -23,6 +24,7 @@
 
     <nav class="nav-stack" aria-label="Dashboard sections">
       <button class="nav-item active" data-view="overview">Overview</button>
+      <button class="nav-item" data-view="chart">Chart</button>
       <button class="nav-item" data-view="trades">Trades</button>
       <button class="nav-item" data-view="setups">Setups</button>
       <button class="nav-item" data-view="scanner">Scanner</button>
@@ -75,29 +77,6 @@
           <span id="todayPnlSub" class="metric-sub">Trading-day realized P/L</span>
         </article>
       </div>
-
-      <section class="panel prop-guard-panel">
-        <div class="panel-head">
-          <div>
-            <div class="section-kicker">PROP ACCOUNT TRAINING</div>
-            <h2>Evaluation Guard</h2>
-          </div>
-          <div class="prop-guard-head">
-            <span id="evalProfile" class="tiny-chip">LUCID PRO 50K</span>
-            <span id="evalStatus" class="eval-status-chip">WAITING</span>
-          </div>
-        </div>
-        <div class="eval-grid">
-          <div class="eval-stat"><span>Paper Balance</span><strong id="evalBalance">--</strong><small id="evalPnl">P&amp;L --</small></div>
-          <div class="eval-stat"><span>Pass Target</span><strong id="evalTarget">--</strong><small id="evalProgressText">--</small></div>
-          <div class="eval-stat"><span>MLL Cushion</span><strong id="evalCushion">--</strong><small id="evalFloor">Floor --</small></div>
-          <div class="eval-stat"><span>Today</span><strong id="evalToday">--</strong><small id="evalDailyStop">OTR stop --</small></div>
-          <div class="eval-stat"><span>Risk / Trade</span><strong id="evalRisk">--</strong><small id="evalCommitted">Committed --</small></div>
-          <div class="eval-stat"><span>Session</span><strong id="evalTrades">--</strong><small id="evalLossStreak">Loss streak --</small></div>
-        </div>
-        <div class="eval-progress"><span id="evalProgressBar"></span></div>
-        <div id="evalReason" class="eval-reason">Waiting for evaluation guard data.</div>
-      </section>
 
       <section class="panel market-panel">
         <div class="panel-head">
@@ -170,6 +149,120 @@
             </thead>
             <tbody id="overviewTradesBody"></tbody>
           </table>
+        </div>
+      </section>
+
+      <section class="panel prop-guard-panel">
+        <div class="panel-head">
+          <div>
+            <div class="section-kicker">PROP ACCOUNT TRAINING</div>
+            <h2>Evaluation Guard</h2>
+          </div>
+          <div class="prop-guard-head">
+            <span id="evalProfile" class="tiny-chip">LUCID PRO 50K</span>
+            <span id="evalStatus" class="eval-status-chip">WAITING</span>
+          </div>
+        </div>
+        <div class="eval-grid">
+          <div class="eval-stat"><span>Paper Balance</span><strong id="evalBalance">--</strong><small id="evalPnl">P&amp;L --</small></div>
+          <div class="eval-stat"><span>Pass Target</span><strong id="evalTarget">--</strong><small id="evalProgressText">--</small></div>
+          <div class="eval-stat"><span>MLL Cushion</span><strong id="evalCushion">--</strong><small id="evalFloor">Floor --</small></div>
+          <div class="eval-stat"><span>Today</span><strong id="evalToday">--</strong><small id="evalDailyStop">OTR stop --</small></div>
+          <div class="eval-stat"><span>Risk / Trade</span><strong id="evalRisk">--</strong><small id="evalCommitted">Committed --</small></div>
+          <div class="eval-stat"><span>Session</span><strong id="evalTrades">--</strong><small id="evalLossStreak">Loss streak --</small></div>
+        </div>
+        <div class="eval-progress"><span id="evalProgressBar"></span></div>
+        <div id="evalReason" class="eval-reason">Waiting for evaluation guard data.</div>
+      </section>
+    </section>
+
+    <section id="chartView" class="view">
+      <section class="panel execution-chart-panel">
+        <div class="panel-head execution-chart-head">
+          <div>
+            <div class="section-kicker">LIVE + HISTORICAL REPLAY</div>
+            <h2>Bot Execution Chart</h2>
+          </div>
+          <div class="execution-chart-filters">
+            <label>Market
+              <select id="chartSymbol" aria-label="Chart market">
+                <option value="NQ">NQ / MNQ</option>
+                <option value="ES">ES / MES</option>
+                <option value="GC">GC / MGC</option>
+              </select>
+            </label>
+            <label>Timeframe
+              <select id="chartTimeframe" aria-label="Chart timeframe">
+                <option value="1m">1 minute</option>
+                <option value="5m">5 minutes</option>
+                <option value="15m">15 minutes</option>
+                <option value="30m">30 minutes</option>
+                <option value="1h">1 hour</option>
+              </select>
+            </label>
+            <label>Bars
+              <select id="chartLimit" aria-label="Chart bar count">
+                <option value="120">120</option>
+                <option value="320" selected>320</option>
+                <option value="600">600</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <div class="chart-status-row" aria-live="polite">
+          <span id="chartRuntime" class="chart-status-chip">IDLE</span>
+          <span id="chartFeed" class="chart-status-chip">FEED WAITING</span>
+          <span id="chartSync" class="chart-status-chip">PAIR WAITING</span>
+          <span id="chartUpdated" class="chart-updated">Not loaded</span>
+        </div>
+
+        <div class="execution-chart-grid">
+          <article class="execution-chart-card execution-chart-primary">
+            <div class="execution-chart-title">
+              <div><strong id="primaryChartName">NQ</strong><span id="primaryChartMeta">1m · 0 bars</span></div>
+              <span id="primaryChartPrice" class="chart-last-price">--</span>
+            </div>
+            <div class="execution-canvas-wrap">
+              <canvas id="primaryExecutionCanvas" aria-label="NQ bot execution candlestick chart"></canvas>
+              <div id="primaryChartEmpty" class="chart-empty">Waiting for stored candles.</div>
+              <div id="primaryChartTooltip" class="chart-tooltip hidden"></div>
+            </div>
+          </article>
+
+          <article id="pairChartCard" class="execution-chart-card execution-chart-pair">
+            <div class="execution-chart-title">
+              <div><strong id="pairChartName">ES</strong><span id="pairChartMeta">SMT comparison · 0 bars</span></div>
+              <span id="pairChartPrice" class="chart-last-price">--</span>
+            </div>
+            <div class="execution-canvas-wrap compact">
+              <canvas id="pairExecutionCanvas" aria-label="ES SMT comparison candlestick chart"></canvas>
+              <div id="pairChartEmpty" class="chart-empty">Waiting for paired candles.</div>
+              <div id="pairChartTooltip" class="chart-tooltip hidden"></div>
+            </div>
+          </article>
+        </div>
+
+        <div class="execution-legend" aria-label="Chart legend">
+          <span><i class="legend-box ob"></i>Order block</span>
+          <span><i class="legend-box fvg"></i>Fair value gap</span>
+          <span><i class="legend-line entry"></i>Entry</span>
+          <span><i class="legend-line stop"></i>Stop</span>
+          <span><i class="legend-line target"></i>Target</span>
+          <span><i class="legend-marker"></i>Execution</span>
+        </div>
+      </section>
+
+      <section class="panel chart-activity-panel">
+        <div class="panel-head">
+          <div>
+            <div class="section-kicker">VISIBLE WINDOW</div>
+            <h2>Setups &amp; Executions</h2>
+          </div>
+          <span id="chartWindowCounts" class="tiny-chip">0 SETUPS · 0 TRADES</span>
+        </div>
+        <div id="chartActivityList" class="chart-activity-list">
+          <div class="empty-state">Chart activity will appear here during live or accelerated replay.</div>
         </div>
       </section>
     </section>
@@ -308,5 +401,6 @@
 <script src="/market/assets/scanner-clarity.js?v=6.4" defer></script>
 <script src="/market/assets/scanner-decision-live.js?v=6.4" defer></script>
 <script src="/market/assets/trading-days.js?v=6.6.2" defer></script>
+<script src="/market/assets/execution-chart.js?v=7.1" defer></script>
 </body>
 </html>

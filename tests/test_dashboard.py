@@ -1,8 +1,10 @@
+import asyncio
 import json
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from src.dashboard.queries import DashboardRepository
 
@@ -123,6 +125,123 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(snapshot["trades"][0]["setup_id"], "b")
         btc = next(item for item in snapshot["markets"] if item["symbol"] == "BTC-USD")
         self.assertEqual(btc["price"], 64000)
+
+    def test_execution_chart_returns_candles_overlays_trades_and_pair_sync(self):
+        con = sqlite3.connect(self.db_path)
+        for symbol, offset in (("NQ", 0), ("ES", -10000)):
+            con.execute(
+                """INSERT INTO market_quotes
+                (received_at,source,symbol,price,bid,ask,mid,spread,spread_bps)
+                VALUES ('2026-08-25T14:33:00+00:00','replay',?,?,?,?,?,?,?)""",
+                (
+                    symbol,
+                    22000 + offset,
+                    21999.75 + offset,
+                    22000.25 + offset,
+                    22000 + offset,
+                    .5,
+                    .23,
+                ),
+            )
+            for minute in range(3):
+                base = 22000 + offset + minute
+                con.execute(
+                    """INSERT INTO candles
+                    (symbol,timeframe,open_time,close_time,open,high,low,close,ticks)
+                    VALUES (?,?, ?,?,?, ?,?,?,?)""",
+                    (
+                        symbol,
+                        "1m",
+                        f"2026-08-25T14:3{minute}:00+00:00",
+                        f"2026-08-25T14:3{minute + 1}:00+00:00",
+                        base,
+                        base + 2,
+                        base - 1,
+                        base + 1,
+                        12,
+                    ),
+                )
+
+        payload = {
+            "trigger_type": "smt",
+            "entry_fvg": {
+                "direction": "bullish",
+                "lower": 22000.5,
+                "upper": 22001.0,
+                "formed_at": "2026-08-25T14:31:00+00:00",
+            },
+            "metadata": {
+                "strategy": "ICT_CONFLUENCE",
+                "entry_type": "ORDER_BLOCK",
+                "entry_candidates": [{
+                    "entry_type": "ORDER_BLOCK",
+                    "details": {
+                        "candle_time": "2026-08-25T14:30:00+00:00",
+                        "zone_overlap_low": 21999.5,
+                        "zone_overlap_high": 22000.5,
+                    },
+                }],
+            },
+            "trigger_details": {"leader": "NQ", "laggard": "ES"},
+        }
+        con.execute(
+            """INSERT INTO strategy_setups
+            (setup_id,symbol,timeframe,direction,created_at,trigger_type,entry_price,
+             stop_price,target_price,risk_reward,status,payload_json)
+            VALUES ('chart-nq','NQ','1m','bullish','2026-08-25T14:31:00+00:00',
+                    'smt',22001,21999,22005,2.0,'PENDING',?)""",
+            (json.dumps(payload),),
+        )
+        con.execute(
+            """INSERT INTO paper_trades
+            (setup_id,symbol,timeframe,direction,status,entry_price,stop_price,
+             target_price,opened_at,closed_at,exit_price,result,result_r,updated_at)
+            VALUES ('chart-nq','NQ','1m','bullish','CLOSED',22001,21999,22005,
+                    '2026-08-25T14:31:00+00:00','2026-08-25T14:32:00+00:00',
+                    22005,'WIN',2.0,'2026-08-25T14:32:00+00:00')"""
+        )
+        con.commit()
+        con.close()
+
+        chart = self.repo.execution_chart("NQ", "1m", 50)
+
+        candle_times = [row["open_time"] for row in chart["candles"]]
+        self.assertEqual(candle_times, sorted(candle_times))
+        self.assertTrue(chart["pair"]["synchronized"])
+        self.assertEqual(chart["pair"]["symbol"], "ES")
+        self.assertEqual(chart["setups"][0]["overlay"]["entry_type"], "ORDER_BLOCK")
+        self.assertEqual(chart["setups"][0]["overlay"]["order_block"]["low"], 21999.5)
+        self.assertIsNotNone(chart["setups"][0]["overlay"]["smt"])
+        self.assertEqual(chart["trades"][0]["exit_price"], 22005)
+        self.assertEqual(chart["trades"][0]["display_result_dollars"], 500.0)
+
+        from starlette.requests import Request
+        from src.dashboard import app as dashboard_app
+
+        request = Request({"type": "http", "headers": []})
+        with patch.object(dashboard_app, "repository", self.repo):
+            api_chart = asyncio.run(
+                dashboard_app.execution_chart(request, "nq", "1m", 50)
+            )
+        self.assertEqual(api_chart["symbol"], "NQ")
+        self.assertEqual(len(api_chart["candles"]), 3)
+
+    def test_execution_chart_surface_is_loaded_by_dashboard(self):
+        static_dir = Path(__file__).parents[1] / "src" / "dashboard" / "static"
+        html = (static_dir / "index.html").read_text(encoding="utf-8")
+        script = (static_dir / "execution-chart.js").read_text(encoding="utf-8")
+        css = (static_dir / "execution-chart.css").read_text(encoding="utf-8")
+        app_source = (Path(__file__).parents[1] / "src" / "dashboard" / "app.py").read_text(encoding="utf-8")
+
+        self.assertIn('data-view="chart"', html)
+        self.assertIn('id="primaryExecutionCanvas"', html)
+        self.assertIn('id="pairExecutionCanvas"', html)
+        self.assertIn("execution-chart.js?v=7.1", html)
+        self.assertLess(html.index("RECENT ACTIVITY"), html.index("PROP ACCOUNT TRAINING"))
+        self.assertLess(html.index("PROP ACCOUNT TRAINING"), html.index('id="chartView"'))
+        self.assertIn("/api/chart", app_source)
+        self.assertIn("drawMarker", script)
+        self.assertIn(".execution-chart-grid", css)
 
 
 if __name__ == "__main__":

@@ -33,6 +33,8 @@ COOKIE_NAME = "otr_market_session"
 DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "").strip()
 SESSION_SECRET = os.getenv("DASHBOARD_SESSION_SECRET", "").strip() or DASHBOARD_PASSWORD
 BRIDGE_KEY = os.getenv("OTR_BRIDGE_KEY", "").strip()
+CHART_SYMBOLS = {"NQ", "ES", "GC"}
+CHART_TIMEFRAMES = {"1m", "5m", "15m", "30m", "1h"}
 
 repository = DashboardRepository(DB_PATH)
 research_repository = ResearchDashboardRepository(RESEARCH_DB_PATH, HISTORICAL_DB_PATH, PHASE6_DB_PATH)
@@ -360,6 +362,39 @@ async def snapshot(request: Request):
         return repository.snapshot()
     except Exception as exc:
         return JSONResponse(status_code=500, content={"detail": f"Dashboard snapshot failed: {exc}"})
+
+
+@app.get(f"{BASE_PATH}/api/chart")
+async def execution_chart(
+    request: Request,
+    symbol: str = "NQ",
+    timeframe: str = "1m",
+    limit: int = 320,
+):
+    """Serve bounded read-only chart data for both live and replay sessions."""
+    require_http_auth(request)
+    normalized_symbol = symbol.strip().upper()
+    normalized_timeframe = timeframe.strip().lower()
+    if normalized_symbol not in CHART_SYMBOLS:
+        raise HTTPException(status_code=400, detail="Chart symbol must be NQ, ES, or GC")
+    if normalized_timeframe not in CHART_TIMEFRAMES:
+        raise HTTPException(
+            status_code=400,
+            detail="Chart timeframe must be 1m, 5m, 15m, 30m, or 1h",
+        )
+
+    bounded_limit = max(50, min(limit, 1000))
+    try:
+        return repository.execution_chart(
+            normalized_symbol,
+            normalized_timeframe,
+            bounded_limit,
+        )
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Execution chart failed: {exc}"},
+        )
 
 
 @app.get(f"{BASE_PATH}/api/intelligence")
