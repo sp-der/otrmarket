@@ -26,7 +26,6 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 DB_PATH = Path(os.getenv("OTR_DB_PATH", ROOT / "data" / "otrmarket.db"))
 RESEARCH_DB_PATH = Path(os.getenv("OTR_RESEARCH_DB_PATH", ROOT / "data" / "otr_backtests.db"))
 HISTORICAL_DB_PATH = Path(os.getenv("OTR_HISTORICAL_DB_PATH", ROOT / "data" / "otr_historical.db"))
-PHASE6_DB_PATH = Path(os.getenv("OTR_PHASE6_DB_PATH", ROOT / "data" / "otr_phase6_results.db"))
 
 BASE_PATH = "/market"
 COOKIE_NAME = "otr_market_session"
@@ -37,7 +36,7 @@ CHART_SYMBOLS = {"NQ", "ES", "GC"}
 CHART_TIMEFRAMES = {"1m", "5m", "15m", "30m", "1h"}
 
 repository = DashboardRepository(DB_PATH)
-research_repository = ResearchDashboardRepository(RESEARCH_DB_PATH, HISTORICAL_DB_PATH, PHASE6_DB_PATH)
+research_repository = ResearchDashboardRepository(RESEARCH_DB_PATH, HISTORICAL_DB_PATH)
 
 app = FastAPI(
     title="OTR Market Dashboard",
@@ -217,35 +216,6 @@ async def research_recovery(run_id: str, request: Request):
 async def research_coverage(request: Request, capture_id: str = ""):
     require_http_auth(request)
     return research_repository.coverage(capture_id or None)
-
-
-@app.get(f"{BASE_PATH}/api/research/experiments")
-async def research_experiments(request: Request):
-    require_http_auth(request)
-    return {"items": research_repository.experiments(), "read_only": True}
-
-
-@app.get(f"{BASE_PATH}/api/research/experiments/{{experiment_id}}")
-async def research_experiment_detail(experiment_id: str, request: Request):
-    require_http_auth(request)
-    detail = research_repository.experiment_detail(experiment_id)
-    if detail is None:
-        raise HTTPException(status_code=404, detail="Research experiment not found")
-    return detail
-
-
-@app.get(f"{BASE_PATH}/api/research/phase6/studies")
-async def research_phase6_studies(request: Request):
-    require_http_auth(request)
-    return {"items":research_repository.phase6_studies(),"read_only":True}
-
-
-@app.get(f"{BASE_PATH}/api/research/phase6/studies/{{study_id}}")
-async def research_phase6_study(study_id: str, request: Request):
-    require_http_auth(request)
-    detail=research_repository.phase6_study_detail(study_id)
-    if detail is None:raise HTTPException(status_code=404,detail="Phase 6 study not found")
-    return detail
 
 
 def engine_process_status() -> tuple[bool, int | None]:
