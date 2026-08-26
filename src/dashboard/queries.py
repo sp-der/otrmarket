@@ -390,6 +390,207 @@ class DashboardRepository:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    @staticmethod
+    def _chart_setup_overlay(payload: dict[str, Any]) -> dict[str, Any]:
+        """Return the small, stable subset of setup geometry used by the chart."""
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        trigger_details = (
+            payload.get("trigger_details")
+            if isinstance(payload.get("trigger_details"), dict)
+            else {}
+        )
+
+        order_block = None
+        candidates = metadata.get("entry_candidates")
+        if isinstance(candidates, list):
+            for candidate in candidates:
+                if not isinstance(candidate, dict) or candidate.get("entry_type") != "ORDER_BLOCK":
+                    continue
+                details = candidate.get("details")
+                if isinstance(details, dict):
+                    order_block = {
+                        "time": details.get("candle_time"),
+                        "low": details.get("zone_overlap_low", details.get("body_low")),
+                        "high": details.get("zone_overlap_high", details.get("body_high")),
+                    }
+                break
+
+        rejection_block = trigger_details.get("rejection_block")
+        if order_block is None and isinstance(rejection_block, dict):
+            order_block = {
+                "time": trigger_details.get("sweep_time"),
+                "low": rejection_block.get("low"),
+                "high": rejection_block.get("high"),
+            }
+
+        grade_context = metadata.get("a_plus_context")
+        grade = grade_context.get("quality_grade") if isinstance(grade_context, dict) else None
+        return {
+            "strategy": metadata.get("strategy", "ICT_CONFLUENCE"),
+            "grade": grade or metadata.get("setup_quality"),
+            "entry_type": metadata.get("entry_type"),
+            "entry_zone": metadata.get("entry_zone"),
+            "fvg": payload.get("entry_fvg") if isinstance(payload.get("entry_fvg"), dict) else None,
+            "pd_array": payload.get("pd_array") if isinstance(payload.get("pd_array"), dict) else None,
+            "displacement": (
+                payload.get("displacement")
+                if isinstance(payload.get("displacement"), dict)
+                else None
+            ),
+            "order_block": order_block,
+            "smt": trigger_details if str(payload.get("trigger_type", "")).lower() == "smt" else None,
+            "trigger_details": trigger_details,
+        }
+
+    def execution_chart(
+        self,
+        symbol: str,
+        timeframe: str,
+        limit: int = 320,
+    ) -> dict[str, Any]:
+        """Build one read-only live/replay chart payload from the trading database."""
+        generated_at = self._now().isoformat()
+        empty = {
+            "generated_at": generated_at,
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "runtime": {"mode": "IDLE", "market_time": None},
+            "feed": {"symbol": symbol, "state": "WAITING"},
+            "pair": None,
+            "candles": [],
+            "setups": [],
+            "trades": [],
+        }
+        if not self.db_path.exists():
+            return empty
+
+        with self._connect() as connection:
+            runtime = self.runtime_state(connection)
+            feed = self._market_row(connection, symbol) if self._table_exists(connection, "market_quotes") else {"symbol": symbol}
+            if feed.get("price") is None:
+                feed["state"] = "WAITING"
+            elif feed.get("age_seconds") is None or float(feed["age_seconds"]) >= 20.0:
+                feed["state"] = "STALE"
+            else:
+                feed["state"] = str(feed.get("mode") or "LIVE")
+
+            if not self._table_exists(connection, "candles"):
+                return {**empty, "runtime": runtime, "feed": feed}
+
+            candle_rows = connection.execute(
+                """
+                SELECT open_time, close_time, open, high, low, close, ticks
+                FROM candles
+                WHERE symbol = ? AND timeframe = ?
+                ORDER BY open_time DESC
+                LIMIT ?
+                """,
+                (symbol, timeframe, limit),
+            ).fetchall()
+            candles = [dict(row) for row in reversed(candle_rows)]
+
+            pair = None
+            pair_symbol = {"NQ": "ES", "ES": "NQ"}.get(symbol)
+            if pair_symbol:
+                selected_latest = candles[-1]["close_time"] if candles else None
+                pair_row = connection.execute(
+                    """
+                    SELECT close_time
+                    FROM candles
+                    WHERE symbol = ? AND timeframe = ?
+                    ORDER BY open_time DESC
+                    LIMIT 1
+                    """,
+                    (pair_symbol, timeframe),
+                ).fetchone()
+                pair_latest = pair_row["close_time"] if pair_row else None
+                selected_time = self._parse_time(selected_latest)
+                pair_time = self._parse_time(pair_latest)
+                delta_seconds = None
+                if selected_time is not None and pair_time is not None:
+                    delta_seconds = abs((selected_time - pair_time).total_seconds())
+                pair = {
+                    "symbol": pair_symbol,
+                    "selected_close_time": selected_latest,
+                    "pair_close_time": pair_latest,
+                    "delta_seconds": delta_seconds,
+                    "synchronized": delta_seconds is not None and delta_seconds <= 1.0,
+                }
+
+            setups: list[dict[str, Any]] = []
+            trades: list[dict[str, Any]] = []
+            if candles:
+                start_time = candles[0]["open_time"]
+                end_time = candles[-1]["close_time"]
+
+                if self._table_exists(connection, "strategy_setups"):
+                    setup_rows = connection.execute(
+                        """
+                        SELECT setup_id, direction, created_at, trigger_type,
+                               entry_price, stop_price, target_price, risk_reward,
+                               status, payload_json
+                        FROM strategy_setups
+                        WHERE symbol = ? AND timeframe = ?
+                          AND created_at >= ? AND created_at <= ?
+                        ORDER BY created_at ASC
+                        LIMIT 500
+                        """,
+                        (symbol, timeframe, start_time, end_time),
+                    ).fetchall()
+                    for row in setup_rows:
+                        item = dict(row)
+                        try:
+                            payload = json.loads(item.pop("payload_json") or "{}")
+                        except (TypeError, json.JSONDecodeError):
+                            payload = {}
+                        item["overlay"] = self._chart_setup_overlay(payload)
+                        setups.append(item)
+
+                if self._table_exists(connection, "paper_trades"):
+                    risk_expr = (
+                        "risk_dollars"
+                        if self._column_exists(connection, "paper_trades", "risk_dollars")
+                        else "NULL AS risk_dollars"
+                    )
+                    dollars_expr = (
+                        "result_dollars"
+                        if self._column_exists(connection, "paper_trades", "result_dollars")
+                        else "NULL AS result_dollars"
+                    )
+                    trade_rows = connection.execute(
+                        f"""
+                        SELECT setup_id, direction, status, entry_price, stop_price,
+                               target_price, opened_at, closed_at, exit_price,
+                               result, result_r, {risk_expr}, {dollars_expr}, updated_at
+                        FROM paper_trades
+                        WHERE symbol = ? AND timeframe = ?
+                          AND COALESCE(opened_at, updated_at) <= ?
+                          AND (closed_at IS NULL OR COALESCE(closed_at, updated_at) >= ?)
+                        ORDER BY COALESCE(opened_at, updated_at) ASC
+                        LIMIT 250
+                        """,
+                        (symbol, timeframe, end_time, start_time),
+                    ).fetchall()
+                    fallback_risk = EvaluationConfig.from_env().risk_per_trade
+                    for row in trade_rows:
+                        item = dict(row)
+                        item["display_result_dollars"] = self._display_result_dollars(
+                            row, fallback_risk
+                        )
+                        trades.append(item)
+
+            return {
+                "generated_at": generated_at,
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "runtime": runtime,
+                "feed": feed,
+                "pair": pair,
+                "candles": candles,
+                "setups": setups,
+                "trades": trades,
+            }
+
     def setup_counts(self, connection: sqlite3.Connection) -> dict[str, int]:
         if not self._table_exists(connection, "strategy_setups"):
             return {"total": 0}
