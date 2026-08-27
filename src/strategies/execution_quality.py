@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from statistics import mean
 
+from src.strategies.market_intelligence import evaluate_market_narrative
 from src.strategies.structure import detect_swings
 
 
@@ -100,13 +101,16 @@ def _structure_bias(candles) -> tuple[str, dict]:
 
 
 def evaluate_ict_context(setup, histories) -> tuple[bool, str, dict]:
-    """Require context, sequence, displacement quality, and a fresh entry leg.
+    """Grade a setup using structure, sequence, candle quality and market narrative.
 
-    This is deliberately separate from risk/reward. R:R controls sizing after a
-    setup is accepted; it no longer acts as a proxy for setup quality.
+    Operation Market Intelligence 1.0 keeps the proven ICT sequence intact, then
+    adds a second opinion built from multi-timeframe structure, dealing range,
+    equal-liquidity pools, active/inverse FVGs, order blocks/breaker candidates,
+    rejection behavior, session context and NQ/ES SMT. The market map does not
+    invent trades; it grades candidates the strategy engine already discovered.
     """
     details: dict = {
-        "profile": "A_PLUS_CONTEXT_5_0",
+        "profile": "A_PLUS_CONTEXT_MARKET_INTELLIGENCE_1_0",
         "direction": setup.direction,
         "execution_timeframe": setup.timeframe,
     }
@@ -165,8 +169,6 @@ def evaluate_ict_context(setup, histories) -> tuple[bool, str, dict]:
     if entry_fvg.formed_at <= displacement.candle_time:
         return False, "Entry FVG did not form after the confirmed displacement.", details
 
-    # The detector already requires 1.50x body / 1.30x range. Execution asks for
-    # a slightly stronger impulse so borderline displacement stays research-only.
     if displacement.body_ratio < 1.65 or displacement.range_ratio < 1.35:
         return (
             False,
@@ -191,8 +193,6 @@ def evaluate_ict_context(setup, histories) -> tuple[bool, str, dict]:
     entry_type = str(setup.metadata.get("entry_type", "FVG_MIDPOINT"))
     details["entry_type"] = entry_type
     if entry_type == "ORDER_BLOCK":
-        # Fallback blocks need a visibly stronger impulse because the entry is
-        # farther removed from the actual imbalance than the preferred FVG/OTE.
         if displacement.body_ratio < 1.90 or displacement.range_ratio < 1.50:
             return (
                 False,
@@ -201,20 +201,39 @@ def evaluate_ict_context(setup, histories) -> tuple[bool, str, dict]:
                 details,
             )
 
+    market_narrative = evaluate_market_narrative(setup, histories)
+    details["market_intelligence"] = market_narrative
+    details["market_intelligence_score"] = market_narrative["score"]
+    details["market_intelligence_grade"] = market_narrative["grade"]
+
+    if market_narrative.get("opposed_votes", 0) >= 3 and market_narrative.get("aligned_votes", 0) == 0:
+        return (
+            False,
+            "Market Intelligence sees broad higher-timeframe structure opposing this candidate; keep it research-only.",
+            details,
+        )
+    if market_narrative["score"] < 45:
+        return (
+            False,
+            f"Market Intelligence narrative is too weak at {market_narrative['score']}/100.",
+            details,
+        )
+
     components = {
-        "local_context": 20,
+        "local_context": 15,
         "narrative_context": (
-            20
+            12
             if narrative_bias == setup.direction
-            else 10
+            else 6
             if narrative_bias in {"unknown", "neutral"}
             else 0
         ),
-        "displacement": 20,
-        "fresh_entry": 15 if fvg_age_bars <= 2.0 else 0,
+        "displacement": 18,
+        "fresh_entry": 12 if fvg_age_bars <= 2.0 else 0,
         "trigger": 10 if str(setup.trigger_type).lower() == "smt" else 8,
-        "entry_location": 5 if entry_type != "ORDER_BLOCK" else 4,
+        "entry_location": 8 if entry_type != "ORDER_BLOCK" else 6,
         "target_room": min(10, max(0, round(float(setup.risk_reward or 0) * 5))),
+        "market_intelligence": min(15, round(market_narrative["score"] * 0.15)),
     }
     score = min(100, int(sum(components.values())))
     grade = _grade(score)
@@ -235,6 +254,6 @@ def evaluate_ict_context(setup, histories) -> tuple[bool, str, dict]:
         )
     return (
         True,
-        f"Chart Intelligence score {score}/100 ({grade}); eligible for its grade's risk tier.",
+        f"Chart Intelligence score {score}/100 ({grade}) with Market Intelligence {market_narrative['score']}/100; eligible for its grade's risk tier.",
         details,
     )
