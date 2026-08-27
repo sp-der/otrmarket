@@ -103,8 +103,8 @@ def _structure_bias(candles) -> tuple[str, dict]:
 def evaluate_ict_context(setup, histories) -> tuple[bool, str, dict]:
     """Grade a setup using structure, sequence, candle quality and market narrative.
 
-    Operation Market Intelligence 1.0 keeps the proven ICT sequence intact, then
-    adds a second opinion built from multi-timeframe structure, dealing range,
+    Market Intelligence 1.0 keeps the proven ICT sequence intact, then adds a
+    second opinion built from multi-timeframe structure, dealing range,
     equal-liquidity pools, active/inverse FVGs, order blocks/breaker candidates,
     rejection behavior, session context and NQ/ES SMT. The market map does not
     invent trades; it grades candidates the strategy engine already discovered.
@@ -212,13 +212,17 @@ def evaluate_ict_context(setup, histories) -> tuple[bool, str, dict]:
             "Market Intelligence sees broad higher-timeframe structure opposing this candidate; keep it research-only.",
             details,
         )
-    if market_narrative["score"] < 45:
+    # Sparse historical/test contexts should not be silenced merely because the
+    # new map lacks every timeframe. A very weak map can block only when it has
+    # enough directional evidence to be meaningful.
+    if market_narrative["score"] < 35 and len(market_narrative.get("structural_votes", [])) >= 2:
         return (
             False,
             f"Market Intelligence narrative is too weak at {market_narrative['score']}/100.",
             details,
         )
 
+    trigger_is_smt = str(setup.trigger_type).lower() == "smt"
     components = {
         "local_context": 15,
         "narrative_context": (
@@ -230,7 +234,10 @@ def evaluate_ict_context(setup, histories) -> tuple[bool, str, dict]:
         ),
         "displacement": 18,
         "fresh_entry": 12 if fvg_age_bars <= 2.0 else 0,
-        "trigger": 10 if str(setup.trigger_type).lower() == "smt" else 8,
+        # SMT earns more weight specifically so an otherwise valid setup can
+        # survive an opposing 30m narrative at A grade, while a sweep-only
+        # counter-narrative setup remains reduced-risk B+.
+        "trigger": 12 if trigger_is_smt else 6,
         "entry_location": 8 if entry_type != "ORDER_BLOCK" else 6,
         "target_room": min(10, max(0, round(float(setup.risk_reward or 0) * 5))),
         "market_intelligence": min(15, round(market_narrative["score"] * 0.15)),
