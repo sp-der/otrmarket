@@ -6,6 +6,7 @@ from pathlib import Path
 
 from src import main_70 as op70
 from src.risk.operating_mode import evaluate_operating_mode
+from src.storage.learning_71 import observe_market_opportunity_71
 
 
 runtime = op70.runtime
@@ -34,6 +35,13 @@ def _adaptive_quality_gate_71(connection, setup, histories=None):
 
 op70.op59.op58._adaptive_quality_gate = _adaptive_quality_gate_71
 
+# The inherited Operation 5.8 observer still decides when a completed market
+# move becomes a lesson. Operation 7.1 enriches only newly-created lessons with
+# the market map that existed at that historical cutoff. This keeps the learner
+# causal while teaching it about premium/discount, equal liquidity, inverse
+# FVGs, order blocks, breaker candidates, rejection behavior and MTF structure.
+op70.op59.op58.observe_market_opportunity = observe_market_opportunity_71
+
 
 def _patch_runtime_manifest_71() -> None:
     path = Path(__file__).resolve().parent / "dashboard" / "static" / "runtime-build.json"
@@ -50,6 +58,10 @@ def _patch_runtime_manifest_71() -> None:
                 "Multi-timeframe structure + dealing range + equal liquidity + active/inverse FVG + "
                 "order-block/breaker candidates + rejection behavior + session liquidity + NQ/ES SMT",
                 "src/strategies/market_intelligence.py + src/strategies/execution_quality.py",
+            ),
+            "Market intelligence learning": (
+                "Large-move lessons retain causal market-map context and aggregate MTF, dealing-range, liquidity, FVG, OB/breaker and rejection feature statistics",
+                "src/storage/learning_71.py + src/main_71.py",
             ),
             "Evaluation operating mode": (
                 "Max 2 primary trades/day, max 1 per named session; $1,500/trade and $3,000/day are objectives, never forced targets",
@@ -76,8 +88,9 @@ if __name__ == "__main__":
     _patch_runtime_manifest_71()
     runtime.console.log(
         "Operation 7.1 active: Operation 7.0 execution/recovery rules remain intact; "
-        "Market Intelligence 1.0 grades chart narrative and EVAL/FUNDED operating modes "
-        "control opportunity count and profit-protection behavior without forcing trades."
+        "Market Intelligence 1.0 grades chart narrative, enriches causal market lessons, "
+        "and EVAL/FUNDED operating modes control opportunity count and profit-protection "
+        "behavior without forcing trades."
     )
     op70.op69.op68.op66.op65.op64.op63.op62._restore_progress_62()
     try:
