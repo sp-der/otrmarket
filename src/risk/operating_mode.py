@@ -148,10 +148,23 @@ def _day_and_session_stats(connection: sqlite3.Connection, reference: datetime) 
     }
 
 
+def _quality_grade(setup) -> str:
+    value = setup.metadata.get("a_plus_context", {}).get("quality_grade")
+    if value:
+        return str(value).upper()
+    strategy = str(setup.metadata.get("strategy", ""))
+    if strategy == "REJECTION_BLOCK_10_10":
+        score = int(setup.metadata.get("checklist_score", 0) or 0)
+        total = int(setup.metadata.get("checklist_total", 10) or 10)
+        if score >= total >= 10:
+            return "A+"
+    return "A"
+
+
 def evaluate_operating_mode(connection: sqlite3.Connection, setup, config: OperatingModeConfig | None = None):
     config = config or OperatingModeConfig.from_env()
     stats = _day_and_session_stats(connection, setup.created_at)
-    grade = str(setup.metadata.get("a_plus_context", {}).get("quality_grade") or "A").upper()
+    grade = _quality_grade(setup)
     details = {
         "profile": "OTR_OPERATING_MODE_1_0",
         **asdict(config),
