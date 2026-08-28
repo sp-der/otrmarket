@@ -14,6 +14,7 @@ from .store import ensure_schema, execution_status, poll_commands, record_bridge
 
 
 BASE = "/market/api"
+KILL_SWITCH_RESET_CONFIRMATION = "RESET_EXECUTION_KILL_SWITCH"
 
 
 class ExecutionEventPayload(BaseModel):
@@ -44,6 +45,7 @@ class BrokerSnapshotPayload(BaseModel):
 class KillSwitchPayload(BaseModel):
     enabled: bool
     reason: str = Field(default="", max_length=500)
+    confirmation: str = Field(default="", max_length=128)
 
 
 def build_router(*, require_http_auth: Callable[[Request], None], require_bridge_key: Callable[[Request], None]) -> APIRouter:
@@ -121,10 +123,23 @@ def build_router(*, require_http_auth: Callable[[Request], None], require_bridge
     @router.post(f"{BASE}/execution/kill-switch")
     async def execution_kill_switch(payload: KillSwitchPayload, request: Request):
         require_http_auth(request)
+        if not payload.enabled and payload.confirmation != KILL_SWITCH_RESET_CONFIRMATION:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Reset requires confirmation={KILL_SWITCH_RESET_CONFIRMATION!r}",
+            )
         connection = get_connection()
         try:
             set_state(connection, "kill_switch", payload.enabled)
-            set_state(connection, "kill_switch_audit", {"enabled": payload.enabled, "reason": payload.reason, "changed_at": utc_now().isoformat()})
+            set_state(
+                connection,
+                "kill_switch_audit",
+                {
+                    "enabled": payload.enabled,
+                    "reason": payload.reason,
+                    "changed_at": utc_now().isoformat(),
+                },
+            )
             return {"ok": True, "enabled": payload.enabled, "reason": payload.reason}
         finally:
             connection.close()
