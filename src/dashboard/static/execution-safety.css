@@ -1,0 +1,79 @@
+.execution-safety-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.execution-safety-card {
+  border: 1px solid rgba(255,255,255,.10);
+  border-radius: 14px;
+  padding: 14px;
+  background: rgba(255,255,255,.025);
+}
+
+.execution-safety-card span {
+  display: block;
+  font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--muted, #8d8d8d);
+  margin-bottom: 7px;
+}
+
+.execution-safety-card strong {
+  font-size: 15px;
+  word-break: break-word;
+}
+
+.execution-safety-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.execution-danger-button,
+.execution-reset-button {
+  border-radius: 10px;
+  padding: 10px 14px;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.execution-danger-button {
+  border: 1px solid rgba(255,90,90,.55);
+  background: rgba(255,70,70,.12);
+  color: #ff8b8b;
+}
+
+.execution-reset-button {
+  border: 1px solid rgba(255,255,255,.16);
+  background: transparent;
+  color: inherit;
+}
+
+.execution-danger-button:disabled,
+.execution-reset-button:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+.execution-safety-note {
+  margin-top: 12px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.execution-state-good { color: #7ee4a8; }
+.execution-state-warn { color: #ffd479; }
+.execution-state-bad { color: #ff8585; }
+
+@media (max-width: 900px) {
+  .execution-safety-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 560px) {
+  .execution-safety-grid { grid-template-columns: 1fr; }
+}
