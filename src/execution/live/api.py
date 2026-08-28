@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from src.storage.database import get_connection
 
 from .config import ExecutionConfig
-from .models import ExecutionMode, utc_now
+from .models import utc_now
 from .safety import bridge_dispatch_ready
 from .store import ensure_schema, execution_status, poll_commands, record_bridge_snapshot, record_event, set_state
 
@@ -105,6 +105,7 @@ def build_router(*, require_http_auth: Callable[[Request], None], require_bridge
         connection = get_connection()
         try:
             status = execution_status(connection)
+            dispatch = bridge_dispatch_ready(connection, config)
         finally:
             connection.close()
         status["config"] = {
@@ -117,7 +118,8 @@ def build_router(*, require_http_auth: Callable[[Request], None], require_bridge
             "max_micros": config.max_micros,
             "max_risk_dollars": config.max_risk_dollars,
         }
-        status["broker_transmission_possible"] = bool(config.armed and config.mode != ExecutionMode.PAPER and (config.mode != ExecutionMode.LIVE or (config.live_allowed and config.certified)))
+        status["dispatch"] = dispatch.to_dict()
+        status["broker_transmission_possible"] = bool(dispatch.allowed)
         return status
 
     @router.post(f"{BASE}/execution/kill-switch")
