@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import runpy
 
+from src.risk.eval_history72 import apply_nondestructive_eval_reset, install_eval_history_filter
 from src.storage.database import get_connection
 
 
@@ -52,8 +53,8 @@ def _install_execution_routes() -> None:
 def _audit_latest_eval_limit_block() -> None:
     """Print the replay-market timestamp for the latest daily-slot rejection.
 
-    This is intentionally read-only and runs before the normal fresh-eval reset
-    hook, giving us one last audit breadcrumb before a requested replay wipe.
+    This is intentionally read-only and runs before a requested counter reset,
+    giving us one last audit breadcrumb while preserving all historical rows.
     """
     connection = get_connection()
     try:
@@ -153,6 +154,11 @@ def _patch_dashboard_html_72() -> None:
 def main() -> None:
     os.environ["OTR_ENGINE_MODULE"] = promoted_engine_module()
     _audit_latest_eval_limit_block()
+    # Operation 7.2G intercepts OTR_RESET_EVAL_TOKEN before the legacy
+    # supervisor sees it. Existing trade/history rows stay intact while their
+    # setup IDs become prior-run history for new eval accounting.
+    apply_nondestructive_eval_reset()
+    install_eval_history_filter()
     _patch_dashboard_html_72()
     _install_execution_routes()
     runpy.run_module("src.dashboard.server", run_name="__main__")
