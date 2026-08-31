@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from src.risk.momentum_scalp72 import scalp_risk_cap
-
 
 GRADE_RISK_CAPS = {
     "A+": 500.0,
@@ -49,8 +47,7 @@ def apply_eval_sizing72(decision, setup, inherited_risk_dollars: float, inherite
     locks, and available-risk headroom. This function can only reduce the risk
     that survived those gates. Raising the upstream EVAL_RISK_PER_TRADE budget
     therefore gives A+ setups room to reach $500 risk while A and B+ remain
-    intentionally smaller. Operation 7.2S adds a separate <=$125 default scalp
-    cap so frequency never inherits primary A/A+ size.
+    intentionally smaller.
     """
     metadata = getattr(setup, "metadata", {}) or {}
     operating = metadata.get("operating_mode", {}) or {}
@@ -60,11 +57,7 @@ def apply_eval_sizing72(decision, setup, inherited_risk_dollars: float, inherite
         return round(float(inherited_risk_dollars), 2), float(inherited_multiplier)
 
     grade = _quality_grade(setup)
-    strategy = str(metadata.get("strategy", "")).upper()
     grade_cap = float(GRADE_RISK_CAPS.get(grade, 350.0))
-    if strategy == "MOMENTUM_SCALP":
-        grade_cap = min(grade_cap, scalp_risk_cap())
-
     inherited = max(0.0, float(inherited_risk_dollars or 0.0))
     applied = round(min(inherited, grade_cap), 2)
 
@@ -76,13 +69,11 @@ def apply_eval_sizing72(decision, setup, inherited_risk_dollars: float, inherite
 
     rr = max(0.0, float(getattr(setup, "risk_reward", 0.0) or 0.0))
     projected_profit = round(applied * rr, 2)
-    default_objective = round(scalp_risk_cap() * 1.5, 2) if strategy == "MOMENTUM_SCALP" else 1500.0
-    profit_objective = float(metadata.get("profit_objective_dollars", default_objective) or default_objective)
+    profit_objective = float(metadata.get("profit_objective_dollars", 1500.0) or 1500.0)
 
     details = {
         "profile": "EVAL_GRADE_SIZING_7_2",
         "grade": grade,
-        "strategy": strategy,
         "grade_risk_cap_dollars": grade_cap,
         "upstream_risk_dollars": round(inherited, 2),
         "applied_risk_dollars": applied,
