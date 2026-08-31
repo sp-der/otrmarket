@@ -9,6 +9,7 @@ from src.execution.live.config import ExecutionConfig
 from src.execution.live.gateway import ExecutionGateway
 from src.risk.eval_history72 import install_eval_history_filter
 from src.risk.eval_sizing72 import apply_eval_sizing72
+from src.strategies.early_entry72 import install_early_entry72
 from src.strategies.reversal_guard72 import assess_one_minute_reversal_context
 
 
@@ -18,6 +19,17 @@ from src.strategies.reversal_guard72 import assess_one_minute_reversal_context
 install_eval_history_filter()
 
 runtime = op71.runtime
+
+# Operation 7.2H: attach a non-executable early-entry planner to the existing
+# ICT confluence engine. It can prepare structural pullback geometry at 4/6,
+# but a trade still cannot register until the normal strategy emits a fully
+# qualified setup and every existing quality/eval/no-chase gate passes.
+_ict_engine_72 = getattr(runtime.strategy, "ict", None)
+early_entry_planner_72 = (
+    install_early_entry72(_ict_engine_72, logger=runtime.console.log)
+    if _ict_engine_72 is not None
+    else None
+)
 
 # Operation 7.2R hotfix: keep 1m as a precision execution timeframe, but stop
 # treating a local MSS as sufficient evidence that the larger move reversed.
@@ -39,6 +51,7 @@ def _adaptive_quality_gate_72(connection, setup, histories=None):
     if not guard_allowed:
         return False, guard_reason
 
+    final_reason = reason
     if guard_details.get("applicable"):
         try:
             current = float(setup.metadata.get("risk_multiplier", 1.0))
@@ -48,9 +61,22 @@ def _adaptive_quality_gate_72(connection, setup, histories=None):
         setup.metadata["risk_multiplier"] = min(current, risk_cap)
         setup.metadata["execution_tier"] = "ONE_MINUTE_REVERSAL_MTF_72"
         setup.metadata["one_minute_reversal_guard_72"]["risk_cap"] = risk_cap
-        return True, f"{reason} {guard_reason} 1m reversal risk capped at {risk_cap:.0%}."
+        final_reason = f"{reason} {guard_reason} 1m reversal risk capped at {risk_cap:.0%}."
 
-    return True, reason
+    # Operation 7.2H capital priority is deliberately narrow: a developing
+    # 4/6+ >=3R ICT pre-arm may reserve eval capacity only against a different
+    # <=1.60R setup. It never bypasses an existing gate and never blocks a
+    # respectable higher-R setup merely because another idea is developing.
+    if early_entry_planner_72 is not None:
+        priority_reason = early_entry_planner_72.capital_priority_reason(setup)
+        if priority_reason:
+            setup.metadata["capital_priority_72h"] = {
+                "blocked": True,
+                "reason": priority_reason,
+            }
+            return False, priority_reason
+
+    return True, final_reason
 
 
 op71.op70.op59.op58._adaptive_quality_gate = _adaptive_quality_gate_72
@@ -131,6 +157,14 @@ def _patch_runtime_manifest_72() -> None:
                 "Fresh eval accounting preserves prior trade/setup/intelligence history and excludes prior-run setup IDs from new eval counters instead of deleting rows",
                 "src/risk/eval_history72.py + src/dashboard/server_72.py",
             ),
+            "Early entry intelligence": (
+                "Existing ICT ideas can pre-arm non-executable 62/70.5/79/FVG pullback geometry at 4/6; only full confirmation activates the prepared geometry and every session/quality/eval/no-chase gate remains mandatory",
+                "src/main_72.py + src/strategies/early_entry72.py",
+            ),
+            "Capital priority": (
+                "A fresh 4/6+ pre-armed >=3R ICT opportunity can reserve eval capacity only against a different <=1.60R setup; stronger trades are never blocked by this reservation",
+                "src/main_72.py + src/strategies/early_entry72.py",
+            ),
         }
         for name, (value, source) in additions.items():
             if name in by_name:
@@ -152,6 +186,8 @@ if __name__ == "__main__":
         "1m MSS reversals now require larger-chart confirmation; "
         "EVAL sizing allows A+ <= $500, A <= $350, B+ <= $100 after all upstream risk caps; "
         "fresh eval resets preserve prior trade history; "
+        "7.2H early-entry intelligence pre-arms existing ICT geometry at 4/6 without placing an order, "
+        "then activates it only after full confirmation; "
         f"broker gateway mode={config.mode.value}, armed={config.armed}, account={config.account}. "
         "PAPER is the safe default."
     )
