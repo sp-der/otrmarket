@@ -55,19 +55,21 @@ class EvaluationConfig:
     max_micros: int = 40
 
     # OTR internal training limits. Production can tune these from Railway
-    # without changing the prop-account hard limits above.
+    # without changing the prop-account hard limits above. A zero
+    # max_trades_per_day means unlimited trade count; session banking is based
+    # on realized P&L instead of an arbitrary number of attempts.
     risk_per_trade: float = 250.0
     min_risk_per_trade: float = 250.0
     internal_daily_stop: float = 750.0
     mll_safety_buffer: float = 400.0
-    max_trades_per_day: int = 4
+    max_trades_per_day: int = 0
     max_consecutive_losses: int = 3
     max_concurrent_positions: int = 1
     no_new_trades_after_et: str = "16:30"
     resume_trading_et: str = "18:00"
 
     # Fast-eval mode banks a strong session instead of handing profit back.
-    # This is a realized-profit lock, not a loss allowance.
+    # This is a realized-profit lock, not a trade-count allowance.
     session_profit_cap: float = 1_500.0
 
     # Keep the $3k target as the evaluation pass marker while optionally
@@ -91,7 +93,7 @@ class EvaluationConfig:
             min_risk_per_trade=_env_float("EVAL_MIN_RISK_PER_TRADE", 250.0),
             internal_daily_stop=_env_float("EVAL_INTERNAL_DAILY_STOP", 750.0),
             mll_safety_buffer=_env_float("EVAL_MLL_SAFETY_BUFFER", 400.0),
-            max_trades_per_day=_env_int("EVAL_MAX_TRADES_PER_DAY", 4),
+            max_trades_per_day=_env_int("EVAL_MAX_TRADES_PER_DAY", 0),
             max_consecutive_losses=_env_int("EVAL_MAX_CONSECUTIVE_LOSSES", 3),
             max_concurrent_positions=_env_int("EVAL_MAX_CONCURRENT", 1),
             no_new_trades_after_et=os.getenv("EVAL_NO_NEW_AFTER_ET", "16:30").strip(),
@@ -283,7 +285,7 @@ class EvaluationRiskGuard:
             status, reason = "FIRM_DLL_LOCK", "Modeled firm daily loss limit reached; no more trades this trading day."
         elif day_pnl <= -abs(c.internal_daily_stop):
             status, reason = "DAILY_LOCK", "OTR internal daily stop reached."
-        elif trades_today >= c.max_trades_per_day:
+        elif c.max_trades_per_day > 0 and trades_today >= c.max_trades_per_day:
             status, reason = "DAILY_LOCK", "OTR maximum trades for this trading day reached."
         elif consecutive_losses >= c.max_consecutive_losses:
             status, reason = "DAILY_LOCK", "OTR consecutive-loss circuit breaker reached."
@@ -342,6 +344,7 @@ class EvaluationRiskGuard:
             "today_pnl": day_pnl,
             "trades_today": trades_today,
             "max_trades_per_day": c.max_trades_per_day,
+            "trade_count_limit_active": c.max_trades_per_day > 0,
             "consecutive_losses": consecutive_losses,
             "max_consecutive_losses": c.max_consecutive_losses,
             "active_positions": active_positions,
