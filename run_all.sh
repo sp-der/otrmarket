@@ -16,15 +16,6 @@ fi
 
 mkdir -p data
 
-# One-shot guarded Operation 7.2S ledger cleanup. The script is idempotent and
-# refuses to touch anything unless the only matching residual losses are the
-# exact ES and NQ -$125 MOMENTUM_SCALP rows. Running it here guarantees the
-# production volume is mounted, unlike Railway's isolated predeploy phase.
-if [ -f "scripts/remove_72s_losses_once.py" ]; then
-  echo "Running guarded 7.2S ledger cleanup against mounted production volume..."
-  "$PYTHON_BIN" scripts/remove_72s_losses_once.py
-fi
-
 # Railway injects PORT dynamically. Keep DASHBOARD_PORT for local/Codespaces.
 export DASHBOARD_HOST="${DASHBOARD_HOST:-0.0.0.0}"
 if [ -n "${PORT:-}" ]; then
