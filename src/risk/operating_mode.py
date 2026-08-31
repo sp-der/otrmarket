@@ -59,8 +59,11 @@ def _session_bucket(value: datetime | None) -> dict | None:
 @dataclass(frozen=True)
 class OperatingModeConfig:
     mode: str = "EVAL"
-    eval_max_trades_per_day: int = 2
-    eval_max_trades_per_session: int = 1
+    # Legacy knobs are retained for config/backward compatibility, but EVAL no
+    # longer rejects trades because a count was reached. The realized per-
+    # session profit cap belongs to EvaluationRiskGuard.
+    eval_max_trades_per_day: int = 0
+    eval_max_trades_per_session: int = 0
     eval_trade_profit_objective: float = 1_500.0
     eval_day_profit_objective: float = 3_000.0
     funded_daily_goal_floor: float = 350.0
@@ -79,8 +82,10 @@ class OperatingModeConfig:
             mode = "FUNDED" if phase.startswith("FUNDED") else "EVAL"
         return cls(
             mode=mode,
-            eval_max_trades_per_day=_env_int("OTR_EVAL_MAX_TRADES_DAY", 2),
-            eval_max_trades_per_session=_env_int("OTR_EVAL_MAX_TRADES_SESSION", 1),
+            # Read old variables so existing Railway configs remain valid, but
+            # they are informational only in EVAL mode after Operation 7.2L.
+            eval_max_trades_per_day=_env_int("OTR_EVAL_MAX_TRADES_DAY", 0),
+            eval_max_trades_per_session=_env_int("OTR_EVAL_MAX_TRADES_SESSION", 0),
             eval_trade_profit_objective=_env_float("OTR_EVAL_TRADE_PROFIT_OBJECTIVE", 1_500.0),
             eval_day_profit_objective=_env_float("OTR_EVAL_DAY_PROFIT_OBJECTIVE", 3_000.0),
             funded_daily_goal_floor=_env_float("OTR_FUNDED_DAILY_GOAL_FLOOR", 350.0),
@@ -121,23 +126,29 @@ def _day_and_session_stats(connection: sqlite3.Connection, reference: datetime) 
     trades_today = 0
     session_trades = 0
     realized_today = 0.0
+    session_realized = 0.0
 
     for status, opened_value, closed_value, result_dollars in _trade_rows(connection):
         opened = _parse_dt(opened_value)
+        opened_session = _session_bucket(opened)
+        belongs_to_candidate_session = bool(
+            candidate_session
+            and opened_session
+            and opened_session["name"] == candidate_session["name"]
+            and opened_session["date"] == candidate_session["date"]
+        )
         if opened and opened.astimezone(NY).date() == local_day:
             trades_today += 1
-            opened_session = _session_bucket(opened)
-            if (
-                candidate_session
-                and opened_session
-                and opened_session["name"] == candidate_session["name"]
-                and opened_session["date"] == candidate_session["date"]
-            ):
+            if belongs_to_candidate_session:
                 session_trades += 1
 
         closed = _parse_dt(closed_value)
-        if status == "CLOSED" and closed and closed.astimezone(NY).date() == local_day:
-            realized_today += float(result_dollars or 0.0)
+        if status == "CLOSED":
+            dollars = float(result_dollars or 0.0)
+            if closed and closed.astimezone(NY).date() == local_day:
+                realized_today += dollars
+            if belongs_to_candidate_session:
+                session_realized += dollars
 
     return {
         "local_day": local_day.isoformat(),
@@ -145,6 +156,7 @@ def _day_and_session_stats(connection: sqlite3.Connection, reference: datetime) 
         "trades_today": trades_today,
         "session_trades": session_trades,
         "realized_today": realized_today,
+        "session_realized": session_realized,
     }
 
 
@@ -171,29 +183,27 @@ def evaluate_operating_mode(connection: sqlite3.Connection, setup, config: Opera
         **stats,
         "quality_grade": grade,
         "forced_trade": False,
+        "trade_count_limits_active": False,
     }
 
     if config.mode == "EVAL":
+        # The actual EVAL stop is realized session P&L, enforced by
+        # EvaluationRiskGuard through EVAL_SESSION_PROFIT_CAP (normally $1,500).
+        # This layer never blocks a qualified setup merely because one or more
+        # trades were already taken in the day/session.
         setup.metadata["profit_objective_dollars"] = config.eval_trade_profit_objective
+        setup.metadata["session_profit_objective_dollars"] = config.eval_trade_profit_objective
         details["objective_note"] = (
-            "The $1,500 figure is an opportunity objective, never permission to stretch a structural target or force a trade."
+            "No trade-count cap. Continue taking qualified trades; the evaluation risk guard "
+            "banks the session when its realized profit cap is reached."
         )
-        if stats["realized_today"] >= config.eval_day_profit_objective:
-            return False, "Evaluation day objective reached; bank the modeled pass instead of adding new risk.", details
-        if stats["trades_today"] >= config.eval_max_trades_per_day:
-            return False, (
-                f"Eval mode daily primary-trade limit reached "
-                f"({stats['trades_today']}/{config.eval_max_trades_per_day})."
-            ), details
         if stats["candidate_session"] is None:
             return False, "Eval mode only opens new primary risk inside a named futures session bucket.", details
-        if stats["session_trades"] >= config.eval_max_trades_per_session:
-            name = stats["candidate_session"]["name"]
-            return False, f"Eval mode already used its primary trade for the {name} session.", details
+        name = stats["candidate_session"]["name"]
         return True, (
-            f"Eval mode slot available: {stats['trades_today']}/{config.eval_max_trades_per_day} trades today, "
-            f"{stats['session_trades']}/{config.eval_max_trades_per_session} in {stats['candidate_session']['name']}; "
-            f"${config.eval_trade_profit_objective:.0f} is the structural profit objective, not a forced target."
+            f"Eval mode {name}: no trade-count limit; {stats['session_trades']} trades so far and "
+            f"${stats['session_realized']:.2f} realized this session. The realized session-profit cap "
+            "is enforced separately by the evaluation risk guard."
         ), details
 
     setup.metadata["daily_profit_goal"] = {
