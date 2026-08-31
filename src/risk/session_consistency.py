@@ -49,27 +49,27 @@ def _parse_dt(value: str | None) -> datetime | None:
 
 @dataclass(frozen=True)
 class SessionConsistencyConfig:
-    """Calibration profile for repeatable funded-style trading days.
+    """Session/quality profile for autonomous futures execution.
 
-    The session governor controls when the bot may add risk, but setup quality is
-    graded separately by the A/A+ context engine. ``execution_timeframe`` can be
-    a single timeframe for controlled experiments or ``ALL`` to let 1m/5m/15m/1h
-    compete for execution as long as each setup passes its own quality rules.
-    It never forces a trade.
+    The session governor controls when the bot may add risk, while setup quality
+    is graded separately by the A/A+ context engine. ``execution_timeframe`` can
+    be a single timeframe for controlled experiments or ``ALL`` to let
+    1m/5m/15m/1h compete for execution as long as each setup passes its own
+    quality rules. It never forces a trade.
 
-    Operation 5.4 keeps the weekday calibration window while making market-hours
-    eligibility instrument-aware: BTC can be evaluated 24/7, and supported CME
-    futures can begin taking qualified setups from the Sunday 18:00 ET Globex
-    open. A session being open never bypasses A/A+ quality, exposure, cooldown,
-    or evaluation-risk gates.
+    Operation 7.2L retires the old production defaults that stopped after two
+    trades or banked a day at +$250. A positive ``max_trades_per_day`` or
+    ``base_win_lock_dollars`` can still be supplied explicitly for a controlled
+    experiment, but zero means disabled. Normal EVAL session banking is owned by
+    EvaluationRiskGuard's realized session-profit cap (normally $1,500).
     """
 
     timezone_name: str = "America/New_York"
     execution_timeframe: str = "5m"
-    session_start: str = "09:30"
-    session_end: str = "13:00"
-    max_trades_per_day: int = 2
-    base_win_lock_dollars: float = 250.0
+    session_start: str = "00:00"
+    session_end: str = "23:59"
+    max_trades_per_day: int = 0
+    base_win_lock_dollars: float = 0.0
     second_chance_min_rr: float = 2.0
     second_chance_body_ratio: float = 1.90
     second_chance_range_ratio: float = 1.50
@@ -79,10 +79,10 @@ class SessionConsistencyConfig:
         return cls(
             timezone_name=os.getenv("OTR_SESSION_TZ", "America/New_York").strip(),
             execution_timeframe=os.getenv("OTR_EXECUTION_TIMEFRAME", "5m").strip(),
-            session_start=os.getenv("OTR_SESSION_START", "09:30").strip(),
-            session_end=os.getenv("OTR_SESSION_END", "13:00").strip(),
-            max_trades_per_day=_env_int("OTR_CALIBRATION_MAX_TRADES_DAY", 2),
-            base_win_lock_dollars=_env_float("OTR_BASE_WIN_LOCK_DOLLARS", 250.0),
+            session_start=os.getenv("OTR_SESSION_START", "00:00").strip(),
+            session_end=os.getenv("OTR_SESSION_END", "23:59").strip(),
+            max_trades_per_day=_env_int("OTR_CALIBRATION_MAX_TRADES_DAY", 0),
+            base_win_lock_dollars=_env_float("OTR_BASE_WIN_LOCK_DOLLARS", 0.0),
             second_chance_min_rr=_env_float("OTR_SECOND_CHANCE_MIN_RR", 2.0),
             second_chance_body_ratio=_env_float("OTR_SECOND_CHANCE_BODY_RATIO", 1.90),
             second_chance_range_ratio=_env_float("OTR_SECOND_CHANCE_RANGE_RATIO", 1.50),
@@ -237,6 +237,8 @@ def evaluate_session_consistency(
         "sunday_futures_open": SUNDAY_FUTURES_OPEN.strftime("%H:%M"),
         "max_trades_per_day": config.max_trades_per_day,
         "base_win_lock_dollars": config.base_win_lock_dollars,
+        "trade_count_limit_active": config.max_trades_per_day > 0,
+        "base_win_lock_active": config.base_win_lock_dollars > 0,
     }
 
     if setup.timeframe not in SUPPORTED_EXECUTION_TIMEFRAMES:
@@ -271,11 +273,11 @@ def evaluate_session_consistency(
             )
             return SessionConsistencyDecision(False, reason, details)
 
-    # Weekday futures still use the calibrated cash-session window. BTC and the
-    # Sunday Globex futures session bypass only this clock gate, never quality or
-    # risk gates downstream.
-    start = _parse_hhmm(config.session_start, time(9, 30))
-    end = _parse_hhmm(config.session_end, time(13, 0))
+    # Weekday futures use the configured execution window. The 7.2L default is
+    # effectively full-day so named eval sessions, rather than an old cash-only
+    # calibration window, decide when primary risk can be added.
+    start = _parse_hhmm(config.session_start, time(0, 0))
+    end = _parse_hhmm(config.session_end, time(23, 59))
     if not is_always_open and not is_sunday_futures_session:
         if not (start <= local_clock < end):
             return SessionConsistencyDecision(
@@ -287,14 +289,14 @@ def evaluate_session_consistency(
     stats = _day_stats(connection, created_at, config.timezone)
     details["day_stats"] = stats
 
-    if stats["realized_pnl"] >= config.base_win_lock_dollars:
+    if config.base_win_lock_dollars > 0 and stats["realized_pnl"] >= config.base_win_lock_dollars:
         return SessionConsistencyDecision(
             False,
             f"Base winning day secured at ${stats['realized_pnl']:.2f}; stop adding risk and bank the day.",
             details,
         )
 
-    if stats["trades"] >= config.max_trades_per_day:
+    if config.max_trades_per_day > 0 and stats["trades"] >= config.max_trades_per_day:
         return SessionConsistencyDecision(
             False,
             f"Calibration daily trade cap reached ({stats['trades']}/{config.max_trades_per_day}).",
@@ -315,11 +317,16 @@ def evaluate_session_consistency(
     else:
         session_text = "selected weekday session window active"
 
+    trade_limit_text = (
+        f"{stats['trades']}/{config.max_trades_per_day} trades"
+        if config.max_trades_per_day > 0
+        else f"{stats['trades']} trades (no count cap)"
+    )
     return SessionConsistencyDecision(
         True,
         (
             f"{session_text}; {execution_scope} execution lets this {setup.timeframe} candidate proceed to A/A+ grading. "
-            f"Day is {stats['trades']}/{config.max_trades_per_day} trades and ${stats['realized_pnl']:+.2f}."
+            f"Day is {trade_limit_text} and ${stats['realized_pnl']:+.2f}."
         ),
         details,
     )
