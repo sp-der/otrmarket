@@ -17,9 +17,9 @@ base = op58.base
 #
 # The normal scanner remains candle-close driven and owns the durable strategy
 # state. Once that stable state has already confirmed the setup narrative, 6.5
-# takes a deep copy of the ICT engine and lets the copy inspect the currently
-# forming 1m/5m candle. This can advance a candidate one stage early without
-# allowing a half-formed candle to corrupt the durable state machine.
+# takes a detached copy of the ICT engine and lets the copy inspect the
+# currently forming 1m/5m candle. This can advance a candidate one stage early
+# without allowing a half-formed candle to corrupt the durable state machine.
 # ---------------------------------------------------------------------------
 INTRABAR_TIMEFRAMES = {"1m", "5m"}
 INTRABAR_STAGES = {
@@ -36,6 +36,18 @@ INTRABAR_MIN_BAR_AGE_SECONDS = 1.0
 _last_intrabar_eval: dict[tuple[str, str], object] = {}
 _intrabar_candidates: dict[tuple[str, str], dict] = {}
 _promoted_bucket: dict[tuple[str, str], object] = {}
+
+
+# Runtime-only attachments added by later operations must never be deep-copied
+# into the 6.5 forming-candle probe. Operation 7.2H attaches a planner whose
+# logger points at Rich/Railway console internals containing an RLock. Copying
+# that logger caused every GC intrabar evaluation to fail with
+# "cannot pickle '_thread.RLock' object". The durable strategy state itself is
+# still copied deeply below.
+_INTRABAR_RUNTIME_ATTACHMENTS_65 = {
+    "on_candle",
+    "_early_entry_planner_72h",
+}
 
 
 def _synthetic_candle(symbol: str, timeframe: str, event_time):
@@ -105,6 +117,48 @@ def _stability_ready(key, fingerprint, event_time) -> tuple[bool, int, float]:
         and stable_seconds >= INTRABAR_MIN_STABILITY_SECONDS
     )
     return ready, state["confirmations"], stable_seconds
+
+
+def _clone_intrabar_ict_65(ict):
+    """Deep-copy durable ICT state without copying runtime wrappers/loggers."""
+    probe = object.__new__(type(ict))
+    for name, value in vars(ict).items():
+        if name in _INTRABAR_RUNTIME_ATTACHMENTS_65:
+            continue
+        setattr(probe, name, deepcopy(value))
+    return probe
+
+
+def _clone_early_entry_planner_65(planner):
+    """Copy 7.2H arm state for a probe while dropping its non-copyable logger."""
+    planner_probe = object.__new__(type(planner))
+    for name, value in vars(planner).items():
+        if name == "logger":
+            setattr(planner_probe, name, None)
+            continue
+        setattr(planner_probe, name, deepcopy(value))
+    return planner_probe
+
+
+def _run_intrabar_ict_65(ict, symbol: str, timeframe: str, histories):
+    """Evaluate one forming candle on detached state, including 7.2H geometry."""
+    probe = _clone_intrabar_ict_65(ict)
+
+    # Later operations may install an instance-level on_candle wrapper. Calling
+    # the class implementation keeps the detached probe isolated from closures
+    # that reference durable runtime state.
+    setup = type(probe).on_candle(probe, symbol, timeframe, histories)
+    if setup is None:
+        return None
+
+    # If 7.2H has a pre-armed entry, allow the intrabar candidate to inherit the
+    # same prepared geometry, but use a detached planner copy so promotion
+    # cannot consume or mutate the durable planner's arm state.
+    planner = getattr(ict, "_early_entry_planner_72h", None)
+    if planner is not None:
+        planner_probe = _clone_early_entry_planner_65(planner)
+        setup = planner_probe.promote(probe, setup, histories)
+    return setup
 
 
 def _handle_intrabar_setup_65(connection, setup, histories, confirmations: int, stable_seconds: float):
@@ -237,10 +291,10 @@ def _evaluate_intrabar_65(connection, symbol: str, event_time) -> None:
         if _promoted_bucket.get(key) == bucket_open:
             continue
 
-        # Inspect the forming candle with a copy of the durable candle-close
-        # state. Any provisional stage mutation dies with the copy.
-        probe = deepcopy(ict)
-        setup = probe.on_candle(symbol, timeframe, histories)
+        # Inspect the forming candle with a detached copy of durable state.
+        # Runtime wrappers and loggers stay on the live engine, while any
+        # provisional stage mutation dies with this probe.
+        setup = _run_intrabar_ict_65(ict, symbol, timeframe, histories)
         if setup is None:
             _intrabar_candidates.pop(key, None)
             continue
