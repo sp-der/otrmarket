@@ -13,10 +13,11 @@ runtime = op70.runtime
 
 
 # Operation 7.1 keeps every Operation 7.0 quality/recovery rule, then applies
-# an explicit account operating profile. EVAL mode allows at most two primary
-# trades per trading day and at most one per named session. FUNDED mode protects
-# a $350-$500 winning day by requiring A+ quality above the floor and locking
-# new risk at the ceiling. Neither mode forces a trade or stretches a target.
+# an explicit account operating profile. EVAL mode has no trade-count cap: it
+# can keep taking qualified opportunities while the EvaluationRiskGuard owns
+# the realized per-session profit cap. FUNDED mode protects a $350-$500 winning
+# day by requiring A+ quality above the floor and locking new risk at the
+# ceiling. Neither mode forces a trade or stretches a target.
 _previous_quality_gate_71 = op70.op59.op58._adaptive_quality_gate
 
 
@@ -64,8 +65,8 @@ def _patch_runtime_manifest_71() -> None:
                 "src/storage/learning_71.py + src/main_71.py",
             ),
             "Evaluation operating mode": (
-                "Max 2 primary trades/day, max 1 per named session; $1,500/trade and $3,000/day are objectives, never forced targets",
-                "src/risk/operating_mode.py + src/main_71.py",
+                "No trade-count cap; keep taking qualified trades and let the evaluation risk guard bank each named session at its realized profit cap (normally $1,500)",
+                "src/risk/operating_mode.py + src/risk/evaluation.py + src/main_71.py",
             ),
             "Funded operating mode": (
                 "$350-$500 daily objective; above $350 only A+ may add <=35% risk; at $500 new risk locks",
@@ -89,8 +90,8 @@ if __name__ == "__main__":
     runtime.console.log(
         "Operation 7.1 active: Operation 7.0 execution/recovery rules remain intact; "
         "Market Intelligence 1.0 grades chart narrative, enriches causal market lessons, "
-        "and EVAL/FUNDED operating modes control opportunity count and profit-protection "
-        "behavior without forcing trades."
+        "EVAL mode has no trade-count cap and uses the evaluation risk guard's realized "
+        "per-session profit cap; FUNDED mode retains its profit-protection behavior."
     )
     op70.op69.op68.op66.op65.op64.op63.op62._restore_progress_62()
     try:
