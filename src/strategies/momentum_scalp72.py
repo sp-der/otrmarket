@@ -274,9 +274,13 @@ class MomentumScalpEngine72:
         latest = candles[-1]
         if context is not None:
             elapsed = len(candles) - context.started_bar_count
+            # A valid first pullback may reclaim the broken micro level. The
+            # momentum thesis is invalid only if price closes through the far
+            # side of the original displacement impulse.
             invalid = (
-                latest.close < context.break_level if context.direction == "bullish"
-                else latest.close > context.break_level
+                latest.close < context.displacement.low
+                if context.direction == "bullish"
+                else latest.close > context.displacement.high
             )
             if invalid or elapsed > CONTEXT_BARS:
                 self.contexts.pop(key, None)
@@ -289,7 +293,7 @@ class MomentumScalpEngine72:
                     displacement=True,
                     structure=True,
                     htf=True,
-                    note="Momentum thesis lost the micro break or first-pullback window expired.",
+                    note="Momentum thesis violated the impulse extreme or first-pullback window expired.",
                 )
                 return None
 
