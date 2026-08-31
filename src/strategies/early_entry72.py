@@ -15,13 +15,20 @@ class EarlyEntryPlanner72:
     When the normal strategy later emits a fully-qualified setup, the planner
     may reuse an earlier, already-validated pullback geometry. All downstream
     session, quality, eval, no-chase and risk gates still run normally.
+
+    Operation 6.7 remains authoritative for shallow Fib entries. A 62% arm is
+    eligible only when the existing aggressive-entry checklist already passes
+    and no same-day instant-stop penalty is active. Standard 70.5-79 OTE arms
+    remain the normal path.
     """
 
     MIN_PREARM_RR = 1.50
     STRONG_PREARM_RR = 3.00
     MAX_PRIORITY_AGE_BARS = 6
     SMALL_TRADE_RR = 1.60
-    RETRACEMENTS = (0.62, 0.705, 0.79)
+    STANDARD_RETRACEMENTS = (0.705, 0.79)
+    SHALLOW_RETRACEMENT = 0.62
+    OTE_MIN = 0.705
 
     def __init__(self, logger: Callable[[str], None] | None = None) -> None:
         self.logger = logger
@@ -72,12 +79,37 @@ class EarlyEntryPlanner72:
             str(getattr(pd_array, "direction", "")),
         )
 
-    def _candidate_rows(self, engine, candles, context) -> list[dict[str, Any]]:
-        candidates: list[tuple[str, float, float, dict[str, Any]]] = []
+    @staticmethod
+    def _shallow_guard(engine, candles, context, fvg) -> tuple[bool, dict | None, str]:
+        """Reuse Operation 6.7's aggressive checklist instead of bypassing it."""
+        if fvg is None or fvg.direction != context.direction:
+            return False, None, "no same-direction FVG is available for the shallow confirmation checklist"
+        checklist_fn = getattr(engine, "_aggressive_checklist", None)
+        if checklist_fn is None:
+            return False, None, "the active ICT engine has no approved shallow-entry checklist"
+        try:
+            checklist = checklist_fn(candles, context, fvg)
+        except Exception as exc:
+            return False, None, f"shallow confirmation checklist failed closed: {exc}"
+        if not bool(checklist.get("all_confirmed")):
+            return False, checklist, "Operation 6.7 aggressive confirmation is incomplete"
 
-        # If the latest three-candle FVG is already inside the displacement
-        # pullback zone, include its midpoint as the most literal early plan.
+        penalty_fn = getattr(engine, "_penalty_active", None)
+        if penalty_fn is not None and candles:
+            try:
+                if penalty_fn(context, candles[-1].close_time):
+                    return False, checklist, "Operation 6.7 same-day instant-stop penalty is active"
+            except Exception as exc:
+                return False, checklist, f"instant-stop penalty check failed closed: {exc}"
+        return True, checklist, "Operation 6.7 aggressive confirmation passed"
+
+    def _candidate_rows(self, engine, candles, context) -> list[dict[str, Any]]:
+        candidates: list[tuple[str, float, float, dict[str, Any], bool, dict | None]] = []
+
         fvg = detect_fvg(candles)
+        shallow_allowed, shallow_checklist, _ = self._shallow_guard(
+            engine, candles, context, fvg
+        )
         zone = engine._retracement_zone(context)
         if fvg is not None and fvg.direction == context.direction and zone is not None:
             fraction = self._fraction_for_price(context, float(fvg.midpoint))
@@ -86,6 +118,7 @@ class EarlyEntryPlanner72:
                 fraction is not None
                 and 0.50 <= fraction <= 0.79
                 and zone_low <= float(fvg.midpoint) <= zone_high
+                and (fraction >= self.OTE_MIN or shallow_allowed)
             ):
                 candidates.append(
                     (
@@ -93,13 +126,14 @@ class EarlyEntryPlanner72:
                         float(fvg.midpoint),
                         float(fraction),
                         {"fvg_lower": float(fvg.lower), "fvg_upper": float(fvg.upper)},
+                        bool(fraction < self.OTE_MIN and shallow_allowed),
+                        shallow_checklist if fraction < self.OTE_MIN else None,
                     )
                 )
 
-        # The ladder is intentionally shallower-first. A 62% structural limit
-        # gets a chance before 70.5/79 so a fast valid move does not require a
-        # deep retracement merely to improve cosmetic R:R.
-        for fraction in self.RETRACEMENTS:
+        # Standard Operation 6.7 OTE is pre-armed first. The 62% level is only
+        # added when the exact aggressive confirmation policy already passes.
+        for fraction in self.STANDARD_RETRACEMENTS:
             raw = self._raw_retracement(context, fraction)
             if raw is not None:
                 candidates.append(
@@ -108,11 +142,26 @@ class EarlyEntryPlanner72:
                         raw,
                         fraction,
                         {"retracement": fraction},
+                        False,
+                        None,
+                    )
+                )
+        if shallow_allowed:
+            raw = self._raw_retracement(context, self.SHALLOW_RETRACEMENT)
+            if raw is not None:
+                candidates.append(
+                    (
+                        "EARLY_OTE_0_62",
+                        raw,
+                        self.SHALLOW_RETRACEMENT,
+                        {"retracement": self.SHALLOW_RETRACEMENT},
+                        True,
+                        shallow_checklist,
                     )
                 )
 
         rows: list[dict[str, Any]] = []
-        for entry_type, raw_entry, fraction, details in candidates:
+        for entry_type, raw_entry, fraction, details, shallow_guard_passed, checklist in candidates:
             attempt = engine._evaluate_entry_candidate(
                 candles,
                 context,
@@ -127,10 +176,12 @@ class EarlyEntryPlanner72:
                 continue
             row = dict(attempt)
             row["retracement_fraction"] = float(fraction)
+            row["shallow_guard_passed"] = bool(shallow_guard_passed)
+            row["aggressive_confirmation"] = checklist
             rows.append(row)
 
-        # Prefer the earliest pullback that still gives respectable geometry.
-        # If several candidates have the same retracement depth, prefer R:R.
+        # Prefer the earliest legal pullback. Since 62% is absent unless the
+        # 6.7 aggressive gate passes, this ordering cannot bypass that policy.
         return sorted(
             rows,
             key=lambda row: (
@@ -193,6 +244,8 @@ class EarlyEntryPlanner72:
             "age_bars": age_bars,
             "pd_signature": self._pd_signature(context.pd_array),
             "trigger_type": context.trigger_type,
+            "shallow_guard_passed": bool(chosen.get("shallow_guard_passed")),
+            "aggressive_confirmation": chosen.get("aggressive_confirmation"),
             "executable": False,
             "reason": "Geometry prepared early; final strategy/session/quality/eval/no-chase gates are still required.",
         }
@@ -203,10 +256,11 @@ class EarlyEntryPlanner72:
             previous.get(field) != arm.get(field)
             for field in ("entry", "stop", "target", "entry_type", "checklist_score")
         ):
+            shallow_text = " shallow-guard=passed" if arm["retracement_fraction"] < self.OTE_MIN else ""
             self._log(
                 f"EARLY ENTRY 7.2H PRE_ARMED {symbol} {timeframe} {context.direction.upper()} "
                 f"{score}/6 via {arm['entry_type']} entry {arm['entry']:.2f} "
-                f"at {arm['risk_reward']:.2f}R; no order active yet."
+                f"at {arm['risk_reward']:.2f}R; no order active yet.{shallow_text}"
             )
 
         if diag is not None:
@@ -231,9 +285,6 @@ class EarlyEntryPlanner72:
             self.arms.pop(key, None)
             return setup
 
-        context = engine.contexts.get(key)
-        # super().on_candle removes the context when a setup becomes ready, so
-        # derive the final entry depth from the stored displacement on setup.
         displacement = getattr(setup, "displacement", None)
         if displacement is None:
             self.arms.pop(key, None)
@@ -253,12 +304,15 @@ class EarlyEntryPlanner72:
         final_rr = float(setup.risk_reward or 0.0)
         min_promote_rr = max(self.MIN_PREARM_RR, min(2.0, final_rr * 0.75))
 
-        # Only replace final geometry when the prepared level is materially
-        # earlier/shallower and still carries enough structural reward. This is
-        # an entry-timing improvement, never an excuse to downgrade a premium
-        # setup into weak geometry.
+        shallow_ok = True
+        if arm_fraction < self.OTE_MIN:
+            shallow_ok = bool(arm.get("shallow_guard_passed")) and not bool(
+                setup.metadata.get("instant_stop_penalty_active")
+            )
+
         should_promote = (
-            arm_fraction + 0.015 < final_fraction
+            shallow_ok
+            and arm_fraction + 0.015 < final_fraction
             and arm_rr >= min_promote_rr
         )
         self.arms.pop(key, None)
@@ -268,6 +322,7 @@ class EarlyEntryPlanner72:
                 "state": "CONFIRMED_BUT_FINAL_GEOMETRY_KEPT",
                 "final_entry": float(setup.entry_price),
                 "final_risk_reward": final_rr,
+                "shallow_activation_allowed": shallow_ok,
             }
             return setup
 
@@ -288,8 +343,23 @@ class EarlyEntryPlanner72:
             **arm,
             "state": "CONFIRMED_AND_ACTIVATED",
             "original_final_geometry": original,
+            "shallow_activation_allowed": shallow_ok,
         }
         setup.metadata["execution_tier"] = "EARLY_ENTRY_CONFIRMED_72H"
+        # Never increase the entry-policy risk multiplier. In particular, a
+        # shallow pre-arm inherits Operation 6.7's reduced-risk ceiling.
+        if arm_fraction < self.OTE_MIN:
+            try:
+                current = float(setup.metadata.get("risk_multiplier", 1.0))
+            except (TypeError, ValueError):
+                current = 1.0
+            setup.metadata["risk_multiplier"] = min(current, 0.60)
+            setup.metadata["aggressive_entry"] = True
+            setup.metadata["aggressive_confirmation"] = arm.get("aggressive_confirmation")
+            setup.metadata["entry_risk_cap"] = min(
+                float(setup.metadata.get("entry_risk_cap", 1.0) or 1.0),
+                0.60,
+            )
         self._log(
             f"EARLY ENTRY 7.2H ACTIVATED {setup.symbol} {setup.timeframe} {setup.direction.upper()} "
             f"entry {setup.entry_price:.2f} at {setup.risk_reward:.2f}R after full confirmation; "
@@ -298,14 +368,7 @@ class EarlyEntryPlanner72:
         return setup
 
     def capital_priority_reason(self, setup) -> str | None:
-        """Reserve capacity only against very small trades when a fresh 3R arm exists.
-
-        This is intentionally narrow. A developing arm never blocks another
-        respectable trade. It only protects an eval slot from <=1.60R ideas
-        while a different 4/6+ ICT opportunity has fresh >=3R pre-armed
-        geometry. The normal setup can still proceed once that arm expires or
-        fails.
-        """
+        """Reserve capacity only against very small trades when a fresh 3R arm exists."""
         current_rr = float(getattr(setup, "risk_reward", 0.0) or 0.0)
         if current_rr > self.SMALL_TRADE_RR:
             return None
@@ -322,6 +385,10 @@ class EarlyEntryPlanner72:
             if float(arm.get("risk_reward") or 0.0) < self.STRONG_PREARM_RR:
                 continue
             if int(arm.get("age_bars") or 999) > self.MAX_PRIORITY_AGE_BARS:
+                continue
+            if float(arm.get("retracement_fraction") or 1.0) < self.OTE_MIN and not bool(
+                arm.get("shallow_guard_passed")
+            ):
                 continue
             candidates.append(arm)
         if not candidates:
