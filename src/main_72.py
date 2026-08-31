@@ -7,9 +7,15 @@ from pathlib import Path
 from src import main_71 as op71
 from src.execution.live.config import ExecutionConfig
 from src.execution.live.gateway import ExecutionGateway
+from src.risk.eval_history72 import install_eval_history_filter
 from src.risk.eval_sizing72 import apply_eval_sizing72
 from src.strategies.reversal_guard72 import assess_one_minute_reversal_context
 
+
+# Dashboard and strategy engine are separate Railway processes. Install the
+# prior-run filter here as well so preserved historical trades never consume
+# current eval daily/session/P&L counters after a 7.2G counter reset.
+install_eval_history_filter()
 
 runtime = op71.runtime
 
@@ -121,6 +127,10 @@ def _patch_runtime_manifest_72() -> None:
                 "EVAL paper risk is grade-aware: A+ up to $500, A up to $350, B+ up to $100; upstream daily drawdown/MLL/session caps still win and $1,500 remains a structural objective",
                 "src/main_72.py + src/risk/eval_sizing72.py",
             ),
+            "Non-destructive eval reset": (
+                "Fresh eval accounting preserves prior trade/setup/intelligence history and excludes prior-run setup IDs from new eval counters instead of deleting rows",
+                "src/risk/eval_history72.py + src/dashboard/server_72.py",
+            ),
         }
         for name, (value, source) in additions.items():
             if name in by_name:
@@ -141,6 +151,7 @@ if __name__ == "__main__":
         "Operation 7.2 active: Operation 7.1 market intelligence remains intact; "
         "1m MSS reversals now require larger-chart confirmation; "
         "EVAL sizing allows A+ <= $500, A <= $350, B+ <= $100 after all upstream risk caps; "
+        "fresh eval resets preserve prior trade history; "
         f"broker gateway mode={config.mode.value}, armed={config.armed}, account={config.account}. "
         "PAPER is the safe default."
     )
