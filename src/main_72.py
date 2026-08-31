@@ -7,9 +7,47 @@ from pathlib import Path
 from src import main_71 as op71
 from src.execution.live.config import ExecutionConfig
 from src.execution.live.gateway import ExecutionGateway
+from src.strategies.reversal_guard72 import assess_one_minute_reversal_context
 
 
 runtime = op71.runtime
+
+# Operation 7.2R hotfix: keep 1m as a precision execution timeframe, but stop
+# treating a local MSS as sufficient evidence that the larger move reversed.
+# The inherited 7.1 quality/operating-mode gate still runs first. This final
+# guard applies only to 1m MSS_REVERSAL candidates.
+_previous_quality_gate_72 = op71.op70.op59.op58._adaptive_quality_gate
+
+
+def _adaptive_quality_gate_72(connection, setup, histories=None):
+    allowed, reason = _previous_quality_gate_72(connection, setup, histories)
+    if not allowed:
+        return False, reason
+
+    if histories is None:
+        histories = runtime.histories_snapshot()
+    guard_allowed, guard_reason, guard_details = assess_one_minute_reversal_context(setup, histories)
+    if guard_details.get("applicable"):
+        setup.metadata["one_minute_reversal_guard_72"] = guard_details
+    if not guard_allowed:
+        return False, guard_reason
+
+    if guard_details.get("applicable"):
+        try:
+            current = float(setup.metadata.get("risk_multiplier", 1.0))
+        except (TypeError, ValueError):
+            current = 1.0
+        risk_cap = 0.50
+        setup.metadata["risk_multiplier"] = min(current, risk_cap)
+        setup.metadata["execution_tier"] = "ONE_MINUTE_REVERSAL_MTF_72"
+        setup.metadata["one_minute_reversal_guard_72"]["risk_cap"] = risk_cap
+        return True, f"{reason} {guard_reason} 1m reversal risk capped at {risk_cap:.0%}."
+
+    return True, reason
+
+
+op71.op70.op59.op58._adaptive_quality_gate = _adaptive_quality_gate_72
+
 execution_gateway = ExecutionGateway()
 _original_paper_register_72 = runtime.paper.register_setup
 
@@ -55,6 +93,10 @@ def _patch_runtime_manifest_72() -> None:
                 "NinjaTrader snapshots are compared with OTR command/position state; mismatches fail closed and block new command delivery",
                 "src/execution/live/store.py + src/execution/live/api.py",
             ),
+            "1m reversal context guard": (
+                "MSS_REVERSAL on 1m requires liquidity sweep/SMT catalyst, aligned 5m context, no 15m/30m opposition, and 15m or 30m confirmation; accepted reversal risk capped at 50%",
+                "src/main_72.py + src/strategies/reversal_guard72.py",
+            ),
         }
         for name, (value, source) in additions.items():
             if name in by_name:
@@ -73,6 +115,7 @@ if __name__ == "__main__":
     config = ExecutionConfig.from_env()
     runtime.console.log(
         "Operation 7.2 active: Operation 7.1 market intelligence remains intact; "
+        "1m MSS reversals now require larger-chart confirmation; "
         f"broker gateway mode={config.mode.value}, armed={config.armed}, account={config.account}. "
         "PAPER is the safe default."
     )
