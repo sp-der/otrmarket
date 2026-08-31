@@ -38,22 +38,40 @@ class OperatingModeTests(unittest.TestCase):
     def tearDown(self):
         self.connection.close()
 
-    def test_eval_allows_first_trade_and_blocks_second_in_same_session(self):
+    def test_eval_has_no_trade_count_limit_inside_session(self):
         config = OperatingModeConfig(mode="EVAL")
         candidate = setup()
-        allowed, _, details = evaluate_operating_mode(self.connection, candidate, config)
-        self.assertTrue(allowed)
+        allowed, reason, details = evaluate_operating_mode(self.connection, candidate, config)
+        self.assertTrue(allowed, reason)
         self.assertEqual(details["trades_today"], 0)
         self.assertEqual(candidate.metadata["profit_objective_dollars"], 1500.0)
+        self.assertFalse(details["trade_count_limits_active"])
 
-        self.connection.execute(
-            "INSERT INTO paper_trades VALUES (?, ?, ?, ?)",
-            ("CLOSED", "2026-08-27T13:15:00+00:00", "2026-08-27T13:45:00+00:00", 800.0),
+        # Multiple completed trades in the same New York session must not make
+        # operating mode reject the next qualified setup. The realized $1,500
+        # session cap is owned by EvaluationRiskGuard, not by a trade counter.
+        rows = [
+            ("CLOSED", "2026-08-27T13:05:00+00:00", "2026-08-27T13:20:00+00:00", 350.0),
+            ("CLOSED", "2026-08-27T13:25:00+00:00", "2026-08-27T13:40:00+00:00", -150.0),
+            ("CLOSED", "2026-08-27T13:45:00+00:00", "2026-08-27T13:55:00+00:00", 500.0),
+        ]
+        self.connection.executemany("INSERT INTO paper_trades VALUES (?, ?, ?, ?)", rows)
+        allowed, reason, details = evaluate_operating_mode(self.connection, setup(), config)
+        self.assertTrue(allowed, reason)
+        self.assertEqual(details["session_trades"], 3)
+        self.assertEqual(details["session_realized"], 700.0)
+        self.assertIn("no trade-count limit", reason.lower())
+
+    def test_eval_still_requires_named_session_bucket(self):
+        candidate = setup()
+        candidate.created_at = datetime(2026, 8, 27, 21, 0, tzinfo=timezone.utc)  # 17:00 ET maintenance gap
+        allowed, reason, _ = evaluate_operating_mode(
+            self.connection,
+            candidate,
+            OperatingModeConfig(mode="EVAL"),
         )
-        blocked, reason, details = evaluate_operating_mode(self.connection, setup(), config)
-        self.assertFalse(blocked)
-        self.assertIn("NEW_YORK", reason)
-        self.assertEqual(details["session_trades"], 1)
+        self.assertFalse(allowed)
+        self.assertIn("named futures session", reason.lower())
 
     def test_funded_mode_protects_profit_zone(self):
         self.connection.execute(
