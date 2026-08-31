@@ -16,11 +16,14 @@ class ScannerDecisionSyncTests(unittest.TestCase):
         text = (ROOT / "src/dashboard/static/scanner-decision-live.js").read_text()
         self.assertIn("otrScannerDecisionBySetupId", text)
         self.assertIn("d?.setup_id", text)
-        self.assertIn("QUALITY BLOCKED", text)
         self.assertIn("TRADE ARMED", text)
-        self.assertIn("MISSED / EXTENDED", text)
+        self.assertIn("SKIPPED", text)
+        self.assertIn("MISSED", text)
         self.assertIn("setupDecisionReason(setup)", text)
-        self.assertIn("renderSetupsDecisionSync", text)
+        self.assertIn("renderGoldSetups", text)
+        self.assertIn("humanWhy", text)
+        self.assertIn("renderGoldOnlySnapshot", text)
+        self.assertIn("Gold Futures", text)
 
 
 if __name__ == "__main__":
