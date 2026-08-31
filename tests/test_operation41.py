@@ -48,18 +48,32 @@ class Operation41Tests(unittest.TestCase):
         self.assertEqual(elapsed, 9)
         self.assertEqual(limit, 8)
 
-    def test_replay_session_isolates_btc_only(self):
+    def test_replay_session_respects_gold_only_strategy_focus(self):
         session = StrategySession()
+
+        # Operation 7.2I defaults new strategy decisions to Gold only while
+        # keeping futures tick processing alive for existing paper positions.
         self.assertTrue(session.strategy_enabled("BTC-USD"))
+        self.assertFalse(session.strategy_enabled("NQ"))
+        self.assertFalse(session.strategy_enabled("ES"))
+        self.assertTrue(session.strategy_enabled("GC"))
+        self.assertTrue(session.paper_updates_enabled("NQ"))
+        self.assertTrue(session.paper_updates_enabled("ES"))
+        self.assertTrue(session.paper_updates_enabled("GC"))
+
         self.assertFalse(session.observe("NQ", "LIVE"))
         self.assertTrue(session.strategy_enabled("BTC-USD"))
 
+        # Replay still isolates BTC, but it must not undo the Gold-only focus.
         self.assertTrue(session.observe("NQ", "REPLAY"))
         self.assertFalse(session.strategy_enabled("BTC-USD"))
         self.assertFalse(session.paper_updates_enabled("BTC-USD"))
-        self.assertTrue(session.strategy_enabled("NQ"))
-        self.assertTrue(session.strategy_enabled("ES"))
+        self.assertFalse(session.strategy_enabled("NQ"))
+        self.assertFalse(session.strategy_enabled("ES"))
         self.assertTrue(session.strategy_enabled("GC"))
+        self.assertTrue(session.paper_updates_enabled("NQ"))
+        self.assertTrue(session.paper_updates_enabled("ES"))
+        self.assertTrue(session.paper_updates_enabled("GC"))
 
     def test_legacy_database_adds_ingested_at_before_index(self):
         original_path = database.DB_PATH
