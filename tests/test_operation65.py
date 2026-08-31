@@ -57,6 +57,26 @@ class Operation65RegressionTests(unittest.TestCase):
             assert not ready2 and count2 == 2
             assert ready3 and count3 == 3 and age3 >= 0.75
 
+            # Operation 7.2H installs an instance wrapper and a planner whose
+            # Railway/Rich logger owns a non-pickleable RLock. The 6.5 probe
+            # must clone durable ICT state without copying those attachments.
+            import src.main_72 as op72
+
+            live_ict = op72.runtime.strategy.ict
+            planner = getattr(live_ict, "_early_entry_planner_72h", None)
+            assert planner is not None
+            probe = op65._clone_intrabar_ict_65(live_ict)
+            assert probe is not live_ict
+            assert type(probe) is type(live_ict)
+            assert "_early_entry_planner_72h" not in vars(probe)
+            assert "on_candle" not in vars(probe)
+
+            planner_probe = op65._clone_early_entry_planner_65(planner)
+            assert planner_probe is not planner
+            assert planner_probe.logger is None
+            assert planner_probe.arms == planner.arms
+            assert planner_probe.arms is not planner.arms
+
             print("operation65-intrabar-ok")
             '''
         )
@@ -123,7 +143,9 @@ class Operation65RegressionTests(unittest.TestCase):
 
     def test_operation65_preserves_stable_state_and_no_chase(self):
         text = (ROOT / "src/main_65.py").read_text()
-        self.assertIn("deepcopy(ict)", text)
+        self.assertIn("_clone_intrabar_ict_65", text)
+        self.assertIn("_clone_early_entry_planner_65", text)
+        self.assertIn("type(probe).on_candle", text)
         self.assertIn("durable_state_untouched", text)
         self.assertIn("no_chase_preserved", text)
         self.assertIn("runtime.paper.register_setup", text)
