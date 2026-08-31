@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import importlib
+import json
 import os
 from pathlib import Path
 import runpy
+
+from src.storage.database import get_connection
 
 
 LEGACY_ENGINE_MODULES = {
@@ -44,6 +47,51 @@ def _install_execution_routes() -> None:
             require_bridge_key=dashboard.require_bridge_key,
         )
     )
+
+
+def _audit_latest_eval_limit_block() -> None:
+    """Print the replay-market timestamp for the latest daily-slot rejection.
+
+    This is intentionally read-only and runs before the normal fresh-eval reset
+    hook, giving us one last audit breadcrumb before a requested replay wipe.
+    """
+    connection = get_connection()
+    try:
+        exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='strategy_setups'"
+        ).fetchone()
+        if not exists:
+            return
+        rows = connection.execute(
+            """
+            SELECT symbol, timeframe, status, created_at, payload_json
+            FROM strategy_setups
+            WHERE status = 'QUALITY_BLOCKED'
+            ORDER BY created_at DESC
+            LIMIT 250
+            """
+        ).fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(row[4] or "{}")
+                reason = str(
+                    payload.get("metadata", {})
+                    .get("execution_quality_gate", {})
+                    .get("reason")
+                    or ""
+                )
+            except (TypeError, ValueError):
+                reason = ""
+            if "daily primary-trade limit reached" not in reason.lower():
+                continue
+            print(
+                "REPLAY AUDIT latest eval-slot block: "
+                f"market_time={row[3]} symbol={row[0]} timeframe={row[1]} reason={reason}",
+                flush=True,
+            )
+            return
+    finally:
+        connection.close()
 
 
 def _patch_dashboard_html_72() -> None:
@@ -104,6 +152,7 @@ def _patch_dashboard_html_72() -> None:
 
 def main() -> None:
     os.environ["OTR_ENGINE_MODULE"] = promoted_engine_module()
+    _audit_latest_eval_limit_block()
     _patch_dashboard_html_72()
     _install_execution_routes()
     runpy.run_module("src.dashboard.server", run_name="__main__")
