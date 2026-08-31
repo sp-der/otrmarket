@@ -7,6 +7,7 @@ from pathlib import Path
 from src import main_71 as op71
 from src.execution.live.config import ExecutionConfig
 from src.execution.live.gateway import ExecutionGateway
+from src.risk.eval_sizing72 import apply_eval_sizing72
 from src.strategies.reversal_guard72 import assess_one_minute_reversal_context
 
 
@@ -47,6 +48,25 @@ def _adaptive_quality_gate_72(connection, setup, histories=None):
 
 
 op71.op70.op59.op58._adaptive_quality_gate = _adaptive_quality_gate_72
+
+# Operation 7.2E eval sizing: let the evaluation guard expose up to $500 of
+# available risk, then grade-cap the amount that reaches paper execution.
+# This wrapper can only REDUCE the upstream risk decision, so daily drawdown,
+# MLL, session, concurrency, reversal and other existing caps remain in force.
+_previous_setup_risk_72 = op71.op70.op59.op58.base._setup_risk
+
+
+def _setup_risk_72(decision, setup):
+    inherited_risk, inherited_multiplier = _previous_setup_risk_72(decision, setup)
+    return apply_eval_sizing72(
+        decision,
+        setup,
+        inherited_risk_dollars=inherited_risk,
+        inherited_multiplier=inherited_multiplier,
+    )
+
+
+op71.op70.op59.op58.base._setup_risk = _setup_risk_72
 
 execution_gateway = ExecutionGateway()
 _original_paper_register_72 = runtime.paper.register_setup
@@ -97,6 +117,10 @@ def _patch_runtime_manifest_72() -> None:
                 "MSS_REVERSAL on 1m requires liquidity sweep/SMT catalyst, aligned 5m context, no 15m/30m opposition, and 15m or 30m confirmation; accepted reversal risk capped at 50%",
                 "src/main_72.py + src/strategies/reversal_guard72.py",
             ),
+            "Evaluation grade sizing": (
+                "EVAL paper risk is grade-aware: A+ up to $500, A up to $350, B+ up to $100; upstream daily drawdown/MLL/session caps still win and $1,500 remains a structural objective",
+                "src/main_72.py + src/risk/eval_sizing72.py",
+            ),
         }
         for name, (value, source) in additions.items():
             if name in by_name:
@@ -116,6 +140,7 @@ if __name__ == "__main__":
     runtime.console.log(
         "Operation 7.2 active: Operation 7.1 market intelligence remains intact; "
         "1m MSS reversals now require larger-chart confirmation; "
+        "EVAL sizing allows A+ <= $500, A <= $350, B+ <= $100 after all upstream risk caps; "
         f"broker gateway mode={config.mode.value}, armed={config.armed}, account={config.account}. "
         "PAPER is the safe default."
     )
