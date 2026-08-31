@@ -2,6 +2,7 @@
   const labels = {
     accepted: "Accepted",
     session: "Session",
+    eval_limit: "Eval limit",
     cooldown: "Cooldown",
     post_loss: "Post-loss",
     risk_exposure: "Risk / exposure",
@@ -50,7 +51,11 @@
       const blockers = buckets.length
         ? buckets.map(([key, value]) => `<div style="display:flex;justify-content:space-between;gap:10px"><span>${labels[key] || key}</span><strong>${value}</strong></div>`).join("")
         : '<div class="muted">No rejection buckets yet.</div>';
-      const latest = (m.latest_reasons || []).slice(0, 2).map((reason) => `<div style="font-size:11px;line-height:1.35;color:#9a9a9a;margin-top:6px">${escapeHtml(reason)}</div>`).join("");
+      const decisions = (m.latest_decisions || []).slice(0, 2).map((item) => {
+        const time = String(item.created_at || "").replace("T", " ").replace("+00:00", "Z");
+        return `<div style="font-size:11px;line-height:1.4;color:#b9b9b9;margin-top:8px;border-top:1px solid rgba(255,255,255,.06);padding-top:7px"><strong>${escapeHtml(item.timeframe || "")}</strong> · ${escapeHtml(labels[item.bucket] || item.bucket || "Blocked")}<br><span style="color:#7f7f7f">${escapeHtml(time)}</span><br>${escapeHtml(item.reason || "Blocked after qualification")}</div>`;
+      }).join("");
+      const latest = decisions || (m.latest_reasons || []).slice(0, 2).map((reason) => `<div style="font-size:11px;line-height:1.35;color:#9a9a9a;margin-top:6px">${escapeHtml(reason)}</div>`).join("");
       return `
         <article style="border:1px solid rgba(255,255,255,.09);border-radius:12px;padding:14px;background:rgba(255,255,255,.02)">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
