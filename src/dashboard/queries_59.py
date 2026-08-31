@@ -90,6 +90,8 @@ class DashboardRepository(BaseDashboardRepository):
             return "session"
         if status not in {"QUALITY_BLOCKED", "SESSION_BLOCKED"}:
             return "accepted"
+        if "daily primary-trade limit" in lower or "trade limit" in lower:
+            return "eval_limit"
         if "cooldown" in lower or "reset window" in lower or "post-loss reset" in lower:
             return "cooldown"
         if "recovery" in lower or "after a realized" in lower or "post-loss" in lower:
@@ -139,6 +141,7 @@ class DashboardRepository(BaseDashboardRepository):
                 "blocked": 0,
                 "buckets": Counter(),
                 "latest_reasons": [],
+                "latest_decisions": [],
             }
             for symbol in ACTIVE_SYMBOLS
         }
@@ -168,6 +171,14 @@ class DashboardRepository(BaseDashboardRepository):
                 market["blocked"] += 1
                 if reason and reason not in market["latest_reasons"] and len(market["latest_reasons"]) < 4:
                     market["latest_reasons"].append(reason)
+                if len(market["latest_decisions"]) < 3:
+                    market["latest_decisions"].append({
+                        "timeframe": str(row["timeframe"] or ""),
+                        "status": str(row["status"] or ""),
+                        "created_at": row["created_at"],
+                        "bucket": bucket,
+                        "reason": reason,
+                    })
 
         markets = []
         for symbol in ACTIVE_SYMBOLS:
