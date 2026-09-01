@@ -10,13 +10,17 @@ from src.dashboard import server_72n
 
 
 class VerifyRun72QTests(unittest.TestCase):
+    RUN_ID = "7.2Q-test-run"
+
     def setUp(self):
         self.old_mode = os.environ.get("OTR_TRADING_MODE")
         self.old_engine = os.environ.get("OTR_ENGINE_MODULE")
         self.old_risk = os.environ.get("OTR_VERIFY_RISK_PER_TRADE")
+        self.old_run_id = os.environ.get("OTR_VERIFY_RUN_ID")
         os.environ["OTR_TRADING_MODE"] = "VERIFY"
         os.environ["OTR_ENGINE_MODULE"] = "src.main_72q"
         os.environ["OTR_VERIFY_RISK_PER_TRADE"] = "250"
+        os.environ["OTR_VERIFY_RUN_ID"] = self.RUN_ID
         server_72n._reset_verify_run_state_72n()
         self.repo = DashboardRepository(Path("unused.db"))
         self.con = sqlite3.connect(":memory:")
@@ -61,11 +65,37 @@ class VerifyRun72QTests(unittest.TestCase):
             ("OTR_TRADING_MODE", self.old_mode),
             ("OTR_ENGINE_MODULE", self.old_engine),
             ("OTR_VERIFY_RISK_PER_TRADE", self.old_risk),
+            ("OTR_VERIFY_RUN_ID", self.old_run_id),
         ):
             if value is None:
                 os.environ.pop(name, None)
             else:
                 os.environ[name] = value
+
+    def _ensure_tag_table(self):
+        self.con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS verify_run_trades (
+                run_id TEXT NOT NULL,
+                setup_id TEXT NOT NULL,
+                build TEXT NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                PRIMARY KEY (run_id, setup_id)
+            )
+            """
+        )
+        self.con.commit()
+
+    def _tag(self, setup_id: str, run_id: str | None = None):
+        self._ensure_tag_table()
+        self.con.execute(
+            """
+            INSERT INTO verify_run_trades(run_id, setup_id, build, first_seen_at)
+            VALUES (?, ?, '7.2Q', '2026-09-01T23:00:00+00:00')
+            """,
+            (run_id or self.RUN_ID, setup_id),
+        )
+        self.con.commit()
 
     def _insert_trade(
         self,
@@ -113,7 +143,7 @@ class VerifyRun72QTests(unittest.TestCase):
         )
         self.con.commit()
 
-    def test_old_ledger_is_excluded_from_new_verify_run(self):
+    def test_old_ledger_is_excluded_until_trade_is_tagged_to_run(self):
         for i in range(20):
             result = "WIN" if i < 6 else "LOSS"
             rr = 2.0 if result == "WIN" else -1.0
@@ -132,11 +162,11 @@ class VerifyRun72QTests(unittest.TestCase):
             self.con,
             {"market_time": "2026-08-05T02:35:00+00:00"},
         )
+        self.assertEqual(first["run_id"], self.RUN_ID)
         self.assertEqual(first["build"], "7.2Q")
         self.assertEqual(first["closed"], 0)
         self.assertEqual(first["wins"], 0)
         self.assertEqual(first["losses"], 0)
-        self.assertEqual(first["total_dollars"], 0.0)
 
         self._insert_trade(
             "new-win",
@@ -147,6 +177,7 @@ class VerifyRun72QTests(unittest.TestCase):
             closed_at="2026-08-05T02:37:00+00:00",
             strategy="MSS_REVERSAL",
         )
+        self._tag("new-win")
         self._insert_trade(
             "new-loss",
             result="LOSS",
@@ -156,6 +187,7 @@ class VerifyRun72QTests(unittest.TestCase):
             closed_at="2026-08-05T02:39:00+00:00",
             strategy="ICT_CONFLUENCE",
         )
+        self._tag("new-loss")
 
         run = server_72n._verify_run_snapshot_72n(
             self.repo,
@@ -172,12 +204,25 @@ class VerifyRun72QTests(unittest.TestCase):
         self.assertEqual(run["strategy_breakdown"]["MSS_REVERSAL"], 1)
         self.assertEqual(run["strategy_breakdown"]["ICT_CONFLUENCE"], 1)
 
-    def test_replayed_duplicate_inside_run_counts_once(self):
-        server_72n._verify_run_snapshot_72n(
+    def test_trade_tagged_to_other_run_is_excluded(self):
+        self._insert_trade(
+            "other-run",
+            result="WIN",
+            result_r=3.0,
+            result_dollars=750.0,
+            opened_at="2026-08-05T04:00:00+00:00",
+            closed_at="2026-08-05T04:01:00+00:00",
+        )
+        self._tag("other-run", "7.2Q-some-other-run")
+        run = server_72n._verify_run_snapshot_72n(
             self.repo,
             self.con,
-            {"market_time": "2026-08-05T03:00:00+00:00"},
+            {"market_time": "2026-08-05T04:02:00+00:00"},
         )
+        self.assertEqual(run["closed"], 0)
+        self.assertEqual(run["total_dollars"], 0.0)
+
+    def test_replayed_duplicate_inside_run_counts_once(self):
         common = dict(
             result="WIN",
             result_r=2.0,
@@ -190,7 +235,9 @@ class VerifyRun72QTests(unittest.TestCase):
             exit_price=4514.0,
         )
         self._insert_trade("copy-a", **common)
+        self._tag("copy-a")
         self._insert_trade("copy-b", **common)
+        self._tag("copy-b")
 
         run = server_72n._verify_run_snapshot_72n(
             self.repo,
@@ -201,6 +248,12 @@ class VerifyRun72QTests(unittest.TestCase):
         self.assertEqual(run["wins"], 1)
         self.assertEqual(run["total_r"], 2.0)
         self.assertEqual(run["total_dollars"], 500.0)
+
+    def test_source_tags_engine_upserts_to_verify_run(self):
+        text = Path("src/main_72q.py").read_text(encoding="utf-8")
+        self.assertIn("verify_run_trades", text)
+        self.assertIn("OTR_VERIFY_RUN_ID", text)
+        self.assertIn("runtime.upsert_paper_trade = _upsert_paper_trade_72q", text)
 
     def test_verify_asset_promotes_current_run_scoreboard(self):
         text = Path("src/dashboard/static/verification-mode72.js").read_text(encoding="utf-8")
