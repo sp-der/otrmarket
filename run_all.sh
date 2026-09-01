@@ -24,9 +24,8 @@ else
   export DASHBOARD_PORT="${DASHBOARD_PORT:-8000}"
 fi
 
-# Operation 7.2N keeps the Operation 7.2 strategy engine while giving the
-# dashboard a first-class continuous VERIFY mode and a complete trade ledger.
-# Broker transmission remains disabled unless the explicit execution
-# interlocks are armed.
-echo "Starting OTR Operation 7.2N supervised runtime on port ${DASHBOARD_PORT}..."
-exec "$PYTHON_BIN" -m src.dashboard.server_72n
+# Operation 7.2Q is the canonical Gold verification runtime. It preserves the
+# 7.2N VERIFY dashboard/full ledger and 7.2O fixed-risk accounting, adds the
+# final GC 1m quality firewall, and contains no loss-pruning startup hooks.
+echo "Starting OTR Operation 7.2Q supervised runtime on port ${DASHBOARD_PORT}..."
+exec "$PYTHON_BIN" -m src.dashboard.server_72q
