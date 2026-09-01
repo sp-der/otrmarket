@@ -24,8 +24,9 @@ else
   export DASHBOARD_PORT="${DASHBOARD_PORT:-8000}"
 fi
 
-# Operation 7.2 promotes every older strategy pin to the current Market
-# Intelligence + fail-closed execution runtime. Broker transmission remains
-# disabled unless the explicit Operation 7.2 execution interlocks are armed.
-echo "Starting OTR Operation 7.2 supervised runtime on port ${DASHBOARD_PORT}..."
-exec "$PYTHON_BIN" -m src.dashboard.server_72
+# Operation 7.2N keeps the Operation 7.2 strategy engine while giving the
+# dashboard a first-class continuous VERIFY mode and a complete trade ledger.
+# Broker transmission remains disabled unless the explicit execution
+# interlocks are armed.
+echo "Starting OTR Operation 7.2N supervised runtime on port ${DASHBOARD_PORT}..."
+exec "$PYTHON_BIN" -m src.dashboard.server_72n
