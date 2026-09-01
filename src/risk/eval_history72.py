@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from contextvars import ContextVar
+from datetime import datetime, timezone
 import json
 import os
 import sqlite3
+import sys
 
 from src.storage.database import get_connection, get_engine_state, set_engine_state
 
@@ -10,6 +13,10 @@ from src.storage.database import get_connection, get_engine_state, set_engine_st
 RESET_STATE_KEY = "last_evaluation_reset_token"
 EXCLUDED_SETUP_IDS_KEY = "eval_reset_excluded_setup_ids_72"
 _PATCH_MARKER = "_otr_eval_history72_installed"
+_REFERENCE_TIME_72: ContextVar[datetime | None] = ContextVar(
+    "otr_eval_reference_time_72",
+    default=None,
+)
 
 
 def _decode_ids(raw: str | None) -> set[str]:
@@ -22,6 +29,26 @@ def _decode_ids(raw: str | None) -> set[str]:
     if not isinstance(values, list):
         return set()
     return {str(value) for value in values if str(value).strip()}
+
+
+def _parse_dt(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _normalize_reference_time(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def excluded_setup_ids(connection: sqlite3.Connection) -> set[str]:
@@ -115,6 +142,7 @@ def _operating_trade_rows_72(connection: sqlite3.Connection):
         return []
     result_dollars = "result_dollars" if "result_dollars" in columns else "NULL AS result_dollars"
     excluded = excluded_setup_ids(connection)
+    reference = _REFERENCE_TIME_72.get()
     rows = connection.execute(
         f"""
         SELECT setup_id, status, opened_at, closed_at, {result_dollars}
@@ -122,11 +150,29 @@ def _operating_trade_rows_72(connection: sqlite3.Connection):
         ORDER BY COALESCE(opened_at, closed_at) ASC
         """
     ).fetchall()
-    return [
-        (row[1], row[2], row[3], row[4])
-        for row in rows
-        if str(row[0]) not in excluded
-    ]
+
+    visible = []
+    for row in rows:
+        if str(row[0]) in excluded:
+            continue
+        status, opened_value, closed_value, dollars = row[1], row[2], row[3], row[4]
+        opened = _parse_dt(opened_value)
+        closed = _parse_dt(closed_value)
+        first_seen = opened or closed
+        if reference is not None and first_seen is not None and first_seen > reference:
+            continue
+        if (
+            reference is not None
+            and status == "CLOSED"
+            and opened is not None
+            and opened <= reference
+            and closed is not None
+            and closed > reference
+        ):
+            visible.append(("OPEN", opened_value, None, None))
+            continue
+        visible.append((status, opened_value, closed_value, dollars))
+    return visible
 
 
 def _evaluation_rows_72(self, connection: sqlite3.Connection):  # noqa: ARG001
@@ -134,6 +180,7 @@ def _evaluation_rows_72(self, connection: sqlite3.Connection):  # noqa: ARG001
     if "risk_dollars" not in columns:
         return []
     excluded = excluded_setup_ids(connection)
+    reference = _REFERENCE_TIME_72.get()
     connection.row_factory = sqlite3.Row
     rows = connection.execute(
         """
@@ -144,16 +191,131 @@ def _evaluation_rows_72(self, connection: sqlite3.Connection):  # noqa: ARG001
         ORDER BY COALESCE(closed_at, opened_at, updated_at) ASC
         """
     ).fetchall()
-    return [row for row in rows if str(row["setup_id"]) not in excluded]
+
+    visible = []
+    for row in rows:
+        if str(row["setup_id"]) in excluded:
+            continue
+        data = dict(row)
+        opened = _parse_dt(data.get("opened_at"))
+        closed = _parse_dt(data.get("closed_at"))
+        updated = _parse_dt(data.get("updated_at"))
+        first_seen = opened or updated or closed
+        if reference is not None and first_seen is not None and first_seen > reference:
+            continue
+        if (
+            reference is not None
+            and data.get("status") == "CLOSED"
+            and opened is not None
+            and opened <= reference
+            and closed is not None
+            and closed > reference
+        ):
+            data["status"] = "OPEN"
+            data["closed_at"] = None
+            data["result"] = None
+            data["result_r"] = None
+            data["result_dollars"] = None
+        visible.append(data)
+    return visible
+
+
+def _session_day_stats_72(connection: sqlite3.Connection, reference_time: datetime, tz) -> dict:
+    """Session-consistency stats as they existed at the replay timestamp."""
+    reference_time = _normalize_reference_time(reference_time) or datetime.now(timezone.utc)
+    current_day = reference_time.astimezone(tz).date()
+    connection.row_factory = sqlite3.Row
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(paper_trades)").fetchall()}
+    if not columns:
+        return {"trades": 0, "losses": 0, "wins": 0, "realized_pnl": 0.0}
+
+    result_dollars_expr = "result_dollars" if "result_dollars" in columns else "NULL AS result_dollars"
+    excluded = excluded_setup_ids(connection)
+    rows = connection.execute(
+        f"""
+        SELECT setup_id, status, result, opened_at, closed_at, {result_dollars_expr}
+        FROM paper_trades
+        ORDER BY COALESCE(closed_at, opened_at) ASC
+        """
+    ).fetchall()
+
+    trades = 0
+    losses = 0
+    wins = 0
+    realized = 0.0
+    for row in rows:
+        if str(row["setup_id"]) in excluded:
+            continue
+        opened_at = _parse_dt(row["opened_at"])
+        if (
+            opened_at
+            and opened_at <= reference_time
+            and opened_at.astimezone(tz).date() == current_day
+        ):
+            trades += 1
+
+        closed_at = _parse_dt(row["closed_at"])
+        if (
+            not closed_at
+            or closed_at > reference_time
+            or closed_at.astimezone(tz).date() != current_day
+            or row["status"] != "CLOSED"
+        ):
+            continue
+        result = str(row["result"] or "").upper()
+        losses += int(result == "LOSS")
+        wins += int(result == "WIN")
+        realized += float(row["result_dollars"] or 0.0)
+
+    return {
+        "trades": trades,
+        "losses": losses,
+        "wins": wins,
+        "realized_pnl": realized,
+    }
 
 
 def install_eval_history_filter() -> None:
-    """Install the prior-run filter in both dashboard and strategy processes."""
+    """Install prior-run and replay-time filters in dashboard/strategy processes."""
     import src.risk.operating_mode as operating_mode
+    import src.risk.session_consistency as session_consistency
     from src.risk.evaluation import EvaluationRiskGuard
 
     if getattr(operating_mode, _PATCH_MARKER, False):
         return
+
     operating_mode._trade_rows = _operating_trade_rows_72
+    session_consistency._day_stats = _session_day_stats_72
     EvaluationRiskGuard._rows = _evaluation_rows_72
+
+    original_snapshot = EvaluationRiskGuard.snapshot
+
+    def replay_time_snapshot(self, connection, reference_time=None):
+        reference = _normalize_reference_time(reference_time)
+        token = _REFERENCE_TIME_72.set(reference)
+        try:
+            return original_snapshot(self, connection, reference_time)
+        finally:
+            _REFERENCE_TIME_72.reset(token)
+
+    EvaluationRiskGuard.snapshot = replay_time_snapshot
+
+    original_operating_mode = operating_mode.evaluate_operating_mode
+
+    def replay_time_operating_mode(connection, setup, config=None):
+        reference = _normalize_reference_time(getattr(setup, "created_at", None))
+        token = _REFERENCE_TIME_72.set(reference)
+        try:
+            return original_operating_mode(connection, setup, config)
+        finally:
+            _REFERENCE_TIME_72.reset(token)
+
+    operating_mode.evaluate_operating_mode = replay_time_operating_mode
+    loaded_main_71 = sys.modules.get("src.main_71")
+    if (
+        loaded_main_71 is not None
+        and getattr(loaded_main_71, "evaluate_operating_mode", None) is original_operating_mode
+    ):
+        loaded_main_71.evaluate_operating_mode = replay_time_operating_mode
+
     setattr(operating_mode, _PATCH_MARKER, True)
