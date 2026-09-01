@@ -142,9 +142,72 @@ async function ensureActiveBuildPanel65() {
   }
 }
 
+// Dashboard-facing terminology should describe the trading system without
+// exposing the internal executor/storage implementation name. Internal Python,
+// SQLite and safety boundaries remain unchanged.
+function cleanTradingCopy65(value) {
+  if (!value || typeof value !== "string") return value;
+  return value
+    .replace(/paper_trading/gi, "trading")
+    .replace(/paper-trading/gi, "trading")
+    .replace(/paper\s+trade(s)?/gi, (_match, plural) => `trade${plural || ""}`)
+    .replace(/paper\s+position(s)?/gi, (_match, plural) => `position${plural || ""}`)
+    .replace(/paper\s+order(s)?/gi, (_match, plural) => `order${plural || ""}`)
+    .replace(/paper\s+risk/gi, "risk")
+    .replace(/paper\s+realized/gi, "realized")
+    .replace(/paper\s+balance/gi, "Account Balance")
+    .replace(/paper\s+performance/gi, "PERFORMANCE")
+    .replace(/paper\s+mode/gi, "TEST MODE")
+    .replace(/paper\s+only/gi, "Simulation only")
+    .replace(/paper\s+execution/gi, "execution")
+    .replace(/\bPAPER\b/g, "TEST")
+    .replace(/\bpaper\b/gi, "test");
+}
+
+function sanitizeTradingCopy65(root = document.body) {
+  if (!root) return;
+
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const textNodes = [];
+  while (walker.nextNode()) textNodes.push(walker.currentNode);
+  textNodes.forEach((node) => {
+    const cleaned = cleanTradingCopy65(node.nodeValue);
+    if (cleaned !== node.nodeValue) node.nodeValue = cleaned;
+  });
+
+  if (root.querySelectorAll) {
+    root.querySelectorAll("[aria-label], [title], [placeholder]").forEach((element) => {
+      ["aria-label", "title", "placeholder"].forEach((attribute) => {
+        if (!element.hasAttribute(attribute)) return;
+        const current = element.getAttribute(attribute);
+        const cleaned = cleanTradingCopy65(current);
+        if (cleaned !== current) element.setAttribute(attribute, cleaned);
+      });
+    });
+  }
+}
+
+function installTradingCopySanitizer65() {
+  sanitizeTradingCopy65(document.body);
+  if (window.__otrTradingCopyObserver65) return;
+
+  let queued = false;
+  const observer = new MutationObserver(() => {
+    if (queued) return;
+    queued = true;
+    queueMicrotask(() => {
+      queued = false;
+      sanitizeTradingCopy65(document.body);
+    });
+  });
+  observer.observe(document.body, { subtree: true, childList: true, characterData: true });
+  window.__otrTradingCopyObserver65 = observer;
+}
+
 function finalizeDashboard65() {
   installRealizedTradeHistory65();
   ensureActiveBuildPanel65();
+  installTradingCopySanitizer65();
 }
 
 // Important: trading-days.js installs its own trade renderer from a later
