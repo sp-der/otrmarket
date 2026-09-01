@@ -23,8 +23,111 @@ def _verify_risk_72n() -> float:
         return 500.0
 
 
+def _number_key_72n(value):
+    try:
+        return round(float(value), 4)
+    except (TypeError, ValueError):
+        return None
+
+
+def _logical_trade_key_72n(trade: dict) -> tuple:
+    """Identify the same historical fill across repeated replay runs.
+
+    Setup IDs are UUID based, so replaying the same market moment can create a
+    second database row for an otherwise identical trade. Use immutable market
+    geometry and replay timestamps instead of setup_id for dashboard accounting.
+    """
+    return (
+        str(trade.get("symbol") or "").upper(),
+        str(trade.get("timeframe") or "").lower(),
+        str(trade.get("direction") or "").lower(),
+        str(trade.get("opened_at") or ""),
+        str(trade.get("closed_at") or ""),
+        _number_key_72n(trade.get("entry_price")),
+        _number_key_72n(trade.get("stop_price")),
+        _number_key_72n(trade.get("target_price")),
+        _number_key_72n(trade.get("exit_price")),
+        str(trade.get("result") or "").upper(),
+        _number_key_72n(trade.get("result_r")),
+    )
+
+
+def _trade_record_quality_72n(trade: dict) -> tuple:
+    """Prefer the duplicate copy with the most complete realized accounting."""
+    dollars = trade.get("display_result_dollars")
+    persisted = trade.get("result_dollars")
+    risk = trade.get("risk_dollars")
+    try:
+        useful_dollars = int(dollars is not None and abs(float(dollars)) > 1e-9)
+    except (TypeError, ValueError):
+        useful_dollars = 0
+    try:
+        useful_persisted = int(persisted is not None and abs(float(persisted)) > 1e-9)
+    except (TypeError, ValueError):
+        useful_persisted = 0
+    try:
+        useful_risk = int(risk is not None and float(risk) > 0)
+    except (TypeError, ValueError):
+        useful_risk = 0
+    return useful_persisted, useful_dollars, useful_risk, str(trade.get("updated_at") or "")
+
+
+def _repair_legacy_trade_dollars_72n(trade: dict) -> dict:
+    """Repair display-only P/L for legacy nonzero-R rows stored as $0.
+
+    Older replay rows can contain result_r while result_dollars/risk_dollars are
+    missing or zero. Those rows should not display a -1R loss as $0.00. This
+    does not mutate SQLite or evaluation accounting; it only normalizes the
+    dashboard view using the configured verification/base risk.
+    """
+    if str(trade.get("status") or "").upper() != "CLOSED":
+        return trade
+    try:
+        rr = float(trade.get("result_r"))
+    except (TypeError, ValueError):
+        return trade
+    if abs(rr) <= 1e-9:
+        return trade
+
+    try:
+        displayed = trade.get("display_result_dollars")
+        displayed_zero = displayed is None or abs(float(displayed)) <= 1e-9
+    except (TypeError, ValueError):
+        displayed_zero = True
+    try:
+        stored_risk = trade.get("risk_dollars")
+        legacy_risk = stored_risk is None or float(stored_risk) <= 0
+    except (TypeError, ValueError):
+        legacy_risk = True
+
+    if displayed_zero and legacy_risk:
+        fallback_risk = _verify_risk_72n() if _verification_enabled_72n() else float(
+            os.getenv("EVAL_RISK_PER_TRADE", "500") or 500
+        )
+        trade = dict(trade)
+        trade["display_result_dollars"] = round(rr * max(0.0, fallback_risk), 2)
+        trade["legacy_dollar_reconstruction"] = True
+    return trade
+
+
+def _dedupe_trade_rows_72n(trades: list[dict]) -> list[dict]:
+    output: list[dict] = []
+    positions: dict[tuple, int] = {}
+    for raw in trades:
+        trade = dict(raw)
+        key = _logical_trade_key_72n(trade)
+        existing_index = positions.get(key)
+        if existing_index is None:
+            positions[key] = len(output)
+            output.append(trade)
+            continue
+        if _trade_record_quality_72n(trade) > _trade_record_quality_72n(output[existing_index]):
+            output[existing_index] = trade
+    return [_repair_legacy_trade_dollars_72n(trade) for trade in output]
+
+
 def _install_dashboard_contract_72n() -> None:
-    """Expose complete trade history and an honest VERIFY dashboard state."""
+    """Expose complete, deduplicated trade history and an honest VERIFY state."""
     from src.dashboard.queries import DashboardRepository
 
     marker = "_otr_dashboard_contract_72n"
@@ -39,9 +142,12 @@ def _install_dashboard_contract_72n() -> None:
         # invalidated attempts can fill that window and push real closed trades
         # out of the browser payload. Keep explicit callers unchanged, but give
         # the main dashboard a deep ledger so its WIN/LOSS/Open/Pending filters
-        # can render the actual accepted trade history.
+        # can render the actual accepted trade history. Repeated replay runs can
+        # create new UUID setup IDs for identical historical fills, so collapse
+        # those copies before the dashboard or Overview statistics consume them.
         effective_limit = FULL_TRADE_WINDOW_72N if limit == 30 else limit
-        return original_recent_trades(self, connection, limit=effective_limit)
+        rows = original_recent_trades(self, connection, limit=effective_limit)
+        return _dedupe_trade_rows_72n(rows)
 
     def verification_aware_evaluation_snapshot(self, connection, runtime):
         snapshot = original_evaluation_snapshot(self, connection, runtime)
@@ -78,6 +184,7 @@ def _install_dashboard_contract_72n() -> None:
     setattr(DashboardRepository, marker, True)
     print(
         f"Operation 7.2N dashboard: snapshot trade window expanded to {FULL_TRADE_WINDOW_72N}; "
+        "replay duplicate fingerprinting + legacy P/L normalization active; "
         f"trading_mode={'VERIFY' if _verification_enabled_72n() else os.getenv('OTR_TRADING_MODE', 'EVAL')}",
         flush=True,
     )
