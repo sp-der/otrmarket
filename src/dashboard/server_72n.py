@@ -19,6 +19,10 @@ def _verification_enabled_72n() -> bool:
     return os.getenv("OTR_TRADING_MODE", "").strip().upper() in VERIFY_MODES_72N
 
 
+def _verify_run_id_72n() -> str:
+    return os.getenv("OTR_VERIFY_RUN_ID", "").strip()
+
+
 def _verify_risk_72n() -> float:
     raw = os.getenv("OTR_VERIFY_RISK_PER_TRADE", os.getenv("EVAL_RISK_PER_TRADE", "500"))
     try:
@@ -35,12 +39,6 @@ def _number_key_72n(value):
 
 
 def _logical_trade_key_72n(trade: dict) -> tuple:
-    """Identify the same historical fill across repeated replay runs.
-
-    Setup IDs are UUID based, so replaying the same market moment can create a
-    second database row for an otherwise identical trade. Use immutable market
-    geometry and replay timestamps instead of setup_id for dashboard accounting.
-    """
     return (
         str(trade.get("symbol") or "").upper(),
         str(trade.get("timeframe") or "").lower(),
@@ -57,7 +55,6 @@ def _logical_trade_key_72n(trade: dict) -> tuple:
 
 
 def _trade_record_quality_72n(trade: dict) -> tuple:
-    """Prefer the duplicate copy with the most complete realized accounting."""
     dollars = trade.get("display_result_dollars")
     persisted = trade.get("result_dollars")
     risk = trade.get("risk_dollars")
@@ -77,7 +74,6 @@ def _trade_record_quality_72n(trade: dict) -> tuple:
 
 
 def _repair_legacy_trade_dollars_72n(trade: dict) -> dict:
-    """Repair display-only P/L for legacy nonzero-R rows stored as $0."""
     if str(trade.get("status") or "").upper() != "CLOSED":
         return trade
     try:
@@ -125,7 +121,6 @@ def _dedupe_trade_rows_72n(trades: list[dict]) -> list[dict]:
 
 
 def _reset_verify_run_state_72n() -> None:
-    """Reset the process-local VERIFY boundary. Primarily used by regression tests."""
     global _VERIFY_RUN_BASELINE_ROWID_72N
     global _VERIFY_RUN_STARTED_MARKET_TIME_72N
     global _VERIFY_RUN_ENGINE_72N
@@ -142,12 +137,7 @@ def _verify_build_label_72n(engine_module: str) -> str:
 
 
 def _ensure_verify_run_boundary_72n(self, connection, runtime: dict) -> tuple[int, str | None, str]:
-    """Capture the database row boundary for this VERIFY server process.
-
-    Replay market timestamps are historical, so wall-clock deployment time cannot
-    reliably separate old and new replay trades. SQLite rowid is monotonic for
-    newly inserted trade rows and gives us a clean, non-destructive run boundary.
-    """
+    """Keep rowid as a dev fallback; production VERIFY uses explicit run tags."""
     global _VERIFY_RUN_BASELINE_ROWID_72N
     global _VERIFY_RUN_STARTED_MARKET_TIME_72N
     global _VERIFY_RUN_ENGINE_72N
@@ -158,15 +148,18 @@ def _ensure_verify_run_boundary_72n(self, connection, runtime: dict) -> tuple[in
             _VERIFY_RUN_BASELINE_ROWID_72N = int(row[0] if row else 0)
         else:
             _VERIFY_RUN_BASELINE_ROWID_72N = 0
-        _VERIFY_RUN_STARTED_MARKET_TIME_72N = runtime.get("market_time")
         _VERIFY_RUN_ENGINE_72N = os.getenv("OTR_ENGINE_MODULE", "src.main_72n")
         print(
             "VERIFY RUN 7.2 boundary captured: "
+            f"run_id={_verify_run_id_72n() or 'rowid-fallback'} "
             f"baseline_rowid={_VERIFY_RUN_BASELINE_ROWID_72N} "
-            f"market_time={_VERIFY_RUN_STARTED_MARKET_TIME_72N or 'waiting'} "
             f"engine={_VERIFY_RUN_ENGINE_72N}",
             flush=True,
         )
+
+    market_time = runtime.get("market_time")
+    if _VERIFY_RUN_STARTED_MARKET_TIME_72N is None and market_time:
+        _VERIFY_RUN_STARTED_MARKET_TIME_72N = market_time
 
     return (
         int(_VERIFY_RUN_BASELINE_ROWID_72N or 0),
@@ -178,8 +171,9 @@ def _ensure_verify_run_boundary_72n(self, connection, runtime: dict) -> tuple[in
 def _verify_run_snapshot_72n(self, connection, runtime: dict) -> dict:
     baseline, started_market_time, engine_module = _ensure_verify_run_boundary_72n(self, connection, runtime)
     build = _verify_build_label_72n(engine_module)
+    tagged_run_id = _verify_run_id_72n()
     defaults = {
-        "run_id": f"{build}-ROW-{baseline}",
+        "run_id": tagged_run_id or f"{build}-ROW-{baseline}",
         "build": build,
         "engine_module": engine_module,
         "baseline_rowid": baseline,
@@ -204,12 +198,28 @@ def _verify_run_snapshot_72n(self, connection, runtime: dict) -> dict:
     if not self._table_exists(connection, "paper_trades"):
         return defaults
 
+    # A production VERIFY deployment always gets an explicit run ID from
+    # server_72q. Until the engine tags its first trade, report a clean 0/0
+    # instead of falling back to historical rows.
+    if tagged_run_id and not self._table_exists(connection, "verify_run_trades"):
+        return defaults
+
     risk_expr = "p.risk_dollars" if self._column_exists(connection, "paper_trades", "risk_dollars") else "NULL AS risk_dollars"
     dollars_expr = "p.result_dollars" if self._column_exists(connection, "paper_trades", "result_dollars") else "NULL AS result_dollars"
     guard_expr = "p.guard_reason" if self._column_exists(connection, "paper_trades", "guard_reason") else "NULL AS guard_reason"
     has_setups = self._table_exists(connection, "strategy_setups")
+    setup_join = "LEFT JOIN strategy_setups s ON s.setup_id = p.setup_id" if has_setups else ""
     payload_expr = "s.payload_json AS payload_json" if has_setups else "NULL AS payload_json"
-    join = "LEFT JOIN strategy_setups s ON s.setup_id = p.setup_id" if has_setups else ""
+
+    if tagged_run_id:
+        run_join = "JOIN verify_run_trades vrt ON vrt.setup_id = p.setup_id AND vrt.run_id = ?"
+        where_clause = "1 = 1"
+        params = (tagged_run_id,)
+    else:
+        run_join = ""
+        where_clause = "p.rowid > ?"
+        params = (baseline,)
+
     rows = connection.execute(
         f"""
         SELECT p.rowid AS run_rowid, p.setup_id, p.symbol, p.timeframe, p.direction, p.status,
@@ -217,11 +227,12 @@ def _verify_run_snapshot_72n(self, connection, runtime: dict) -> dict:
                p.exit_price, p.result, p.result_r, {risk_expr}, {dollars_expr}, {guard_expr},
                p.updated_at, {payload_expr}
         FROM paper_trades p
-        {join}
-        WHERE p.rowid > ?
+        {run_join}
+        {setup_join}
+        WHERE {where_clause}
         ORDER BY p.rowid ASC
         """,
-        (baseline,),
+        params,
     ).fetchall()
 
     fallback_risk = _verify_risk_72n()
@@ -292,7 +303,6 @@ def _verify_run_snapshot_72n(self, connection, runtime: dict) -> dict:
 
 
 def _install_dashboard_contract_72n() -> None:
-    """Expose complete history plus run-scoped statistics in VERIFY mode."""
     from src.dashboard.queries import DashboardRepository
 
     marker = "_otr_dashboard_contract_72n"
@@ -323,7 +333,7 @@ def _install_dashboard_contract_72n() -> None:
             phase="VERIFY",
             status="VERIFY",
             reason=(
-                "Continuous verification is active. Dashboard performance is scoped to this VERIFY run; "
+                "Continuous verification is active. Dashboard performance is scoped to this tagged VERIFY run; "
                 "all historical trades remain preserved in Trade History."
             ),
             balance=round(starting_balance + run_pnl, 2),
@@ -349,7 +359,7 @@ def _install_dashboard_contract_72n() -> None:
     setattr(DashboardRepository, marker, True)
     print(
         f"Operation 7.2N dashboard: snapshot trade window expanded to {FULL_TRADE_WINDOW_72N}; "
-        "replay duplicate fingerprinting + legacy P/L normalization + run-scoped VERIFY stats active; "
+        "replay duplicate fingerprinting + legacy P/L normalization + tagged run-scoped VERIFY stats active; "
         f"trading_mode={'VERIFY' if _verification_enabled_72n() else os.getenv('OTR_TRADING_MODE', 'EVAL')}",
         flush=True,
     )
@@ -361,7 +371,7 @@ def _patch_verification_asset_72n() -> None:
     if not path.exists():
         return
     text = path.read_text(encoding="utf-8")
-    script_tag = '<script src="/market/assets/verification-mode72.js?v=7.2q-run1" defer></script>'
+    script_tag = '<script src="/market/assets/verification-mode72.js?v=7.2q-run2" defer></script>'
     if script_tag not in text and "</body>" in text:
         text = text.replace("</body>", f"{script_tag}\n</body>", 1)
         path.write_text(text, encoding="utf-8")
