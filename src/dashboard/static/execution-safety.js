@@ -2,6 +2,12 @@
   const $ = (id) => document.getElementById(id);
   const els = {};
   let statusTimer = null;
+  let baseTradeRenderer72 = null;
+
+  const REALIZED_RESULTS_72 = new Set(['WIN', 'LOSS']);
+  const LIVE_TRADE_STATES_72 = new Set(['OPEN', 'PENDING']);
+  const CHART_TIMEFRAMES_72 = ['1m', '5m', '15m', '1h'];
+  const chartAuxCache72 = new Map();
 
   function text(id, value) {
     const el = els[id] || $(id);
@@ -25,6 +31,155 @@
     if (seconds < 60) return `${seconds}s ago`;
     return `${Math.round(seconds / 60)}m ago`;
   }
+
+  function isVisibleJournalTrade72(trade) {
+    const result = String(trade?.result || '').toUpperCase();
+    const status = String(trade?.status || '').toUpperCase();
+    return REALIZED_RESULTS_72.has(result) || LIVE_TRADE_STATES_72.has(status);
+  }
+
+  function ensureTradeFilters72() {
+    const resultFilter = $('tradeResultFilter');
+    if (!resultFilter || resultFilter.dataset.liveVisibility72 === '1') return;
+    resultFilter.innerHTML = `
+      <option value="all">All trades</option>
+      <option value="OPEN">Open</option>
+      <option value="PENDING">Pending</option>
+      <option value="WIN">Wins</option>
+      <option value="LOSS">Losses</option>`;
+    resultFilter.dataset.liveVisibility72 = '1';
+    if (!['all', 'OPEN', 'PENDING', 'WIN', 'LOSS'].includes(resultFilter.value)) {
+      resultFilter.value = 'all';
+    }
+  }
+
+  function captureTradeRenderer72() {
+    if (typeof window.renderTrades === 'function') {
+      baseTradeRenderer72 = window.renderTrades;
+    }
+  }
+
+  function installTradeVisibility72() {
+    if (!baseTradeRenderer72 || window.renderTrades?.__otrLiveVisibility72 === true) return;
+
+    ensureTradeFilters72();
+    const liveRenderer72 = function liveRenderer72(trades) {
+      ensureTradeFilters72();
+      const allTrades = trades || [];
+      baseTradeRenderer72(allTrades.filter(isVisibleJournalTrade72));
+      if (typeof window.renderAttemptAudit65 === 'function') {
+        window.renderAttemptAudit65(allTrades);
+      }
+    };
+    liveRenderer72.__otrLiveVisibility72 = true;
+    window.renderTrades = liveRenderer72;
+
+    if (typeof state !== 'undefined' && state?.snapshot) {
+      window.renderTrades(state.snapshot.trades || []);
+    }
+  }
+
+  const nativeFetch72 = window.fetch.bind(window);
+
+  function chartTradeTime72(trade, fallback = 0) {
+    const value = Date.parse(trade?.opened_at || trade?.updated_at || trade?.closed_at || '');
+    return Number.isFinite(value) ? value : fallback;
+  }
+
+  function overlapsWindow72(trade, start, end) {
+    const opened = Date.parse(trade?.opened_at || trade?.updated_at || '');
+    const closed = Date.parse(trade?.closed_at || trade?.updated_at || '');
+    const startsBeforeEnd = !Number.isFinite(opened) || opened <= end;
+    const endsAfterStart = !Number.isFinite(closed) || closed >= start;
+    return startsBeforeEnd && endsAfterStart;
+  }
+
+  async function loadAuxChart72(url, init, timeframe) {
+    const aux = new URL(url.toString());
+    aux.searchParams.set('timeframe', timeframe);
+    aux.searchParams.set('limit', '1000');
+    const key = aux.toString();
+    const cached = chartAuxCache72.get(key);
+    if (cached && Date.now() - cached.at < 4500) return cached.payload;
+
+    const response = await nativeFetch72(aux.toString(), init);
+    if (!response.ok) return null;
+    const payload = await response.json();
+    chartAuxCache72.set(key, { at: Date.now(), payload });
+    return payload;
+  }
+
+  async function fetchWithCrossTimeframeTrades72(input, init) {
+    const primaryResponse = await nativeFetch72(input, init);
+    let url;
+    try {
+      const raw = typeof input === 'string' ? input : input?.url;
+      url = new URL(raw, window.location.href);
+    } catch (_) {
+      return primaryResponse;
+    }
+
+    if (url.pathname !== '/market/api/chart' || !primaryResponse.ok) return primaryResponse;
+
+    try {
+      const primary = await primaryResponse.clone().json();
+      const candles = Array.isArray(primary?.candles) ? primary.candles : [];
+      const selectedTimeframe = String(primary?.timeframe || url.searchParams.get('timeframe') || '').toLowerCase();
+      if (!candles.length || !CHART_TIMEFRAMES_72.includes(selectedTimeframe)) return primaryResponse;
+
+      const start = Date.parse(candles[0]?.open_time || candles[0]?.close_time || '');
+      const end = Date.parse(candles.at(-1)?.close_time || candles.at(-1)?.open_time || '');
+      if (!Number.isFinite(start) || !Number.isFinite(end)) return primaryResponse;
+
+      const primaryTrades = (Array.isArray(primary.trades) ? primary.trades : []).map((trade) => ({
+        ...trade,
+        timeframe: trade.timeframe || selectedTimeframe,
+      }));
+
+      const otherTimeframes = CHART_TIMEFRAMES_72.filter((timeframe) => timeframe !== selectedTimeframe);
+      const auxiliaryPayloads = await Promise.all(
+        otherTimeframes.map(async (timeframe) => {
+          try {
+            const payload = await loadAuxChart72(url, init, timeframe);
+            return { timeframe, payload };
+          } catch (_) {
+            return { timeframe, payload: null };
+          }
+        })
+      );
+
+      const merged = new Map();
+      primaryTrades.forEach((trade) => {
+        merged.set(trade.setup_id || `${selectedTimeframe}:${trade.opened_at}:${trade.entry_price}`, trade);
+      });
+
+      auxiliaryPayloads.forEach(({ timeframe, payload }) => {
+        const trades = Array.isArray(payload?.trades) ? payload.trades : [];
+        trades
+          .filter((trade) => overlapsWindow72(trade, start, end))
+          .forEach((trade) => {
+            const item = { ...trade, timeframe };
+            const key = item.setup_id || `${timeframe}:${item.opened_at}:${item.entry_price}`;
+            if (!merged.has(key)) merged.set(key, item);
+          });
+      });
+
+      primary.trades = [...merged.values()]
+        .sort((a, b) => chartTradeTime72(a) - chartTradeTime72(b))
+        .slice(-80);
+      primary.trade_timeframes = [...new Set(primary.trades.map((trade) => trade.timeframe).filter(Boolean))];
+
+      return new Response(JSON.stringify(primary), {
+        status: primaryResponse.status,
+        statusText: primaryResponse.statusText,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } catch (_) {
+      return primaryResponse;
+    }
+  }
+
+  window.fetch = fetchWithCrossTimeframeTrades72;
 
   async function loadStatus() {
     try {
@@ -97,6 +252,8 @@
   }
 
   function bind() {
+    captureTradeRenderer72();
+
     const engage = $('executionKillEngage');
     if (engage) {
       engage.addEventListener('click', async () => {
@@ -127,6 +284,7 @@
   }
 
   window.addEventListener('DOMContentLoaded', bind, { once: true });
+  window.addEventListener('load', () => window.setTimeout(installTradeVisibility72, 0), { once: true });
   window.addEventListener('beforeunload', () => {
     if (statusTimer) window.clearInterval(statusTimer);
   });
