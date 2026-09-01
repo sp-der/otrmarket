@@ -106,7 +106,14 @@ class Operation65RegressionTests(unittest.TestCase):
         self.assertIn('window.addEventListener("load"', cleanup)
         self.assertIn("window.setTimeout(finalizeDashboard65, 0)", cleanup)
         self.assertNotIn('window.addEventListener("DOMContentLoaded", installRealizedTradeHistory65', cleanup)
-        self.assertNotIn("new MutationObserver(", cleanup)
+        # The only MutationObserver is the terminology sanitizer added later to
+        # keep dynamic dashboard copy free of legacy "paper" wording. It must
+        # never reinstall or own the trade renderer; the renderer still locks
+        # once after all deferred UI layers have loaded.
+        self.assertIn("installTradingCopySanitizer65", cleanup)
+        self.assertIn("const observer = new MutationObserver(", cleanup)
+        self.assertIn("sanitizeTradingCopy65(document.body)", cleanup)
+        self.assertNotIn("MutationObserver(() => {\n    installRealizedTradeHistory65", cleanup)
         self.assertIn("nonExecutedTradesBody65", cleanup)
         self.assertIn("finalDashboardRenderTrades65(realizedTrades)", cleanup)
         self.assertIn("renderTrades = function timedRenderTrades", trading_days)
