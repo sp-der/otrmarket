@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 
 from src import main_71 as op71
@@ -9,6 +10,7 @@ from src.execution.live.config import ExecutionConfig
 from src.execution.live.gateway import ExecutionGateway
 from src.risk.eval_history72 import install_eval_history_filter
 from src.risk.eval_sizing72 import apply_eval_sizing72
+from src.risk.evaluation import EvaluationDecision
 from src.strategies.early_entry72 import install_early_entry72
 from src.strategies.reversal_guard72 import assess_one_minute_reversal_context
 
@@ -19,6 +21,96 @@ from src.strategies.reversal_guard72 import assess_one_minute_reversal_context
 install_eval_history_filter()
 
 runtime = op71.runtime
+
+
+VERIFY_MODES_72 = {"VERIFY", "VERIFICATION", "TEST"}
+
+
+def _verification_enabled_72() -> bool:
+    return os.getenv("OTR_TRADING_MODE", "").strip().upper() in VERIFY_MODES_72
+
+
+def _verification_risk_72() -> float:
+    raw = os.getenv("OTR_VERIFY_RISK_PER_TRADE", os.getenv("EVAL_RISK_PER_TRADE", "500"))
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return 500.0
+
+
+def _verification_grade_72(setup) -> str:
+    metadata = getattr(setup, "metadata", {}) or {}
+    context = metadata.get("a_plus_context", {}) or {}
+    if context.get("quality_grade"):
+        return str(context["quality_grade"]).upper()
+    if str(metadata.get("strategy", "")).upper() == "REJECTION_BLOCK_10_10":
+        score = int(metadata.get("checklist_score", 0) or 0)
+        total = int(metadata.get("checklist_total", 10) or 10)
+        if score >= total >= 10:
+            return "A+"
+    return "A"
+
+
+# Operation 7.2N: VERIFY is a real operating mode rather than EVAL with giant
+# fake limits. It bypasses account/eval/funded profit-loss governors only while
+# preserving the strategy quality stack, market-session availability, cooldowns,
+# structural geometry and the active-position gate.
+_previous_operating_mode_72 = op71.evaluate_operating_mode
+
+
+def _evaluate_operating_mode_72(connection, setup):
+    if not _verification_enabled_72():
+        return _previous_operating_mode_72(connection, setup)
+
+    grade = _verification_grade_72(setup)
+    details = {
+        "profile": "OTR_CONTINUOUS_VERIFY_7_2N",
+        "mode": "VERIFY",
+        "quality_grade": grade,
+        "forced_trade": False,
+        "trade_count_limits_active": False,
+        "account_governors_active": False,
+        "objective_note": (
+            "Continuous verification: no pass target, session-profit lock, daily-loss lock, "
+            "MLL lock, trade-count limit or loss-streak governor. Strategy gates remain active."
+        ),
+    }
+    return True, "Continuous verification mode: account governors bypassed; strategy quality remains mandatory.", details
+
+
+op71.evaluate_operating_mode = _evaluate_operating_mode_72
+
+_previous_evaluation_decide_72 = runtime.evaluation_guard.decide
+
+
+def _evaluation_decide_72(connection, reference_time=None):
+    if not _verification_enabled_72():
+        return _previous_evaluation_decide_72(connection, reference_time)
+
+    risk = _verification_risk_72()
+    snapshot = {
+        "profile": "OTR_CONTINUOUS_VERIFY_7_2N",
+        "phase": "VERIFY",
+        "status": "VERIFY",
+        "reason": "Continuous verification mode bypasses evaluation account governors.",
+        "trading_mode": "VERIFY",
+        "risk_per_trade": risk,
+        "available_risk": risk,
+        "continue_after_target": True,
+        "session_profit_cap": 0.0,
+        "max_trades_per_day": 0,
+        "max_consecutive_losses": 0,
+    }
+    return EvaluationDecision(
+        allowed=True,
+        risk_dollars=risk,
+        status="VERIFY",
+        reason="Continuous verification mode approved this setup after strategy gates.",
+        snapshot=snapshot,
+    )
+
+
+runtime.evaluation_guard.decide = _evaluation_decide_72
 
 # Operation 7.2H: attach a non-executable early-entry planner to the existing
 # ICT confluence engine. It can prepare structural pullback geometry at 4/6,
@@ -83,8 +175,8 @@ op71.op70.op59.op58._adaptive_quality_gate = _adaptive_quality_gate_72
 
 # Operation 7.2E eval sizing: let the evaluation guard expose up to $500 of
 # available risk, then grade-cap the amount that reaches paper execution.
-# This wrapper can only REDUCE the upstream risk decision, so daily drawdown,
-# MLL, session, concurrency, reversal and other existing caps remain in force.
+# In VERIFY mode the operating-mode metadata is VERIFY, so this wrapper keeps
+# inherited strategy/session risk sizing without applying eval-account caps.
 _previous_setup_risk_72 = op71.op70.op59.op58.base._setup_risk
 
 
@@ -105,7 +197,7 @@ _original_paper_register_72 = runtime.paper.register_setup
 
 
 def _register_setup_72(setup, *, risk_dollars=None, guard_reason=None):
-    """Preserve paper execution, then mirror only fully-approved setups."""
+    """Preserve simulated execution, then mirror only fully-approved setups."""
     position = _original_paper_register_72(setup, risk_dollars=risk_dollars, guard_reason=guard_reason)
     try:
         result = execution_gateway.handle_approved_setup(setup, risk_dollars=risk_dollars, guard_reason=guard_reason)
@@ -128,8 +220,9 @@ def _patch_runtime_manifest_72() -> None:
     try:
         manifest = json.loads(path.read_text(encoding="utf-8"))
         config = ExecutionConfig.from_env()
-        manifest.setdefault("build", {})["operation"] = "Operation 7.2"
+        manifest.setdefault("build", {})["operation"] = "Operation 7.2N"
         manifest["build"]["execution_mode"] = config.mode.value
+        manifest["build"]["trading_mode"] = "VERIFY" if _verification_enabled_72() else os.getenv("OTR_TRADING_MODE", "EVAL").upper()
         rules = manifest.setdefault("rules", [])
         by_name = {str(item.get("name")): item for item in rules if isinstance(item, dict)}
         additions = {
@@ -150,19 +243,23 @@ def _patch_runtime_manifest_72() -> None:
                 "src/main_72.py + src/strategies/reversal_guard72.py",
             ),
             "Evaluation grade sizing": (
-                "EVAL paper risk is grade-aware: A+ up to $500, A up to $350, B+ up to $100; upstream daily drawdown/MLL/session caps still win and $1,500 remains a structural objective",
+                "EVAL risk is grade-aware: A+ up to $500, A up to $350, B+ up to $100; upstream daily drawdown/MLL/session caps still win and $1,500 remains the session objective",
                 "src/main_72.py + src/risk/eval_sizing72.py",
+            ),
+            "Continuous verification": (
+                "VERIFY bypasses pass/session/daily-loss/MLL/trade-count/loss-streak account governors while preserving strategy quality, session availability, structural geometry and active-position protection",
+                "src/main_72.py + src/dashboard/server_72n.py",
             ),
             "Non-destructive eval reset": (
                 "Fresh eval accounting preserves prior trade/setup/intelligence history and excludes prior-run setup IDs from new eval counters instead of deleting rows",
                 "src/risk/eval_history72.py + src/dashboard/server_72.py",
             ),
             "Early entry intelligence": (
-                "Existing ICT ideas can pre-arm non-executable 62/70.5/79/FVG pullback geometry at 4/6; only full confirmation activates the prepared geometry and every session/quality/eval/no-chase gate remains mandatory",
+                "Existing ICT ideas can pre-arm non-executable 62/70.5/79/FVG pullback geometry at 4/6; only full confirmation activates the prepared geometry and every session/quality/no-chase gate remains mandatory",
                 "src/main_72.py + src/strategies/early_entry72.py",
             ),
             "Capital priority": (
-                "A fresh 4/6+ pre-armed >=3R ICT opportunity can reserve eval capacity only against a different <=1.60R setup; stronger trades are never blocked by this reservation",
+                "A fresh 4/6+ pre-armed >=3R ICT opportunity can reserve capacity only against a different <=1.60R setup; stronger trades are never blocked by this reservation",
                 "src/main_72.py + src/strategies/early_entry72.py",
             ),
         }
@@ -181,15 +278,20 @@ if __name__ == "__main__":
     op71._patch_runtime_manifest_71()
     _patch_runtime_manifest_72()
     config = ExecutionConfig.from_env()
+    mode_text = (
+        "VERIFY continuous mode bypassing account governors"
+        if _verification_enabled_72()
+        else "EVAL/FUNDED account governors active"
+    )
     runtime.console.log(
-        "Operation 7.2 active: Operation 7.1 market intelligence remains intact; "
-        "1m MSS reversals now require larger-chart confirmation; "
-        "EVAL sizing allows A+ <= $500, A <= $350, B+ <= $100 after all upstream risk caps; "
+        "Operation 7.2N active: Operation 7.1 market intelligence remains intact; "
+        "1m MSS reversals require larger-chart confirmation; "
+        f"{mode_text}; "
         "fresh eval resets preserve prior trade history; "
         "7.2H early-entry intelligence pre-arms existing ICT geometry at 4/6 without placing an order, "
         "then activates it only after full confirmation; "
         f"broker gateway mode={config.mode.value}, armed={config.armed}, account={config.account}. "
-        "PAPER is the safe default."
+        "Simulated execution remains the safe default."
     )
     op71.op70.op69.op68.op66.op65.op64.op63.op62._restore_progress_62()
     try:
