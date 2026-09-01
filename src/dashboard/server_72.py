@@ -35,6 +35,88 @@ def promoted_engine_module(requested: str | None = None) -> str:
     return value
 
 
+def _env_truthy_72(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_number_72(name: str) -> float | None:
+    value = os.getenv(name)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _repair_paper_eval_config_72m() -> None:
+    """Repair the legacy million-value bypass only for PAPER EVAL runs.
+
+    During replay calibration, old Railway values used 1,000,000 as a sentinel
+    to effectively disable multiple evaluation limits. Operation 7.2L now has
+    first-class unlimited trade-count semantics via zero, so those sentinels are
+    both misleading in the dashboard and unsafe as an evaluation model.
+
+    This repair is deliberately scoped to PAPER execution plus EVAL mode. It
+    never rewrites funded/live broker configuration, and it only activates when
+    the old bypass is actually detected or the evaluation guard was disabled.
+    """
+    execution_mode = os.getenv("OTR_EXECUTION_MODE", "PAPER").strip().upper()
+    trading_mode = os.getenv("OTR_TRADING_MODE", "").strip().upper()
+    phase = os.getenv("EVAL_PHASE", "EVALUATION").strip().upper()
+    eval_mode = trading_mode in {"EVAL", "EVALUATION"} or (
+        not trading_mode and phase.startswith("EVALUATION")
+    )
+    if execution_mode != "PAPER" or not eval_mode:
+        return
+
+    sentinel_names = (
+        "EVAL_MAX_LOSS",
+        "EVAL_FIRM_DAILY_LOSS",
+        "EVAL_INTERNAL_DAILY_STOP",
+        "EVAL_MLL_SAFETY_BUFFER",
+        "EVAL_MAX_TRADES_PER_DAY",
+        "EVAL_MAX_CONSECUTIVE_LOSSES",
+        "OTR_EVAL_MAX_TRADES_DAY",
+        "OTR_EVAL_MAX_TRADES_SESSION",
+        "OTR_CALIBRATION_MAX_TRADES_DAY",
+        "OTR_BASE_WIN_LOCK_DOLLARS",
+    )
+    has_legacy_sentinel = any(
+        value is not None and abs(value) >= 100_000
+        for value in (_env_number_72(name) for name in sentinel_names)
+    )
+    guard_value = os.getenv("EVAL_GUARD_ENABLED")
+    guard_disabled = guard_value is not None and not _env_truthy_72(guard_value)
+    if not has_legacy_sentinel and not guard_disabled:
+        return
+
+    restored = {
+        "EVAL_GUARD_ENABLED": "1",
+        "EVAL_MAX_LOSS": "2000",
+        "EVAL_FIRM_DAILY_LOSS": "1200",
+        "EVAL_RISK_PER_TRADE": "500",
+        "EVAL_MIN_RISK_PER_TRADE": "100",
+        "EVAL_INTERNAL_DAILY_STOP": "750",
+        "EVAL_MLL_SAFETY_BUFFER": "400",
+        "EVAL_MAX_TRADES_PER_DAY": "0",
+        "EVAL_MAX_CONSECUTIVE_LOSSES": "2",
+        "EVAL_MAX_CONCURRENT": "1",
+        "EVAL_SESSION_PROFIT_CAP": "1500",
+        "EVAL_CONTINUE_AFTER_TARGET": "0",
+        "OTR_EVAL_MAX_TRADES_DAY": "0",
+        "OTR_EVAL_MAX_TRADES_SESSION": "0",
+        "OTR_CALIBRATION_MAX_TRADES_DAY": "0",
+        "OTR_BASE_WIN_LOCK_DOLLARS": "0",
+    }
+    os.environ.update(restored)
+    print(
+        "Operation 7.2M paper-eval repair: restored 50K evaluation risk rails; "
+        "trade count remains unlimited via zero-valued caps.",
+        flush=True,
+    )
+
+
 def _install_execution_routes() -> None:
     dashboard = importlib.import_module("src.dashboard.app")
     expected_path = "/market/api/execution/status"
@@ -218,12 +300,9 @@ def _audit_latest_eval_limit_block() -> None:
 
 
 def _patch_dashboard_html_72() -> None:
-    """Add a read-only execution-health surface plus emergency stop controls.
-
-    This is applied at process boot instead of rewriting the legacy dashboard
-    template in-place, keeping Operation 7.2 isolated and easy to roll back.
-    """
-    path = Path(__file__).resolve().parent / "static" / "index.html"
+    """Add execution safety UI and keep Operation 7.2 dashboard assets current."""
+    static_dir = Path(__file__).resolve().parent / "static"
+    path = static_dir / "index.html"
     if not path.exists():
         return
     text = path.read_text(encoding="utf-8")
@@ -264,6 +343,12 @@ def _patch_dashboard_html_72() -> None:
             text = text.replace(runtime_section, panel + runtime_section, 1)
             changed = True
 
+    app_old = '<script src="/market/assets/app.js?v=4.5" defer></script>'
+    app_new = '<script src="/market/assets/app.js?v=7.2m" defer></script>'
+    if app_old in text:
+        text = text.replace(app_old, app_new, 1)
+        changed = True
+
     scanner_old = '<script src="/market/assets/scanner-decision-live.js?v=6.4" defer></script>'
     scanner_new = '<script src="/market/assets/scanner-decision-live.js?v=7.2k" defer></script>'
     if scanner_old in text:
@@ -278,9 +363,24 @@ def _patch_dashboard_html_72() -> None:
     if changed:
         path.write_text(text, encoding="utf-8")
 
+    app_path = static_dir / "app.js"
+    if app_path.exists():
+        app_text = app_path.read_text(encoding="utf-8")
+        old_trade_limit = '  $("evalTrades").textContent = `${e.trades_today || 0} / ${e.max_trades_per_day || 0}`;'
+        new_trade_limit = '''  const evalTradeLimit = Number(e.max_trades_per_day || 0);
+  $("evalTrades").textContent = evalTradeLimit > 0
+    ? `${e.trades_today || 0} / ${evalTradeLimit}`
+    : `${e.trades_today || 0} / Unlimited`;'''
+        if old_trade_limit in app_text:
+            app_path.write_text(
+                app_text.replace(old_trade_limit, new_trade_limit, 1),
+                encoding="utf-8",
+            )
+
 
 def main() -> None:
     os.environ["OTR_ENGINE_MODULE"] = promoted_engine_module()
+    _repair_paper_eval_config_72m()
     _audit_latest_eval_limit_block()
     # Operation 7.2G intercepts OTR_RESET_EVAL_TOKEN before the legacy
     # supervisor sees it. Existing trade/history rows stay intact while their
