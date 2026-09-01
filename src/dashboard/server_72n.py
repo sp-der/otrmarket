@@ -157,6 +157,11 @@ def _install_dashboard_contract_72n() -> None:
             return snapshot
 
         risk = _verify_risk_72n()
+        reference = self._parse_time(runtime.get("market_time")) or self._now()
+        stats = self.trade_stats(connection, reference)
+        run_pnl = float(stats.get("total_dollars") or 0.0)
+        today_pnl = float(stats.get("today_dollars") or 0.0)
+        starting_balance = float(snapshot.get("starting_balance") or 50_000.0)
         snapshot.update(
             profile="OTR_CONTINUOUS_VERIFY_7_2N",
             phase="VERIFY",
@@ -165,6 +170,9 @@ def _install_dashboard_contract_72n() -> None:
                 "Continuous verification is active. Account/eval profit-loss governors are bypassed; "
                 "strategy quality and one-active-position protection remain active."
             ),
+            balance=round(starting_balance + run_pnl, 2),
+            realized_pnl=round(run_pnl, 2),
+            today_pnl=round(today_pnl, 2),
             profit_target=0.0,
             profit_progress=0.0,
             target_met=False,
