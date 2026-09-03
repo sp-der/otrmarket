@@ -24,8 +24,9 @@ else
   export DASHBOARD_PORT="${DASHBOARD_PORT:-8000}"
 fi
 
-# Operation 7.2Q is the canonical Gold verification runtime. It preserves the
-# 7.2N VERIFY dashboard/full ledger and 7.2O fixed-risk accounting, adds the
-# final GC 1m quality firewall, and contains no loss-pruning startup hooks.
-echo "Starting OTR Operation 7.2Q supervised runtime on port ${DASHBOARD_PORT}..."
-exec "$PYTHON_BIN" -m src.dashboard.server_72q
+# Operation 7.2R is the canonical Gold verification runtime. It preserves the
+# 7.2Q 1m quality firewall and clean VERIFY accounting, then adds a narrow GC
+# 5m/15m momentum first-pullback recognition lane for strong moves that never
+# enter the legacy PD-array-first state machine. It never chases the impulse.
+echo "Starting OTR Operation 7.2R supervised runtime on port ${DASHBOARD_PORT}..."
+exec "$PYTHON_BIN" -m src.dashboard.server_72r
