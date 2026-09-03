@@ -19,14 +19,25 @@ def _install_verify_run_id_72r() -> str:
     return run_id
 
 
+def _promote_engine_72r() -> str:
+    """Patch the module that actually owns the 7.2 engine promotion hook.
+
+    server_72r -> server_72q -> server_72n -> server_72. The prior 7.2R
+    launcher patched server_72n one level too shallow, so server_72n.main()
+    still called server_72.promoted_engine_module() and spawned src.main_72.
+    """
+    base.base.base.promoted_engine_module = lambda requested=None: "src.main_72r"
+    return base.base.base.promoted_engine_module()
+
+
 def main() -> None:
     base._normalize_verify_environment_72q()
     base._wipe_verify_test_state_72q()
     run_id = _install_verify_run_id_72r()
-    base.base.promoted_engine_module = lambda: "src.main_72r"
+    engine_module = _promote_engine_72r()
     print(
         "Operation 7.2R supervisor: 7.2Q verification protections + GC 5m/15m momentum first-pullback recognition; "
-        f"engine=src.main_72r verify_run_id={run_id or 'inactive'}",
+        f"engine={engine_module} verify_run_id={run_id or 'inactive'}",
         flush=True,
     )
     base.base.main()
