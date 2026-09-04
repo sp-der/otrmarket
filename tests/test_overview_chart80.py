@@ -19,7 +19,7 @@ class OverviewDecisionChart80Tests(unittest.TestCase):
         self.assertIn("/market/api/otr8", script)
         self.assertIn("OTR 8.0 DECISION TAPE", script)
         self.assertIn("overview-chart80.css?v=8.0-live1", server)
-        self.assertIn("overview-chart80.js?v=8.0-live1", server)
+        self.assertIn("overview-chart80.js?v=8.0-live4", server)
 
     def test_timeframe_selector_includes_context_only_4h_and_trade_levels(self):
         script = (self.static / "overview-chart80.js").read_text(encoding="utf-8")
@@ -59,6 +59,20 @@ class OverviewDecisionChart80Tests(unittest.TestCase):
         self.assertIn("10.5px", script)
         self.assertIn("ui-refresh80.css?v=8.0-ui1", server)
         self.assertIn("ui-refresh80.js?v=8.0-ui1", server)
+
+    def test_gold_chart_has_tradingview_style_horizontal_navigation(self):
+        script = (self.static / "overview-chart80.js").read_text(encoding="utf-8")
+        server = (self.root / "src" / "dashboard" / "server_80.py").read_text(encoding="utf-8")
+
+        self.assertIn("MIN_VISIBLE_BARS", script)
+        self.assertIn("HISTORY_BARS", script)
+        self.assertIn("addEventListener('wheel'", script)
+        self.assertIn("addEventListener('pointerdown'", script)
+        self.assertIn("addEventListener('pointermove'", script)
+        self.assertIn("addEventListener('dblclick'", script)
+        self.assertIn("Wheel zoom · drag pan · double-click reset", script)
+        self.assertIn("historyLimit", script)
+        self.assertIn("horizontal zoom/pan active", server)
 
 
 if __name__ == "__main__":
