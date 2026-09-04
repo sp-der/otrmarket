@@ -25,6 +25,11 @@ def _install_verify_trade_tag_trigger_72s() -> None:
     Those rows reached paper_trades without reaching verify_run_trades, splitting
     Overview stats from Trade History. A SQLite trigger catches every insert or
     update regardless of which inherited path wrote the trade.
+
+    The trigger uses an explicit UPSERT rather than INSERT OR IGNORE. SQLite lets
+    an outer statement's conflict policy override OR IGNORE inside a trigger, and
+    production paper persistence itself uses INSERT ... ON CONFLICT DO UPDATE.
+    An explicit trigger UPSERT remains idempotent through that real write path.
     """
     run_id = os.getenv("OTR_VERIFY_RUN_ID", "").strip()
     if not _verification_enabled_72s() or not run_id:
@@ -72,17 +77,23 @@ def _install_verify_trade_tag_trigger_72s() -> None:
             CREATE TRIGGER verify_tag_trade_insert_72s
             AFTER INSERT ON paper_trades
             BEGIN
-                INSERT OR IGNORE INTO verify_run_trades(run_id, setup_id, build, first_seen_at)
+                INSERT INTO verify_run_trades(run_id, setup_id, build, first_seen_at)
                 SELECT run_id, NEW.setup_id, build, COALESCE(NEW.updated_at, datetime('now'))
-                FROM verify_active_run_72s WHERE slot = 1;
+                FROM verify_active_run_72s WHERE slot = 1
+                ON CONFLICT(run_id, setup_id) DO UPDATE SET
+                    build=excluded.build,
+                    first_seen_at=MIN(verify_run_trades.first_seen_at, excluded.first_seen_at);
             END;
 
             CREATE TRIGGER verify_tag_trade_update_72s
             AFTER UPDATE ON paper_trades
             BEGIN
-                INSERT OR IGNORE INTO verify_run_trades(run_id, setup_id, build, first_seen_at)
+                INSERT INTO verify_run_trades(run_id, setup_id, build, first_seen_at)
                 SELECT run_id, NEW.setup_id, build, COALESCE(NEW.updated_at, datetime('now'))
-                FROM verify_active_run_72s WHERE slot = 1;
+                FROM verify_active_run_72s WHERE slot = 1
+                ON CONFLICT(run_id, setup_id) DO UPDATE SET
+                    build=excluded.build,
+                    first_seen_at=MIN(verify_run_trades.first_seen_at, excluded.first_seen_at);
             END;
             """
         )
@@ -94,11 +105,12 @@ def _install_verify_trade_tag_trigger_72s() -> None:
         if os.getenv("OTR_VERIFY_WIPE_TOKEN", "").strip():
             connection.execute(
                 """
-                INSERT OR IGNORE INTO verify_run_trades(run_id, setup_id, build, first_seen_at)
+                INSERT INTO verify_run_trades(run_id, setup_id, build, first_seen_at)
                 SELECT a.run_id, p.setup_id, a.build, COALESCE(p.updated_at, datetime('now'))
                 FROM paper_trades p
                 CROSS JOIN verify_active_run_72s a
                 WHERE a.slot = 1
+                ON CONFLICT(run_id, setup_id) DO NOTHING
                 """
             )
 
