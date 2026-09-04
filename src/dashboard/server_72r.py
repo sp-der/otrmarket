@@ -97,6 +97,12 @@ def _install_verify_calendar_contract_72s() -> None:
     setattr(DashboardRepository, marker, True)
 
 
+def _promote_engine_72r() -> str:
+    """Legacy helper retained for the 7.2R supervisor regression contract."""
+    base.base.base.promoted_engine_module = lambda requested=None: "src.main_72r"
+    return base.base.base.promoted_engine_module()
+
+
 def _promote_engine_72s() -> str:
     # server_72r -> server_72q -> server_72n -> server_72
     base.base.base.promoted_engine_module = lambda requested=None: "src.main_72s"
