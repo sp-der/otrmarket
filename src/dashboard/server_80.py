@@ -43,14 +43,18 @@ def _install_overview_chart80_assets() -> None:
         return
     text = path.read_text(encoding="utf-8")
     css_tag = '<link rel="stylesheet" href="/market/assets/overview-chart80.css?v=8.0-live1">'
+    resize_css_tag = '<link rel="stylesheet" href="/market/assets/overview-chart-resize80.css?v=8.0-live2">'
     js_tag = '<script src="/market/assets/overview-chart80.js?v=8.0-live1" defer></script>'
+    resize_js_tag = '<script src="/market/assets/overview-chart-resize80.js?v=8.0-live2" defer></script>'
     changed = False
-    if css_tag not in text and "</head>" in text:
-        text = text.replace("</head>", f"  {css_tag}\n</head>", 1)
-        changed = True
-    if js_tag not in text and "</body>" in text:
-        text = text.replace("</body>", f"{js_tag}\n</body>", 1)
-        changed = True
+    for tag in (css_tag, resize_css_tag):
+        if tag not in text and "</head>" in text:
+            text = text.replace("</head>", f"  {tag}\n</head>", 1)
+            changed = True
+    for tag in (js_tag, resize_js_tag):
+        if tag not in text and "</body>" in text:
+            text = text.replace("</body>", f"{tag}\n</body>", 1)
+            changed = True
     if changed:
         path.write_text(text, encoding="utf-8")
 
