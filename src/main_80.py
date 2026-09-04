@@ -5,6 +5,13 @@ import json
 import os
 from pathlib import Path
 
+from src.storage.database_concurrency80 import install as install_sqlite_concurrency80
+
+# Install before inherited strategy/runtime modules bind database helpers. The
+# dashboard and engine are separate Railway processes, so both entrypoints own
+# the same lightweight WAL connection contract explicitly.
+install_sqlite_concurrency80()
+
 from src import main_58 as op58
 from src import main_61 as op61
 from src import main_62 as op62
