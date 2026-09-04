@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from fastapi import Request
+
 from src.dashboard import server_72s as base
 from src.research.live_training72t import training_snapshot_72t
 
@@ -20,7 +22,7 @@ def _install_training_api_72t() -> None:
     if any(getattr(route, "path", None) == expected for route in dashboard.app.routes):
         return
 
-    async def training_lab_snapshot(request):
+    async def training_lab_snapshot(request: Request):
         dashboard.require_http_auth(request)
         return training_snapshot_72t(dashboard.DB_PATH, dashboard.RESEARCH_DB_PATH)
 
