@@ -40,8 +40,8 @@ def _patch_minimal_dashboard_assets_72t() -> None:
     if not path.exists():
         return
     text = path.read_text(encoding="utf-8")
-    css_tag = '<link rel="stylesheet" href="/market/assets/dashboard-minimal72t.css?v=7.2t">'
-    js_tag = '<script src="/market/assets/dashboard-minimal72t.js?v=7.2t" defer></script>'
+    css_tag = '<link rel="stylesheet" href="/market/assets/dashboard-minimal72t.css?v=7.2t4">'
+    js_tag = '<script src="/market/assets/dashboard-minimal72t.js?v=7.2t4" defer></script>'
     changed = False
     if css_tag not in text and "</head>" in text:
         text = text.replace("</head>", f"  {css_tag}\n</head>", 1)
