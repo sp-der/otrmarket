@@ -5,6 +5,8 @@ import json
 import sqlite3
 from typing import Any
 
+from src.execution.state_machine80 import resolve_transition80
+
 from .models import CommandStatus, ExecutionIntent, TERMINAL_STATUSES, iso, utc_now
 
 
@@ -283,11 +285,7 @@ def poll_commands(
     redelivery_seconds: int = 5,
     now: datetime | None = None,
 ) -> list[dict]:
-    """Claim pending commands, with bounded redelivery until broker ACK.
-
-    The command_id is deterministic and the Ninja bridge must treat it as an
-    idempotency key. Once an ACK event arrives, the command is no longer polled.
-    """
+    """Claim pending commands, with bounded redelivery until broker ACK."""
     ensure_schema(connection)
     now = now or utc_now()
     expire_commands(connection, now)
@@ -356,6 +354,7 @@ _EVENT_STATUS = {
 
 
 def record_event(connection: sqlite3.Connection, event: dict, now: datetime | None = None) -> dict:
+    """Record one idempotent broker event without allowing state regression."""
     ensure_schema(connection)
     now = now or utc_now()
     event_id = str(event.get("event_id") or "").strip()
@@ -366,12 +365,35 @@ def record_event(connection: sqlite3.Connection, event: dict, now: datetime | No
         raise ValueError("Execution event_id is required for idempotency.")
     if not event_type:
         raise ValueError("Execution event_type is required.")
-    if command_id and get_command(connection, command_id) is None:
+
+    # Lost HTTP responses can cause an event batch to be retried. An already
+    # recorded event must not mutate the command a second time.
+    if connection.execute("SELECT 1 FROM execution_events WHERE event_id=?", (event_id,)).fetchone():
+        return get_command(connection, command_id) if command_id else {"event_id": event_id, "duplicate": True}
+
+    command = get_command(connection, command_id) if command_id else None
+    if command_id and command is None:
         raise ValueError(f"Unknown execution command: {command_id}")
+
+    target_status = _EVENT_STATUS.get(event_type)
+    transition = None
+    if command_id and target_status:
+        transition = resolve_transition80(str(command.get("status") or ""), target_status)
+        event = dict(event)
+        metadata = dict(event.get("metadata") or {})
+        metadata["transition80"] = {
+            "current": transition.current,
+            "target": transition.target,
+            "apply": transition.apply,
+            "duplicate": transition.duplicate,
+            "stale": transition.stale,
+            "reason": transition.reason,
+        }
+        event["metadata"] = metadata
 
     connection.execute(
         """
-        INSERT OR IGNORE INTO execution_events(
+        INSERT INTO execution_events(
             event_id, command_id, event_type, broker_order_id, quantity,
             filled_quantity, price, message, payload_json, occurred_at, received_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -391,8 +413,7 @@ def record_event(connection: sqlite3.Connection, event: dict, now: datetime | No
         ),
     )
 
-    target_status = _EVENT_STATUS.get(event_type)
-    if command_id and target_status:
+    if command_id and target_status and transition and transition.apply:
         fields = ["status = ?", "updated_at = ?"]
         values: list[Any] = [target_status, iso(now)]
         if event_type == "ACKNOWLEDGED":
@@ -416,7 +437,27 @@ def record_event(connection: sqlite3.Connection, event: dict, now: datetime | No
             values,
         )
     connection.commit()
-    return get_command(connection, command_id) if command_id else {"event_id": event_id}
+    result = get_command(connection, command_id) if command_id else {"event_id": event_id}
+    if isinstance(result, dict) and transition is not None:
+        result["transition80"] = {
+            "applied": transition.apply,
+            "stale": transition.stale,
+            "reason": transition.reason,
+        }
+    return result
+
+
+def _working_order(item: dict) -> bool:
+    state = str(item.get("state") or "").strip().upper()
+    return state not in {"CANCELLED", "CANCELED", "REJECTED", "FILLED", "EXPIRED"}
+
+
+def _is_protective_stop(item: dict, command_id: str) -> bool:
+    if str(item.get("command_id") or "").strip() != command_id or not _working_order(item):
+        return False
+    name = str(item.get("name") or "")
+    order_type = str(item.get("order_type") or "").upper()
+    return name.endswith("|S") or "STOP" in order_type
 
 
 def record_bridge_snapshot(
@@ -426,7 +467,7 @@ def record_bridge_snapshot(
     configured_account: str,
     now: datetime | None = None,
 ) -> dict:
-    """Persist broker truth and calculate a conservative reconciliation verdict."""
+    """Persist broker truth and calculate a fail-closed reconciliation verdict."""
     ensure_schema(connection)
     now = now or utc_now()
     account = str(snapshot.get("account") or "").strip()
@@ -457,13 +498,18 @@ def record_bridge_snapshot(
 
     expected_positions: dict[str, int] = {}
     active_command_ids = set()
+    filled_commands: list[tuple[str, str]] = []
     for command_id, contract, direction, quantity, filled_quantity, status in local:
-        active_command_ids.add(str(command_id))
+        command_id = str(command_id)
+        active_command_ids.add(command_id)
         if status not in {CommandStatus.PARTIAL.value, CommandStatus.FILLED.value}:
             continue
         qty = int(filled_quantity or quantity or 0)
         signed = qty if str(direction).lower() == "bullish" else -qty
-        expected_positions[str(contract).upper()] = expected_positions.get(str(contract).upper(), 0) + signed
+        contract_key = str(contract).upper()
+        expected_positions[contract_key] = expected_positions.get(contract_key, 0) + signed
+        if qty:
+            filled_commands.append((command_id, contract_key))
 
     actual_positions: dict[str, int] = {}
     for item in positions:
@@ -475,25 +521,34 @@ def record_bridge_snapshot(
 
     if actual_positions != expected_positions:
         reasons.append(
-            f"Position mismatch: OTR expects {expected_positions or '{}'}; broker reports {actual_positions or '{}'}."
+            f"Position mismatch: OTR expects {expected_positions or '{}'}; broker reports {actual_positions or '{}'} .".replace("{} .", "{}.")
         )
 
     for item in orders:
-        command_id = str(item.get("command_id") or "").strip()
-        state = str(item.get("state") or "").strip().upper()
-        if state in {"CANCELLED", "CANCELED", "REJECTED", "FILLED"}:
+        if not _working_order(item):
             continue
+        command_id = str(item.get("command_id") or "").strip()
         if not command_id or command_id not in active_command_ids:
             reasons.append(
                 f"Unmatched working broker order {item.get('broker_order_id') or item.get('order_id') or 'unknown'}."
             )
 
+    protection = {}
+    for command_id, contract in filled_commands:
+        protected = any(_is_protective_stop(item, command_id) for item in orders)
+        protection[command_id] = {"contract": contract, "stop_confirmed": protected}
+        if not protected:
+            reasons.append(
+                f"Protection mismatch: filled command {command_id} has broker exposure but no working protective stop."
+            )
+
     verdict = {
         "ok": not reasons,
         "account": account,
-        "reason": "Broker and OTR execution state agree." if not reasons else " ".join(reasons),
+        "reason": "Broker and OTR execution state agree, including protective stops." if not reasons else " ".join(reasons),
         "positions": positions,
         "orders": orders,
+        "protection": protection,
         "bridge_id": snapshot.get("bridge_id"),
         "timestamp": snapshot.get("timestamp") or iso(now),
     }
