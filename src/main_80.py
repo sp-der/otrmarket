@@ -19,6 +19,7 @@ from src import main_65 as op65
 from src import main_72t as legacy
 from src.execution.live.config import ExecutionConfig
 from src.otr8.pipeline import OTRPipeline80
+from src.storage.training_trigger_guard80 import harden_training_trade_triggers_80
 
 
 runtime = legacy.runtime
@@ -136,6 +137,13 @@ def main() -> None:
     reconciliation = legacy._reconcile_persisted_active_72t()
     capture = legacy.install_training_capture_72t()
     legacy._install_idempotent_training_trade_triggers_72t()
+
+    trigger_connection = runtime.get_connection()
+    try:
+        trigger_hardening = harden_training_trade_triggers_80(trigger_connection)
+    finally:
+        trigger_connection.close()
+
     _install_pipeline_80()
 
     config = ExecutionConfig.from_env()
@@ -144,6 +152,8 @@ def main() -> None:
         "7.2Q Gold 1m firewall, 7.2R momentum recognition, 7.2S ledger, 7.2T 4H/training/one-symbol protection retained; "
         "5m intrabar now uses the central pipeline; broker event state regression is blocked and filled positions require protective-stop reconciliation; "
         f"4h_backfill_rows={derived}; active_survivors={reconciliation.get('surviving', 0)}; "
+        f"training_triggers_dropped={trigger_hardening.get('dropped', 0)}; "
+        f"training_triggers_installed={trigger_hardening.get('installed', 0)}; "
         f"training_run={capture.get('run_id') or os.getenv('OTR_VERIFY_RUN_ID', 'none')}; "
         f"broker gateway mode={config.mode.value}, armed={config.armed}."
     )
