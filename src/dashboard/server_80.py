@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from fastapi import Request
 
@@ -16,6 +17,30 @@ if "decision_traces_80" not in legacy.FULL_WIPE_TABLES_72T:
 def _promote_engine_80() -> str:
     legacy.base.base.base.base.base.promoted_engine_module = lambda requested=None: "src.main_80"
     return legacy.base.base.base.base.base.promoted_engine_module()
+
+
+def _install_overview_chart80_assets() -> None:
+    """Add the NinjaTrader-backed OTR decision chart to the classic dashboard.
+
+    The existing VERIFY accounting remains available through the API/database, but
+    the visible BOT VERIFICATION card is replaced by a chart surface that shows
+    the exact stored candles/setups/trades OTR receives from the bridge.
+    """
+    path = Path(__file__).resolve().parent / "static" / "index.html"
+    if not path.exists():
+        return
+    text = path.read_text(encoding="utf-8")
+    css_tag = '<link rel="stylesheet" href="/market/assets/overview-chart80.css?v=8.0-live1">'
+    js_tag = '<script src="/market/assets/overview-chart80.js?v=8.0-live1" defer></script>'
+    changed = False
+    if css_tag not in text and "</head>" in text:
+        text = text.replace("</head>", f"  {css_tag}\n</head>", 1)
+        changed = True
+    if js_tag not in text and "</body>" in text:
+        text = text.replace("</body>", f"{js_tag}\n</body>", 1)
+        changed = True
+    if changed:
+        path.write_text(text, encoding="utf-8")
 
 
 def _install_otr8_api() -> None:
@@ -99,10 +124,11 @@ def _install_otr8_api() -> None:
 
 
 def main() -> None:
+    _install_overview_chart80_assets()
     _install_otr8_api()
     legacy._promote_engine_72t = _promote_engine_80
     print(
-        "Operation 8.0 supervisor: classic dashboard + Strategy Lab + Execution Lab APIs; "
+        "Operation 8.0 supervisor: classic dashboard + NinjaTrader-backed Gold decision chart + Strategy Lab + Execution Lab APIs; "
         "engine=src.main_80; 7.2T full-reset compatibility preserved",
         flush=True,
     )
