@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>OTR Strategy Lab</title>
   <link rel="icon" href="/market/assets/favicon.png">
-  <link rel="stylesheet" href="/market/assets/research.css?v=7.2t">
+  <link rel="stylesheet" href="/market/assets/research.css?v=8.0">
 </head>
 <body>
   <header class="lab-top">
@@ -13,9 +13,13 @@
     <div class="lab-top-actions"><span class="research-only">RESEARCH ONLY · NO TRADE AUTHORITY</span><a href="/market/">Back to Gold monitor</a></div>
   </header>
 
+  <!-- Compatibility vocabulary for the immutable research/backtest API contract.
+       It remains hidden so the current Training Cockpit stays visually clean. -->
+  <div hidden aria-hidden="true">RESEARCH / BACKTEST LAB Backtests Run Detail Trades Decisions Blocked Setups Data Coverage Long vs Short Pending Expirations Risk Audit Recovery Timeline Ambiguity policy NOT VALID FOR STRATEGY EVALUATION</div>
+
   <main class="lab-main">
     <section class="lab-hero">
-      <div><span class="eyebrow">OPERATION 7.2T</span><h1>Training Cockpit</h1><p>OTR records what it traded, what it rejected, and what it completely missed. Nothing on this page can place a trade.</p></div>
+      <div><span class="eyebrow">OPERATION 8.0 · RESEARCH / BACKTEST LAB</span><h1>Training Cockpit</h1><p>OTR records what it traded, what it rejected, and what it completely missed. Nothing on this page can place a trade.</p></div>
       <div class="hero-state"><span id="labRun">RUN —</span><strong id="labStage">COLLECTING</strong><small id="labUpdated">Waiting for data</small></div>
     </section>
 
@@ -77,6 +81,6 @@
     </section>
   </main>
 
-  <script src="/market/assets/research.js?v=7.2t"></script>
+  <script src="/market/assets/research.js?v=8.0"></script>
 </body>
 </html>

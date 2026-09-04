@@ -168,8 +168,20 @@ class ExecutionSafetyAndStoreTests(unittest.TestCase):
         intent = self.intent()
         enqueue_intent(self.connection, intent)
         record_event(self.connection, {"event_id": "evt-fill", "command_id": intent.command_id, "event_type": "FILLED", "filled_quantity": intent.quantity, "price": intent.entry_price, "occurred_at": NOW.isoformat()}, now=NOW)
-        verdict = self.reconciled(positions=[{"instrument": intent.execution_contract, "quantity": intent.quantity}])
-        self.assertTrue(verdict["ok"])
+        verdict = self.reconciled(
+            positions=[{"instrument": intent.execution_contract, "quantity": intent.quantity}],
+            orders=[{
+                "command_id": intent.command_id,
+                "broker_order_id": "protective-stop",
+                "name": f"OTR72|{intent.command_id}|S",
+                "instrument": intent.execution_contract,
+                "state": "Working",
+                "order_type": "StopMarket",
+                "quantity": intent.quantity,
+                "filled_quantity": 0,
+            }],
+        )
+        self.assertTrue(verdict["ok"], verdict["reason"])
 
 
 class PromotionTests(unittest.TestCase):

@@ -1,0 +1,27 @@
+.prop-guard-panel{display:none!important}
+.otr8-live-chart-panel{margin-top:14px}
+.otr8-live-chart-head{align-items:flex-end;gap:18px}
+.otr8-chart-controls{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}
+.otr8-chart-controls label{display:flex;flex-direction:column;gap:5px;color:#777;font:600 9px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;text-transform:uppercase;letter-spacing:.08em}
+.otr8-chart-controls select{min-width:108px;background:#070707;border:1px solid #282828;border-radius:8px;color:#f3f3f3;padding:8px 10px;font:600 11px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace}
+.otr8-chart-status{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0 12px}
+.otr8-chart-chip{display:inline-flex;align-items:center;min-height:24px;padding:0 9px;border:1px solid #292929;border-radius:999px;color:#9a9a9a;background:#080808;font:700 9px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.06em}
+.otr8-chart-chip.live,.otr8-chart-chip.replay,.otr8-chart-chip.good{color:#67daa0;border-color:#234a37}
+.otr8-chart-chip.warn{color:#e5bc68;border-color:#54401d}
+.otr8-chart-shell{display:grid;grid-template-columns:minmax(0,1fr) 310px;gap:12px}
+.otr8-chart-card,.otr8-plan-card,.otr8-tape-card{border:1px solid #202020;border-radius:10px;background:#050505}
+.otr8-chart-card{min-height:430px;position:relative;overflow:hidden}
+.otr8-chart-title{display:flex;align-items:center;justify-content:space-between;padding:12px 14px 0}
+.otr8-chart-title strong{font-size:13px;color:#fff}.otr8-chart-title span{font:600 10px ui-monospace,SFMono-Regular,Menlo,monospace;color:#888}
+.otr8-canvas-wrap{height:390px;position:relative;padding:4px 6px 8px}
+#otr8OverviewCanvas{width:100%;height:100%;display:block}
+.otr8-chart-empty{position:absolute;inset:50% auto auto 50%;transform:translate(-50%,-50%);color:#666;font-size:11px;pointer-events:none}
+.otr8-chart-side{display:grid;grid-template-rows:auto 1fr;gap:12px;min-width:0}
+.otr8-plan-card,.otr8-tape-card{padding:13px}
+.otr8-side-kicker{color:#6e6e6e;font:700 8px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.12em;text-transform:uppercase}
+.otr8-plan-title{display:flex;align-items:center;justify-content:space-between;margin-top:5px}.otr8-plan-title strong{font-size:15px}.otr8-plan-title span{font:700 9px ui-monospace,SFMono-Regular,Menlo,monospace;padding:4px 7px;border:1px solid #2a2a2a;border-radius:999px;color:#aaa}
+.otr8-plan-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}.otr8-plan-grid div{background:#080808;border:1px solid #1c1c1c;border-radius:8px;padding:9px}.otr8-plan-grid span{display:block;color:#666;font-size:8px;text-transform:uppercase;letter-spacing:.08em}.otr8-plan-grid strong{display:block;margin-top:4px;color:#eee;font:700 11px ui-monospace,SFMono-Regular,Menlo,monospace}
+.otr8-decision-tape{display:grid;gap:7px;margin-top:10px;max-height:315px;overflow:auto}.otr8-decision-row{display:grid;grid-template-columns:64px 1fr auto;gap:8px;align-items:center;border-top:1px solid #151515;padding-top:7px}.otr8-decision-row:first-child{border-top:0;padding-top:0}.otr8-decision-row time{color:#666;font:600 8px ui-monospace,SFMono-Regular,Menlo,monospace}.otr8-decision-row strong{font-size:10px;color:#ddd;text-transform:uppercase}.otr8-decision-row small{display:block;margin-top:2px;color:#777;font-size:9px}.otr8-decision-row b{font:700 8px ui-monospace,SFMono-Regular,Menlo,monospace;color:#aaa;border:1px solid #272727;border-radius:999px;padding:4px 6px;white-space:nowrap}
+.otr8-chart-legend{display:flex;gap:14px;flex-wrap:wrap;padding:0 14px 12px;color:#777;font-size:9px}.otr8-chart-legend span{display:flex;align-items:center;gap:5px}.otr8-swatch{width:15px;height:2px;display:inline-block;background:#ddd}.otr8-swatch.stop{background:#d76565}.otr8-swatch.target{background:#58ba84}.otr8-swatch.fvg{height:7px;background:rgba(84,135,156,.45);border:1px solid #54879c}.otr8-swatch.ob{height:7px;background:rgba(164,136,88,.4);border:1px solid #a48858}
+@media(max-width:980px){.otr8-chart-shell{grid-template-columns:1fr}.otr8-chart-side{grid-template-columns:1fr 1fr;grid-template-rows:auto}.otr8-chart-card{min-height:360px}.otr8-canvas-wrap{height:320px}}
+@media(max-width:680px){.otr8-chart-side{grid-template-columns:1fr}.otr8-chart-controls{width:100%}.otr8-chart-controls label{flex:1}.otr8-chart-controls select{width:100%;min-width:0}.otr8-chart-card{min-height:330px}.otr8-canvas-wrap{height:285px}}
