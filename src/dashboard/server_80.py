@@ -5,6 +5,10 @@ from pathlib import Path
 
 from fastapi import Request
 
+from src.dashboard import server_72 as core72
+from src.dashboard import server_72n as dashboard72n
+from src.dashboard import server_72q as verify72q
+from src.dashboard import server_72s as verify72s
 from src.dashboard import server_72t as legacy
 from src.research.execution_lab80 import execution_lab_snapshot80
 from src.storage.database import get_connection
@@ -15,8 +19,9 @@ if "decision_traces_80" not in legacy.FULL_WIPE_TABLES_72T:
 
 
 def _promote_engine_80() -> str:
-    legacy.base.base.base.base.base.promoted_engine_module = lambda requested=None: "src.main_80"
-    return legacy.base.base.base.base.base.promoted_engine_module()
+    """Own the final promotion hook directly instead of relying on wrapper chaining."""
+    core72.promoted_engine_module = lambda requested=None: "src.main_80"
+    return core72.promoted_engine_module()
 
 
 def _install_overview_chart80_assets() -> None:
@@ -124,15 +129,24 @@ def _install_otr8_api() -> None:
 
 
 def main() -> None:
+    # Reproduce the proven 7.2T/S/Q supervisor preparation explicitly, then hand
+    # directly to 7.2N once the actual server_72 promotion hook points at 8.0.
+    # This avoids another wrapper silently overwriting the requested 8.0 engine.
+    reset_counts = legacy._full_verify_wipe_72t()
+    legacy._install_training_api_72t()
+    verify72q._normalize_verify_environment_72q()
+    verify72q._wipe_verify_test_state_72q()
+    run_id = verify72s._stable_verify_run_id_72s()
+    verify72s._install_verify_calendar_contract_72s()
     _install_overview_chart80_assets()
     _install_otr8_api()
-    legacy._promote_engine_72t = _promote_engine_80
+    engine_module = _promote_engine_80()
     print(
-        "Operation 8.0 supervisor: classic dashboard + NinjaTrader-backed Gold decision chart + Strategy Lab + Execution Lab APIs; "
-        "engine=src.main_80; 7.2T full-reset compatibility preserved",
+        "Operation 8.0 supervisor: direct clean handoff + NinjaTrader-backed Gold decision chart + Strategy Lab + Execution Lab APIs; "
+        f"engine={engine_module} verify_run_id={run_id or 'inactive'} full_reset_rows={sum(reset_counts.values())}",
         flush=True,
     )
-    legacy.main()
+    dashboard72n.main()
 
 
 if __name__ == "__main__":
