@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from fastapi import Request
@@ -25,6 +26,13 @@ if "decision_traces_80" not in legacy.FULL_WIPE_TABLES_72T:
     legacy.FULL_WIPE_TABLES_72T = tuple(legacy.FULL_WIPE_TABLES_72T) + ("decision_traces_80",)
 
 
+def _truthy_env(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _promote_engine_80() -> str:
     """Own the final promotion hook directly instead of relying on wrapper chaining."""
     core72.promoted_engine_module = lambda requested=None: "src.main_80"
@@ -46,12 +54,13 @@ def _install_overview_chart80_assets() -> None:
     resize_css_tag = '<link rel="stylesheet" href="/market/assets/overview-chart-resize80.css?v=8.0-live2">'
     js_tag = '<script src="/market/assets/overview-chart80.js?v=8.0-live1" defer></script>'
     resize_js_tag = '<script src="/market/assets/overview-chart-resize80.js?v=8.0-live2" defer></script>'
+    live_js_tag = '<script src="/market/assets/overview-chart-live80.js?v=8.0-live3" defer></script>'
     changed = False
     for tag in (css_tag, resize_css_tag):
         if tag not in text and "</head>" in text:
             text = text.replace("</head>", f"  {tag}\n</head>", 1)
             changed = True
-    for tag in (js_tag, resize_js_tag):
+    for tag in (js_tag, resize_js_tag, live_js_tag):
         if tag not in text and "</body>" in text:
             text = text.replace("</body>", f"{tag}\n</body>", 1)
             changed = True
@@ -140,10 +149,16 @@ def _install_otr8_api() -> None:
 
 
 def main() -> None:
+    # A deploy/restart should not silently erase an in-progress replay. Full
+    # verification wipes are now opt-in via OTR_FULL_VERIFY_WIPE_ON_BOOT.
+    if _truthy_env("OTR_FULL_VERIFY_WIPE_ON_BOOT", False):
+        reset_counts = legacy._full_verify_wipe_72t()
+    else:
+        reset_counts = {}
+
     # Reproduce the proven 7.2T/S/Q supervisor preparation explicitly, then hand
     # directly to 7.2N once the actual server_72 promotion hook points at 8.0.
     # This avoids another wrapper silently overwriting the requested 8.0 engine.
-    reset_counts = legacy._full_verify_wipe_72t()
     legacy._install_training_api_72t()
     verify72q._normalize_verify_environment_72q()
     verify72q._wipe_verify_test_state_72q()
@@ -154,6 +169,7 @@ def main() -> None:
     engine_module = _promote_engine_80()
     print(
         "Operation 8.0 supervisor: direct clean handoff + NinjaTrader-backed Gold decision chart + Strategy Lab + Execution Lab APIs; "
+        "chart live-refresh hotfix active; boot wipe disabled unless OTR_FULL_VERIFY_WIPE_ON_BOOT=true; "
         f"engine={engine_module} verify_run_id={run_id or 'inactive'} full_reset_rows={sum(reset_counts.values())}",
         flush=True,
     )
