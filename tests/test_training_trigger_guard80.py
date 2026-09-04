@@ -110,6 +110,61 @@ class TrainingTriggerGuard80Tests(unittest.TestCase):
         self.assertEqual(rows, [("VERIFY-test", "t1", "8.0", "CLOSED")])
         con.close()
 
+    def test_outer_paper_upsert_cannot_override_training_conflict_policy(self):
+        """Mirror production upsert_paper_trade, which exposed SQLite policy inheritance."""
+        con = self._connection()
+        harden_training_trade_triggers_80(con)
+
+        con.execute(
+            "INSERT INTO paper_trades VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "t1", "GC", "5m", "bullish", "PENDING", None, None, None,
+                None, 250.0, None, "2026-08-03T12:00:00+00:00",
+            ),
+        )
+
+        # Production persists the same setup with INSERT ... ON CONFLICT DO UPDATE.
+        # A trigger using INSERT OR IGNORE fails here because SQLite lets the outer
+        # conflict policy win. The explicit trigger UPSERT must remain idempotent.
+        for status in ("OPEN", "CLOSED"):
+            con.execute(
+                """
+                INSERT INTO paper_trades(
+                    setup_id,symbol,timeframe,direction,status,opened_at,closed_at,
+                    result,result_r,risk_dollars,result_dollars,updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(setup_id) DO UPDATE SET
+                    status=excluded.status,
+                    opened_at=excluded.opened_at,
+                    closed_at=excluded.closed_at,
+                    result=excluded.result,
+                    result_r=excluded.result_r,
+                    risk_dollars=excluded.risk_dollars,
+                    result_dollars=excluded.result_dollars,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    "t1", "GC", "5m", "bullish", status,
+                    "2026-08-03T12:01:00+00:00",
+                    "2026-08-03T12:05:00+00:00" if status == "CLOSED" else None,
+                    "WIN" if status == "CLOSED" else None,
+                    2.0 if status == "CLOSED" else None,
+                    250.0,
+                    500.0 if status == "CLOSED" else None,
+                    "2026-08-03T12:05:00+00:00",
+                ),
+            )
+
+        rows = con.execute(
+            "SELECT run_id,setup_id,build,status,result,result_r,result_dollars "
+            "FROM training_trades_72t"
+        ).fetchall()
+        self.assertEqual(
+            rows,
+            [("VERIFY-test", "t1", "8.0", "CLOSED", "WIN", 2.0, 500.0)],
+        )
+        con.close()
+
 
 if __name__ == "__main__":
     unittest.main()
