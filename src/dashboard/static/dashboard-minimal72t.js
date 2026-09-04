@@ -70,9 +70,35 @@
     return (s?.markets || []).find((m) => String(m?.symbol || "").toUpperCase() === "GC") || {};
   }
 
-  function money(value) {
+  function money(value, signed = false) {
     const n = Number(value);
-    return Number.isFinite(n) ? `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—";
+    if (!Number.isFinite(n)) return "—";
+    const amount = `$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    if (n < 0) return `-${amount}`;
+    return signed && n > 0 ? `+${amount}` : amount;
+  }
+
+  function rValue(value, signed = true) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return "—";
+    const prefix = signed && n > 0 ? "+" : "";
+    return `${prefix}${n.toFixed(2)}R`;
+  }
+
+  function percent(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? `${n.toFixed(1)}%` : "—";
+  }
+
+  function factor(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n.toFixed(2) : "—";
+  }
+
+  function pnlClass(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || Math.abs(n) < 1e-9) return "neutral";
+    return n > 0 ? "positive" : "negative";
   }
 
   function marketTime(s, gc) {
@@ -119,6 +145,7 @@
     if (!root || !snapshot) return;
     const gc = goldMarket(snapshot);
     const mode = marketMode(snapshot);
+    const stats = snapshot?.stats || {};
     const diagnostics = (snapshot?.diagnostics || []).filter((d) => String(d?.symbol || "").toUpperCase() === "GC");
     const byTf = new Map(diagnostics.map((d) => [String(d.timeframe || "").toLowerCase(), d]));
     const macro = training?.macro_4h || { direction: "unknown", note: "4H context is warming up." };
@@ -134,6 +161,29 @@
         <article class="otr-status-card"><span class="otr-label">Gold</span><div class="otr-value">${money(gc.price)}</div><span class="otr-sub">GC / MGC focus</span></article>
         <article class="otr-status-card"><span class="otr-label">4H direction</span><div class="otr-value otr-macro-direction ${esc(macroDirection)}">${esc(macroDirection)}</div><span class="otr-sub">Macro context only</span></article>
         <article class="otr-status-card"><span class="otr-label">Feed</span><div class="otr-value">${gc?.age_seconds !== undefined && gc?.age_seconds !== null ? `${Number(gc.age_seconds).toFixed(1)}s` : "—"}</div><span class="otr-sub">Bridge ingress age</span></article>
+      </div>
+
+      <div class="otr-performance-grid">
+        <article class="otr-performance-card">
+          <span class="otr-label">Daily P&amp;L</span>
+          <div class="otr-performance-value ${pnlClass(stats.today_dollars)}">${money(stats.today_dollars, true)}</div>
+          <span class="otr-sub">${rValue(stats.today_r)} today</span>
+        </article>
+        <article class="otr-performance-card">
+          <span class="otr-label">All-Time P&amp;L</span>
+          <div class="otr-performance-value ${pnlClass(stats.total_dollars)}">${money(stats.total_dollars, true)}</div>
+          <span class="otr-sub">${Number(stats.closed || 0)} closed Gold trade${Number(stats.closed || 0) === 1 ? "" : "s"}</span>
+        </article>
+        <article class="otr-performance-card">
+          <span class="otr-label">Net R</span>
+          <div class="otr-performance-value ${pnlClass(stats.total_r)}">${rValue(stats.total_r)}</div>
+          <span class="otr-sub">Profit factor ${factor(stats.profit_factor)}</span>
+        </article>
+        <article class="otr-performance-card">
+          <span class="otr-label">Win Rate</span>
+          <div class="otr-performance-value">${percent(stats.win_rate)}</div>
+          <span class="otr-sub">${Number(stats.wins || 0)}W / ${Number(stats.losses || 0)}L</span>
+        </article>
       </div>
 
       <div class="otr-section-head">
