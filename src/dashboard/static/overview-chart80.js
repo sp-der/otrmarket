@@ -6,6 +6,11 @@
     const n = Number(value);
     return Number.isFinite(n) ? n : null;
   };
+  const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
+  const timeMs = (value) => {
+    const parsed = new Date(value || '').getTime();
+    return Number.isFinite(parsed) ? parsed : null;
+  };
   const fmt = (value) => {
     const n = num(value);
     return n === null ? '--' : n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -17,7 +22,55 @@
     const date = new Date(value || '');
     return Number.isNaN(date.getTime()) ? '--' : date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' });
   };
-  const state = { timer: null, busy: false, chart: null, decisions: null };
+
+  const MIN_VISIBLE_BARS = 24;
+  const HISTORY_BARS = 600;
+  const state = {
+    timer: null,
+    busy: false,
+    chart: null,
+    decisions: null,
+    view: {
+      visibleBars: null,
+      offsetBars: 0,
+      drag: null,
+    },
+  };
+
+  function selectedBars() {
+    return Math.max(MIN_VISIBLE_BARS, Number($('otr8OverviewBars')?.value || 320));
+  }
+
+  function resetView() {
+    state.view.visibleBars = null;
+    state.view.offsetBars = 0;
+    state.view.drag = null;
+  }
+
+  function chartWindow(total) {
+    if (!total) return { start: 0, end: 0, visible: 0, offset: 0 };
+    const fallback = Math.min(total, selectedBars());
+    const visible = clamp(
+      Math.round(state.view.visibleBars == null ? fallback : state.view.visibleBars),
+      Math.min(MIN_VISIBLE_BARS, total),
+      total,
+    );
+    const maxOffset = Math.max(0, total - visible);
+    const offset = clamp(Math.round(state.view.offsetBars || 0), 0, maxOffset);
+    const end = total - offset;
+    const start = Math.max(0, end - visible);
+    state.view.visibleBars = visible === fallback && state.view.visibleBars == null ? null : visible;
+    state.view.offsetBars = offset;
+    return { start, end, visible: end - start, offset };
+  }
+
+  function viewLabel(total, windowState) {
+    if (!total || !windowState.visible) return 'Wheel zoom · drag pan · double-click reset';
+    if (windowState.offset === 0) {
+      return `${windowState.visible}/${total} bars · latest · wheel zoom · drag pan`;
+    }
+    return `${windowState.visible}/${total} bars · ${windowState.offset} bars back · double-click reset`;
+  }
 
   function buildSurface() {
     if ($('otr8OverviewChart')) return;
@@ -45,7 +98,7 @@
             </select>
           </label>
           <label>Bars
-            <select id="otr8OverviewBars" aria-label="OTR chart bars">
+            <select id="otr8OverviewBars" aria-label="OTR chart visible bar count">
               <option value="120">120</option>
               <option value="320" selected>320</option>
               <option value="600">600</option>
@@ -61,9 +114,15 @@
       </div>
       <div class="otr8-chart-shell">
         <article class="otr8-chart-card">
-          <div class="otr8-chart-title"><strong id="otr8ChartTitle">GC · 5m</strong><span id="otr8LastPrice">--</span></div>
+          <div class="otr8-chart-title">
+            <div>
+              <strong id="otr8ChartTitle">GC · 5m</strong>
+              <small id="otr8ChartNavState" style="display:block;margin-top:4px;color:#83909d;font:650 10px/1.25 ui-monospace,SFMono-Regular,Menlo,monospace">Wheel zoom · drag pan · double-click reset</small>
+            </div>
+            <span id="otr8LastPrice">--</span>
+          </div>
           <div class="otr8-canvas-wrap">
-            <canvas id="otr8OverviewCanvas" aria-label="Gold candlestick chart showing OTR setup and execution levels"></canvas>
+            <canvas id="otr8OverviewCanvas" aria-label="Interactive Gold candlestick chart showing OTR setup and execution levels" style="cursor:grab;touch-action:none;user-select:none"></canvas>
             <div id="otr8ChartEmpty" class="otr8-chart-empty">Waiting for NinjaTrader bridge candles.</div>
           </div>
           <div class="otr8-chart-legend">
@@ -90,10 +149,95 @@
       </div>`;
     guard.before(section);
 
-    $('otr8OverviewTf').addEventListener('change', () => { state.chart = null; refresh(); });
-    $('otr8OverviewBars').addEventListener('change', () => { state.chart = null; refresh(); });
+    $('otr8OverviewTf').addEventListener('change', () => { resetView(); state.chart = null; refresh(); });
+    $('otr8OverviewBars').addEventListener('change', () => { resetView(); state.chart = null; refresh(); });
     window.addEventListener('resize', () => { if (state.chart) draw(state.chart); });
     document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+    bindChartNavigation();
+  }
+
+  function bindChartNavigation() {
+    const canvas = $('otr8OverviewCanvas');
+    if (!canvas || canvas.dataset.otr8NavigationReady === '1') return;
+    canvas.dataset.otr8NavigationReady = '1';
+
+    canvas.addEventListener('wheel', (event) => {
+      const total = state.chart?.candles?.length || 0;
+      if (!total) return;
+      event.preventDefault();
+      const current = chartWindow(total);
+
+      if (Math.abs(event.deltaX) > Math.abs(event.deltaY) * 0.75 || event.shiftKey) {
+        const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) * 0.75 ? event.deltaX : event.deltaY;
+        const bars = Math.round((delta / 120) * Math.max(2, current.visible * 0.10));
+        state.view.visibleBars = current.visible;
+        state.view.offsetBars = clamp(current.offset + bars, 0, Math.max(0, total - current.visible));
+        draw(state.chart);
+        return;
+      }
+
+      const rect = canvas.getBoundingClientRect();
+      const plotLeft = 10;
+      const plotRight = Math.max(plotLeft + 1, rect.width - 68);
+      const cursorRatio = clamp((event.clientX - rect.left - plotLeft) / Math.max(1, plotRight - plotLeft), 0, 1);
+      const factor = event.deltaY < 0 ? 0.82 : 1.22;
+      const newVisible = clamp(
+        Math.round(current.visible * factor),
+        Math.min(MIN_VISIBLE_BARS, total),
+        total,
+      );
+      const anchor = current.start + cursorRatio * Math.max(0, current.visible - 1);
+      let newStart = Math.round(anchor - cursorRatio * Math.max(0, newVisible - 1));
+      newStart = clamp(newStart, 0, Math.max(0, total - newVisible));
+      state.view.visibleBars = newVisible;
+      state.view.offsetBars = total - newVisible - newStart;
+      draw(state.chart);
+    }, { passive: false });
+
+    canvas.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0 || !state.chart?.candles?.length) return;
+      const total = state.chart.candles.length;
+      const current = chartWindow(total);
+      state.view.visibleBars = current.visible;
+      state.view.drag = {
+        pointerId: event.pointerId,
+        x: event.clientX,
+        offset: current.offset,
+        visible: current.visible,
+      };
+      canvas.setPointerCapture?.(event.pointerId);
+      canvas.style.cursor = 'grabbing';
+      event.preventDefault();
+    });
+
+    canvas.addEventListener('pointermove', (event) => {
+      const drag = state.view.drag;
+      const total = state.chart?.candles?.length || 0;
+      if (!drag || drag.pointerId !== event.pointerId || !total) return;
+      const plotWidth = Math.max(1, canvas.clientWidth - 78);
+      const dx = event.clientX - drag.x;
+      const barShift = Math.round((dx / plotWidth) * drag.visible);
+      state.view.offsetBars = clamp(drag.offset + barShift, 0, Math.max(0, total - drag.visible));
+      draw(state.chart);
+      event.preventDefault();
+    });
+
+    const endDrag = (event) => {
+      if (!state.view.drag) return;
+      if (event?.pointerId != null && state.view.drag.pointerId !== event.pointerId) return;
+      try { canvas.releasePointerCapture?.(state.view.drag.pointerId); } catch (_) {}
+      state.view.drag = null;
+      canvas.style.cursor = 'grab';
+    };
+    canvas.addEventListener('pointerup', endDrag);
+    canvas.addEventListener('pointercancel', endDrag);
+    canvas.addEventListener('lostpointercapture', () => endDrag());
+
+    canvas.addEventListener('dblclick', (event) => {
+      event.preventDefault();
+      resetView();
+      if (state.chart) draw(state.chart);
+    });
   }
 
   function boundsOf(zone) {
@@ -121,68 +265,103 @@
     ctx.beginPath(); ctx.moveTo(plot.left, y); ctx.lineTo(plot.right, y); ctx.stroke();
     ctx.setLineDash([]);
     ctx.fillStyle = color;
-    ctx.font = '700 9px ui-monospace, SFMono-Regular, Menlo, monospace';
+    ctx.font = '700 10px ui-monospace, SFMono-Regular, Menlo, monospace';
     ctx.textAlign = 'right';
-    ctx.fillText(`${label} ${fmt(price)}`, plot.right - 4, Math.max(plot.top + 10, y - 4));
+    ctx.fillText(`${label} ${fmt(price)}`, plot.right - 4, Math.max(plot.top + 12, y - 4));
     ctx.restore();
   }
 
   function draw(data) {
     const canvas = $('otr8OverviewCanvas');
     if (!canvas) return;
-    const candles = data?.candles || [];
-    $('otr8ChartEmpty').style.display = candles.length ? 'none' : 'block';
+    const allCandles = data?.candles || [];
+    $('otr8ChartEmpty').style.display = allCandles.length ? 'none' : 'block';
     const parent = canvas.parentElement;
     const width = Math.max(1, parent.clientWidth);
     const height = Math.max(1, parent.clientHeight);
-    const ratio = Math.min(window.devicePixelRatio || 1, 2);
-    canvas.width = Math.round(width * ratio); canvas.height = Math.round(height * ratio);
+    const ratio = Math.min(window.devicePixelRatio || 1, 2.5);
+    canvas.width = Math.round(width * ratio);
+    canvas.height = Math.round(height * ratio);
     const ctx = canvas.getContext('2d');
-    ctx.setTransform(ratio, 0, 0, ratio, 0, 0); ctx.clearRect(0, 0, width, height);
-    if (!candles.length) return;
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+    if (!allCandles.length) return;
+
+    const windowState = chartWindow(allCandles.length);
+    const candles = allCandles.slice(windowState.start, windowState.end);
+    const firstTime = timeMs(candles[0]?.close_time || candles[0]?.open_time);
+    const lastTime = timeMs(candles.at(-1)?.close_time || candles.at(-1)?.open_time);
+    const inWindow = (rawTime) => {
+      const t = timeMs(rawTime);
+      if (t === null || firstTime === null || lastTime === null) return true;
+      return t >= firstTime && t <= lastTime;
+    };
+    const visibleSetups = (data.setups || []).filter((s) => inWindow(s.created_at)).slice(-40);
 
     const prices = [];
     candles.forEach((c) => { [c.low, c.high].forEach((v) => { const n = num(v); if (n !== null) prices.push(n); }); });
-    (data.setups || []).slice(-24).forEach((s) => {
+    visibleSetups.forEach((s) => {
       [s.entry_price, s.stop_price, s.target_price].forEach((v) => { const n = num(v); if (n !== null) prices.push(n); });
       [s.overlay?.fvg, s.overlay?.order_block].forEach((z) => { const b = boundsOf(z); if (b) prices.push(b.low, b.high); });
     });
     const plan = latestPlan(data);
     if (plan) [plan.entry_price, plan.stop_price, plan.target_price].forEach((v) => { const n = num(v); if (n !== null) prices.push(n); });
     let low = Math.min(...prices), high = Math.max(...prices);
-    const pad = Math.max((high - low) * .08, Math.abs(high || 1) * .0002); low -= pad; high += pad;
-    const plot = { left: 10, right: width - 68, top: 16, bottom: height - 24 };
+    const pad = Math.max((high - low) * .08, Math.abs(high || 1) * .0002);
+    low -= pad;
+    high += pad;
+    const plot = { left: 10, right: width - 72, top: 16, bottom: height - 28 };
     const pw = Math.max(1, plot.right - plot.left), ph = Math.max(1, plot.bottom - plot.top);
     const xFor = (i) => plot.left + (candles.length === 1 ? pw / 2 : (i / (candles.length - 1)) * pw);
     const yFor = (p) => plot.bottom - ((p - low) / Math.max(.000001, high - low)) * ph;
 
-    ctx.strokeStyle = '#171717'; ctx.fillStyle = '#666'; ctx.lineWidth = 1; ctx.font = '8px ui-monospace, SFMono-Regular, Menlo, monospace';
+    ctx.strokeStyle = '#1b232c';
+    ctx.fillStyle = '#8c99a7';
+    ctx.lineWidth = 1;
+    ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
     for (let i = 0; i <= 5; i += 1) {
       const y = plot.top + (i / 5) * ph, p = high - (i / 5) * (high - low);
-      ctx.beginPath(); ctx.moveTo(plot.left, y); ctx.lineTo(plot.right, y); ctx.stroke(); ctx.fillText(fmt(p), plot.right + 5, y + 3);
+      ctx.beginPath(); ctx.moveTo(plot.left, y); ctx.lineTo(plot.right, y); ctx.stroke();
+      ctx.textAlign = 'left';
+      ctx.fillText(fmt(p), plot.right + 6, y + 3);
     }
 
     const nearest = (rawTime) => {
-      const target = new Date(rawTime || '').getTime();
-      if (!Number.isFinite(target)) return Math.max(0, candles.length - 1);
+      const target = timeMs(rawTime);
+      if (target === null) return Math.max(0, candles.length - 1);
       let best = 0, dist = Infinity;
-      candles.forEach((c, i) => { const t = new Date(c.close_time || c.open_time).getTime(); const d = Math.abs(t - target); if (d < dist) { dist = d; best = i; } });
+      candles.forEach((c, i) => {
+        const t = timeMs(c.close_time || c.open_time);
+        if (t === null) return;
+        const d = Math.abs(t - target);
+        if (d < dist) { dist = d; best = i; }
+      });
       return best;
     };
     const zone = (z, stroke, fill) => {
       const b = boundsOf(z); if (!b) return;
-      const start = nearest(z.formed_at || z.candle_time || z.time); const end = Math.min(candles.length - 1, start + Math.max(8, Math.round(candles.length * .09)));
+      const start = nearest(z.formed_at || z.candle_time || z.time);
+      const end = Math.min(candles.length - 1, start + Math.max(8, Math.round(candles.length * .09)));
       const x = xFor(start), right = xFor(end), top = yFor(b.high), bottom = yFor(b.low);
-      ctx.fillStyle = fill; ctx.strokeStyle = stroke; ctx.fillRect(x, top, Math.max(3, right - x), Math.max(1, bottom - top)); ctx.strokeRect(x, top, Math.max(3, right - x), Math.max(1, bottom - top));
+      ctx.fillStyle = fill; ctx.strokeStyle = stroke;
+      ctx.fillRect(x, top, Math.max(3, right - x), Math.max(1, bottom - top));
+      ctx.strokeRect(x, top, Math.max(3, right - x), Math.max(1, bottom - top));
     };
-    (data.setups || []).slice(-24).forEach((s) => { zone(s.overlay?.fvg, '#54879c', 'rgba(84,135,156,.14)'); zone(s.overlay?.order_block, '#a48858', 'rgba(164,136,88,.15)'); });
+    visibleSetups.forEach((s) => {
+      zone(s.overlay?.fvg, '#54879c', 'rgba(84,135,156,.14)');
+      zone(s.overlay?.order_block, '#a48858', 'rgba(164,136,88,.15)');
+    });
 
-    const spacing = pw / Math.max(1, candles.length - 1), body = Math.max(1, Math.min(9, spacing * .64));
+    const spacing = pw / Math.max(1, candles.length - 1);
+    const body = Math.max(1.5, Math.min(14, spacing * .68));
     candles.forEach((c, i) => {
-      const o = num(c.open), h = num(c.high), l = num(c.low), cl = num(c.close); if ([o, h, l, cl].some((v) => v === null)) return;
-      const color = cl >= o ? '#58ba84' : '#d76565', x = xFor(i); ctx.strokeStyle = color; ctx.fillStyle = color;
+      const o = num(c.open), h = num(c.high), l = num(c.low), cl = num(c.close);
+      if ([o, h, l, cl].some((v) => v === null)) return;
+      const color = cl >= o ? '#58ba84' : '#d76565', x = xFor(i);
+      ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(x, yFor(h)); ctx.lineTo(x, yFor(l)); ctx.stroke();
-      const top = Math.min(yFor(o), yFor(cl)); ctx.fillRect(x - body / 2, top, body, Math.max(1, Math.abs(yFor(o) - yFor(cl))));
+      const top = Math.min(yFor(o), yFor(cl));
+      ctx.fillRect(x - body / 2, top, body, Math.max(1.5, Math.abs(yFor(o) - yFor(cl))));
     });
 
     if (plan) {
@@ -191,12 +370,19 @@
       drawLine(ctx, plot, yFor, plan.target_price, '#58ba84', 'TP');
     }
 
-    ctx.fillStyle = '#666'; ctx.font = '8px ui-monospace, SFMono-Regular, Menlo, monospace';
+    ctx.fillStyle = '#8c99a7';
+    ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
     [0, .33, .66, 1].forEach((part, pos) => {
-      const i = Math.round((candles.length - 1) * part), d = new Date(candles[i]?.close_time || candles[i]?.open_time || '');
+      const i = Math.round((candles.length - 1) * part);
+      const d = new Date(candles[i]?.close_time || candles[i]?.open_time || '');
       const label = Number.isNaN(d.getTime()) ? '--' : d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-      ctx.textAlign = pos === 0 ? 'left' : (pos === 3 ? 'right' : 'center'); ctx.fillText(label, xFor(i), height - 7);
+      ctx.textAlign = pos === 0 ? 'left' : (pos === 3 ? 'right' : 'center');
+      ctx.fillText(label, xFor(i), height - 8);
     });
+
+    $('otr8ChartNavState').textContent = viewLabel(allCandles.length, windowState);
+    const tf = $('otr8OverviewTf')?.value || data?.timeframe || '--';
+    $('otr8ChartTitle').textContent = `GC · ${tf} · ${windowState.visible}/${allCandles.length} bars`;
   }
 
   function renderPlan(data) {
@@ -219,7 +405,7 @@
     $('otr8Mode').textContent = mode; $('otr8Mode').className = `otr8-chart-chip ${mode === 'LIVE' ? 'live' : (mode === 'REPLAY' ? 'replay' : '')}`;
     $('otr8Feed').textContent = `FEED ${feed}`; $('otr8Feed').className = `otr8-chart-chip ${['LIVE','REPLAY'].includes(feed) ? 'good' : (feed === 'STALE' ? 'warn' : '')}`;
     $('otr8TfState').textContent = tf.toUpperCase(); $('otr8Updated').textContent = `UPDATED ${shortTime(data?.generated_at)}`;
-    const last = data?.candles?.at(-1); $('otr8ChartTitle').textContent = `GC · ${tf} · ${(data?.candles || []).length} bars`; $('otr8LastPrice').textContent = fmt(last?.close);
+    const last = data?.candles?.at(-1); $('otr8LastPrice').textContent = fmt(last?.close);
   }
 
   function decisionReason(row) {
@@ -230,8 +416,13 @@
   }
 
   function renderDecisions(payload, tf) {
-    const rows = (payload?.recent_decisions || []).filter((row) => String(row.symbol || '').toUpperCase() === 'GC' && String(row.timeframe || '').toLowerCase() === tf).slice(0, 8);
-    if (!rows.length) { $('otr8DecisionTape').innerHTML = '<div class="empty-state">No OTR 8.0 decisions on this timeframe yet.</div>'; return; }
+    const rows = (payload?.recent_decisions || [])
+      .filter((row) => String(row.symbol || '').toUpperCase() === 'GC' && String(row.timeframe || '').toLowerCase() === tf)
+      .slice(0, 8);
+    if (!rows.length) {
+      $('otr8DecisionTape').innerHTML = '<div class="empty-state">No OTR 8.0 decisions on this timeframe yet.</div>';
+      return;
+    }
     $('otr8DecisionTape').innerHTML = rows.map((row) => `
       <div class="otr8-decision-row">
         <time>${esc(shortTime(row.created_at))}</time>
@@ -246,23 +437,48 @@
     return response.json();
   }
 
+  function preserveHistoricalAnchor(previous, next) {
+    if (!previous?.candles?.length || !next?.candles?.length || state.view.offsetBars <= 0) return;
+    const priorNewest = timeMs(previous.candles.at(-1)?.close_time || previous.candles.at(-1)?.open_time);
+    if (priorNewest === null) return;
+    const index = next.candles.findIndex((c) => timeMs(c.close_time || c.open_time) === priorNewest);
+    if (index < 0) return;
+    const addedAfterAnchor = next.candles.length - 1 - index;
+    if (addedAfterAnchor > 0) state.view.offsetBars += addedAfterAnchor;
+  }
+
   async function refresh() {
     if (state.busy || document.hidden || !$('otr8OverviewTf')) return;
     state.busy = true;
-    const tf = $('otr8OverviewTf').value, bars = $('otr8OverviewBars').value;
+    const tf = $('otr8OverviewTf').value;
+    const requestedBars = selectedBars();
+    const historyLimit = Math.max(HISTORY_BARS, requestedBars);
     try {
       const [chart, decisions] = await Promise.all([
-        loadJson(`/market/api/chart?symbol=GC&timeframe=${encodeURIComponent(tf)}&limit=${encodeURIComponent(bars)}`),
+        loadJson(`/market/api/chart?symbol=GC&timeframe=${encodeURIComponent(tf)}&limit=${encodeURIComponent(historyLimit)}`),
         loadJson('/market/api/otr8').catch(() => ({ recent_decisions: [] })),
       ]);
-      state.chart = chart; state.decisions = decisions; renderStatus(chart, tf); renderPlan(chart); renderDecisions(decisions, tf); draw(chart);
+      preserveHistoricalAnchor(state.chart, chart);
+      state.chart = chart;
+      state.decisions = decisions;
+      renderStatus(chart, tf);
+      renderPlan(chart);
+      renderDecisions(decisions, tf);
+      draw(chart);
     } catch (error) {
-      $('otr8Feed').textContent = 'CHART ERROR'; $('otr8Feed').className = 'otr8-chart-chip warn'; $('otr8Updated').textContent = String(error.message || error);
+      $('otr8Feed').textContent = 'CHART ERROR';
+      $('otr8Feed').className = 'otr8-chart-chip warn';
+      $('otr8Updated').textContent = String(error.message || error);
     } finally {
-      state.busy = false; clearTimeout(state.timer); state.timer = setTimeout(refresh, 2000);
+      state.busy = false;
+      clearTimeout(state.timer);
+      state.timer = setTimeout(refresh, 2000);
     }
   }
 
-  function boot() { buildSurface(); if ($('otr8OverviewChart')) refresh(); }
+  function boot() {
+    buildSurface();
+    if ($('otr8OverviewChart')) refresh();
+  }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot, { once: true }); else boot();
 })();
