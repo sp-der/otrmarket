@@ -48,8 +48,6 @@ def _install_4h_context_72t() -> None:
     if "4h" not in runtime.candles.timeframes:
         runtime.candles.timeframes = tuple(runtime.candles.timeframes) + ("4h",)
 
-    # Market-map research can see the 4H structure. Existing execution grades
-    # are intentionally not hard-blocked by it yet; 4H begins as context/evidence.
     if "4h" not in market_intelligence.CONTEXT_TIMEFRAMES:
         market_intelligence.CONTEXT_TIMEFRAMES = tuple(market_intelligence.CONTEXT_TIMEFRAMES) + ("4h",)
     execution_quality.BAR_SECONDS["4h"] = 14_400
@@ -73,13 +71,7 @@ def _install_4h_context_72t() -> None:
 
 
 def _install_single_symbol_execution_guard_72t() -> None:
-    """Make one active/pending idea per symbol an executor invariant.
-
-    Upstream quality gates already reject duplicate GC exposure. This second
-    barrier lives at the final paper-order registration point so candle-close,
-    intrabar, continuation, recovery, or future strategy paths cannot create a
-    second executable Gold idea even if an upstream wrapper regresses.
-    """
+    """Make one active/pending idea per symbol an executor invariant."""
     marker = "_otr_single_symbol_guard_72t"
     if getattr(runtime.paper, marker, False):
         return
@@ -164,9 +156,6 @@ def _reconcile_active_connection_72t(connection, event_time=None, current_price=
     if not _table_exists_72t(connection, "paper_trades") or not _table_exists_72t(connection, "strategy_setups"):
         return summary
 
-    # Training is reinstalled/backfilled immediately after reconciliation. Drop
-    # only its paper-trade triggers here so repairing a stale ledger row cannot
-    # be blocked by an old trigger definition from a prior container.
     connection.executescript(
         """
         DROP TRIGGER IF EXISTS training_trade_insert_72t;
@@ -191,10 +180,8 @@ def _reconcile_active_connection_72t(connection, event_time=None, current_price=
         """
     ).fetchall()
 
-    # First remove pending orders that could not still be alive at the current
-    # replay event time. This is the common stale-row case after a restart.
     for row in rows:
-        setup_id, symbol, timeframe, _direction, status, created_at, _updated_at = row
+        setup_id, _symbol, timeframe, _direction, status, created_at, _updated_at = row
         if str(status).upper() != "PENDING":
             continue
         created = _parse_time_72t(created_at)
@@ -227,24 +214,16 @@ def _reconcile_active_connection_72t(connection, event_time=None, current_price=
     for row in survivors:
         by_symbol.setdefault(str(row[1]).upper(), []).append(row)
 
-    for symbol, items in by_symbol.items():
+    for _symbol, items in by_symbol.items():
         if len(items) <= 1:
             continue
         opens = [row for row in items if str(row[4]).upper() == "OPEN"]
         pendings = [row for row in items if str(row[4]).upper() == "PENDING"]
         if len(opens) > 1:
-            # Never silently flatten a genuinely open exposure during recovery.
-            # Block all new registrations and surface the anomaly in Railway.
             summary["multiple_open"] += len(opens)
             continue
 
-        if opens:
-            keep_id = str(opens[0][0])
-        else:
-            # If two valid pending ideas somehow survived, preserve the first
-            # risk slot and invalidate later conflicting orders.
-            keep_id = str(items[0][0])
-
+        keep_id = str(opens[0][0]) if opens else str(items[0][0])
         for row in pendings:
             setup_id = str(row[0])
             if setup_id == keep_id:
@@ -303,7 +282,7 @@ def _install_idempotent_training_trade_triggers_on_connection_72t(connection) ->
           UPDATE training_trades_72t SET
             build='7.2T',symbol=NEW.symbol,timeframe=NEW.timeframe,direction=NEW.direction,
             status=NEW.status,opened_at=NEW.opened_at,closed_at=NEW.closed_at,
-            result=NEW.result,result_r=NEW.result_risk_dollars,
+            result=NEW.result,result_r=NEW.result_r,
             risk_dollars=NEW.risk_dollars,result_dollars=NEW.result_dollars,
             updated_at=NEW.updated_at
           WHERE setup_id=NEW.setup_id
@@ -347,9 +326,6 @@ def main() -> None:
     op72s.op72r.op72q.op72.op71._patch_runtime_manifest_71()
     op72s.op72r.op72q.op72._patch_runtime_manifest_72()
 
-    # Keep 7.2S's database-authoritative VERIFY ledger first. Training capture
-    # uses the same stable run marker but writes to durable research tables that
-    # are deliberately not part of a replay scoreboard wipe.
     op72s._install_verify_trade_tag_trigger_72s()
     derived = backfill_4h_candles_72t()
     _install_4h_context_72t()
