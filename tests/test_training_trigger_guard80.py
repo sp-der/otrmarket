@@ -123,9 +123,6 @@ class TrainingTriggerGuard80Tests(unittest.TestCase):
             ),
         )
 
-        # Production persists the same setup with INSERT ... ON CONFLICT DO UPDATE.
-        # A trigger using INSERT OR IGNORE fails here because SQLite lets the outer
-        # conflict policy win. The explicit trigger UPSERT must remain idempotent.
         for status in ("OPEN", "CLOSED"):
             con.execute(
                 """
@@ -162,6 +159,110 @@ class TrainingTriggerGuard80Tests(unittest.TestCase):
         self.assertEqual(
             rows,
             [("VERIFY-test", "t1", "8.0", "CLOSED", "WIN", 2.0, 500.0)],
+        )
+        con.close()
+
+    def test_outer_intelligence_upsert_cannot_duplicate_training_metrics(self):
+        con = self._connection()
+        con.executescript(
+            """
+            CREATE TABLE trade_intelligence (
+                setup_id TEXT PRIMARY KEY,
+                symbol TEXT,
+                timeframe TEXT,
+                strategy TEXT,
+                trigger_type TEXT,
+                entry_type TEXT,
+                result TEXT,
+                result_r REAL,
+                risk_reward REAL,
+                displacement_body_ratio REAL,
+                displacement_range_ratio REAL,
+                fvg_age_bars REAL,
+                htf_timeframe TEXT,
+                htf_bias TEXT,
+                mfe_r REAL,
+                mae_r REAL,
+                duration_seconds REAL,
+                outcome_class TEXT,
+                fingerprint_json TEXT,
+                closed_at TEXT,
+                updated_at TEXT
+            );
+            CREATE TABLE training_trade_metrics_72t (
+                run_id TEXT NOT NULL,
+                setup_id TEXT NOT NULL,
+                build TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                strategy TEXT,
+                trigger_type TEXT,
+                entry_type TEXT,
+                result TEXT,
+                result_r REAL,
+                risk_reward REAL,
+                displacement_body_ratio REAL,
+                displacement_range_ratio REAL,
+                fvg_age_bars REAL,
+                htf_timeframe TEXT,
+                htf_bias TEXT,
+                mfe_r REAL,
+                mae_r REAL,
+                duration_seconds REAL,
+                outcome_class TEXT,
+                fingerprint_json TEXT,
+                closed_at TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (run_id, setup_id)
+            );
+            """
+        )
+        summary = harden_training_trade_triggers_80(con)
+        self.assertEqual(summary["installed"], 4)
+
+        con.execute(
+            """
+            INSERT INTO trade_intelligence(
+                setup_id,symbol,timeframe,strategy,trigger_type,entry_type,
+                result,result_r,risk_reward,mfe_r,mae_r,outcome_class,updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                "t1", "GC", "5m", "ICT_CONFLUENCE", "fvg", "OTE",
+                None, None, 2.0, 0.4, -0.2, "OPEN", "2026-08-03T12:01:00+00:00",
+            ),
+        )
+
+        con.execute(
+            """
+            INSERT INTO trade_intelligence(
+                setup_id,symbol,timeframe,strategy,trigger_type,entry_type,
+                result,result_r,risk_reward,mfe_r,mae_r,outcome_class,closed_at,updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(setup_id) DO UPDATE SET
+                result=excluded.result,
+                result_r=excluded.result_r,
+                mfe_r=excluded.mfe_r,
+                mae_r=excluded.mae_r,
+                outcome_class=excluded.outcome_class,
+                closed_at=excluded.closed_at,
+                updated_at=excluded.updated_at
+            """,
+            (
+                "t1", "GC", "5m", "ICT_CONFLUENCE", "fvg", "OTE",
+                "WIN", 2.0, 2.0, 2.1, -0.2, "TARGET",
+                "2026-08-03T12:05:00+00:00", "2026-08-03T12:05:00+00:00",
+            ),
+        )
+        con.commit()
+
+        rows = con.execute(
+            "SELECT run_id,setup_id,build,result,result_r,mfe_r,outcome_class "
+            "FROM training_trade_metrics_72t"
+        ).fetchall()
+        self.assertEqual(
+            rows,
+            [("VERIFY-test", "t1", "8.0", "WIN", 2.0, 2.1, "TARGET")],
         )
         con.close()
 
