@@ -6,11 +6,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src import main_72s
-
 
 class VerifyTagUpsert80Tests(unittest.TestCase):
     def test_verify_trigger_survives_outer_paper_upsert(self):
+        # Import the late 7.2S wrapper only inside this near-end regression test.
+        # Importing it at module discovery time mutates inherited quality/risk
+        # globals before older compatibility tests execute in the same process.
+        from src import main_72s
+
         old_mode = os.environ.get("OTR_TRADING_MODE")
         old_run = os.environ.get("OTR_VERIFY_RUN_ID")
         old_wipe = os.environ.get("OTR_VERIFY_WIPE_TOKEN")
