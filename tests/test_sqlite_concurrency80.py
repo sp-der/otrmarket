@@ -25,17 +25,18 @@ class Operation80SQLiteConcurrencyTests(unittest.TestCase):
         db.DB_PATH = self.old_path
         self.tempdir.cleanup()
 
-    def test_bootstrap_auto_installs_before_otr_imports(self):
-        output = subprocess.check_output(
-            [
-                sys.executable,
-                "-c",
-                "import src.storage.database as d; print(d.get_connection.__module__)",
-            ],
-            cwd=ROOT,
-            text=True,
-        ).strip()
-        self.assertEqual(output, "src.storage.database_concurrency80")
+    def test_real_80_entrypoints_install_guard_before_inherited_modules(self):
+        for module in ("src.dashboard.server_80", "src.main_80"):
+            output = subprocess.check_output(
+                [
+                    sys.executable,
+                    "-c",
+                    f"import {module}; import src.storage.database as d; print(d.get_connection.__module__)",
+                ],
+                cwd=ROOT,
+                text=True,
+            ).strip().splitlines()[-1]
+            self.assertEqual(output, "src.storage.database_concurrency80")
 
     def test_get_connection_is_readable_while_writer_holds_reserved_lock(self):
         seed = db.get_connection()
@@ -63,6 +64,7 @@ class Operation80SQLiteConcurrencyTests(unittest.TestCase):
             writer.close()
 
     def test_concurrent_bridge_style_writes_and_dashboard_reads(self):
+        old_prune = os.environ.get("OTR_QUOTE_PRUNE_EVERY")
         os.environ["OTR_QUOTE_PRUNE_EVERY"] = "999999"
         errors = []
         start = threading.Event()
@@ -100,21 +102,27 @@ class Operation80SQLiteConcurrencyTests(unittest.TestCase):
             except Exception as exc:  # pragma: no cover - surfaced below
                 errors.append(exc)
 
-        threads = [threading.Thread(target=writer, args=(i,)) for i in range(2)]
-        threads += [threading.Thread(target=reader) for _ in range(4)]
-        for thread in threads:
-            thread.start()
-        start.set()
-        for thread in threads:
-            thread.join(timeout=20)
-
-        self.assertTrue(all(not thread.is_alive() for thread in threads))
-        self.assertEqual(errors, [])
-        con = db.get_connection()
         try:
-            self.assertEqual(con.execute("SELECT COUNT(*) FROM market_quotes").fetchone()[0], 200)
+            threads = [threading.Thread(target=writer, args=(i,)) for i in range(2)]
+            threads += [threading.Thread(target=reader) for _ in range(4)]
+            for thread in threads:
+                thread.start()
+            start.set()
+            for thread in threads:
+                thread.join(timeout=20)
+
+            self.assertTrue(all(not thread.is_alive() for thread in threads))
+            self.assertEqual(errors, [])
+            con = db.get_connection()
+            try:
+                self.assertEqual(con.execute("SELECT COUNT(*) FROM market_quotes").fetchone()[0], 200)
+            finally:
+                con.close()
         finally:
-            con.close()
+            if old_prune is None:
+                os.environ.pop("OTR_QUOTE_PRUNE_EVERY", None)
+            else:
+                os.environ["OTR_QUOTE_PRUNE_EVERY"] = old_prune
 
     def test_prune_uses_nonblocking_wal_policy(self):
         self.assertEqual(db.prune_market_quotes.__module__, "src.storage.database_concurrency80")
