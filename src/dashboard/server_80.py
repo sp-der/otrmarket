@@ -55,7 +55,7 @@ def _install_overview_chart80_assets() -> None:
     css_tag = '<link rel="stylesheet" href="/market/assets/overview-chart80.css?v=8.0-live1">'
     resize_css_tag = '<link rel="stylesheet" href="/market/assets/overview-chart-resize80.css?v=8.0-live2">'
     refresh_css_tag = '<link rel="stylesheet" href="/market/assets/ui-refresh80.css?v=8.0-ui1">'
-    js_tag = '<script src="/market/assets/overview-chart80.js?v=8.0-live1" defer></script>'
+    js_tag = '<script src="/market/assets/overview-chart80.js?v=8.0-live4" defer></script>'
     resize_js_tag = '<script src="/market/assets/overview-chart-resize80.js?v=8.0-live2" defer></script>'
     live_js_tag = '<script src="/market/assets/overview-chart-live80.js?v=8.0-live3" defer></script>'
     refresh_js_tag = '<script src="/market/assets/ui-refresh80.js?v=8.0-ui1" defer></script>'
@@ -173,7 +173,7 @@ def main() -> None:
     engine_module = _promote_engine_80()
     print(
         "Operation 8.0 supervisor: direct clean handoff + NinjaTrader-backed Gold decision chart + Strategy Lab + Execution Lab APIs; "
-        "chart live-refresh + UI readability refresh active; boot wipe disabled unless OTR_FULL_VERIFY_WIPE_ON_BOOT=true; "
+        "chart live-refresh + UI readability + horizontal zoom/pan active; boot wipe disabled unless OTR_FULL_VERIFY_WIPE_ON_BOOT=true; "
         f"engine={engine_module} verify_run_id={run_id or 'inactive'} full_reset_rows={sum(reset_counts.values())}",
         flush=True,
     )
