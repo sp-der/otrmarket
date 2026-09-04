@@ -24,9 +24,9 @@ else
   export DASHBOARD_PORT="${DASHBOARD_PORT:-8000}"
 fi
 
-# Operation 7.2R is the canonical Gold verification runtime. It preserves the
-# 7.2Q 1m quality firewall and clean VERIFY accounting, then adds a narrow GC
-# 5m/15m momentum first-pullback recognition lane for strong moves that never
-# enter the legacy PD-array-first state machine. It never chases the impulse.
-echo "Starting OTR Operation 7.2R supervised runtime on port ${DASHBOARD_PORT}..."
-exec "$PYTHON_BIN" -m src.dashboard.server_72r
+# Operation 7.2S is the canonical Gold verification runtime. It preserves the
+# 7.2R 5m/15m momentum first-pullback lane and 7.2Q 1m quality firewall, then
+# makes VERIFY test identity stable across deployments and makes database-level
+# trade tagging the accounting source of truth for Overview/calendar/history.
+echo "Starting OTR Operation 7.2S supervised runtime on port ${DASHBOARD_PORT}..."
+exec "$PYTHON_BIN" -m src.dashboard.server_72s
