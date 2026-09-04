@@ -47,6 +47,19 @@ class OverviewDecisionChart80Tests(unittest.TestCase):
         self.assertIn("overview-chart-resize80.css?v=8.0-live2", server)
         self.assertIn("overview-chart-resize80.js?v=8.0-live2", server)
 
+    def test_ui_refresh_uses_readable_scale_and_sharp_canvas_text(self):
+        css = (self.static / "ui-refresh80.css").read_text(encoding="utf-8")
+        script = (self.static / "ui-refresh80.js").read_text(encoding="utf-8")
+        server = (self.root / "src" / "dashboard" / "server_80.py").read_text(encoding="utf-8")
+
+        self.assertIn("font-size:15px", css)
+        self.assertIn(".otr-minimal72t .otr-step{font-size:10px", css)
+        self.assertIn(".otr8-decision-row small{font-size:11px", css)
+        self.assertIn("CanvasRenderingContext2D.prototype", script)
+        self.assertIn("10.5px", script)
+        self.assertIn("ui-refresh80.css?v=8.0-ui1", server)
+        self.assertIn("ui-refresh80.js?v=8.0-ui1", server)
+
 
 if __name__ == "__main__":
     unittest.main()
