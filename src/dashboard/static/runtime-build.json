@@ -1,8 +1,0 @@
-{
-  "build": {
-    "operation": "Operation 8.0",
-    "engine": "src.main_80",
-    "architecture": "EXPLICIT_PIPELINE_8_0"
-  },
-  "rules": []
-}
