@@ -1,48 +1,118 @@
-const API='/market/api/research';
-const state={runs:[],run:null,detail:null,trades:[],decisions:[],blocked:[],expirations:null,audits:[],recovery:[],equity:[]};
-const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
-const safe=v=>v===null||v===undefined||v===''?'UNKNOWN':v;
-const num=(v,d=2)=>Number.isFinite(Number(v))?Number(v).toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d}):'—';
-const usd=v=>Number.isFinite(Number(v))?`${Number(v)<0?'-':''}$${Math.abs(Number(v)).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`:'—';
-const pct=v=>Number.isFinite(Number(v))?`${num(v,2)}%`:'—';
-const esc=v=>String(safe(v)).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-async function get(path){const r=await fetch(`${API}${path}`);if(r.status===401){location.href='/market/';throw Error('Authentication required')}if(!r.ok)throw Error((await r.json()).detail||r.statusText);return r.json()}
-function show(view){$$('.view').forEach(x=>x.classList.toggle('active',x.id===`${view}View`));$$('#labNav button').forEach(x=>x.classList.toggle('active',x.dataset.view===view));$('#pageTitle').textContent={runs:'Backtests',report:'Run Detail',trades:'Trade Explorer',decisions:'Decision Explorer',blocked:'Blocked & Missed Setups',coverage:'Data Coverage'}[view];}
-function metric(label,value){return `<div class="metric"><span>${label}</span><strong>${value}</strong></div>`}
-function kv(label,value){return `<div class="kv"><span>${label}</span><strong>${esc(value)}</strong></div>`}
-function metricLine(m={}){return `<div class="statline"><div><span>Trades</span><strong>${safe(m.total_trades)}</strong></div><div><span>Win rate</span><strong>${pct(m.win_rate)}</strong></div><div><span>PF</span><strong>${num(m.profit_factor)}</strong></div><div><span>Net</span><strong>${usd(m.net_pnl)}</strong></div><div><span>Avg R</span><strong>${num(m.average_r)}</strong></div></div>`}
-function renderRuns(){
-  $('#runCount').textContent=`${state.runs.length} RUN${state.runs.length===1?'':'S'}`;
-  $('#runList').classList.toggle('empty',!state.runs.length);
-  $('#runList').innerHTML=state.runs.length?state.runs.map(r=>`<article class="run-row" data-run="${esc(r.run_id)}"><div><strong>${esc(r.run_id)}</strong><small>${esc(r.engine_version)} · ${esc(r.git_commit)}</small>${r.not_valid_for_strategy_evaluation?'<small class="invalid">NOT VALID FOR STRATEGY EVALUATION</small>':''}</div><div><small>MARKETS / CONTRACTS</small><span>${esc((r.markets||[]).join(', '))}</span><small>${esc((r.contracts||[]).join(', '))}</small></div><div><small>MODE / FILL</small><span>${esc(r.replay_mode)}</span><small>${esc(r.fill_model)}</small></div><div><small>RESULT</small><span>${usd(r.metrics?.net_pnl)} · ${safe(r.metrics?.total_trades)} trades</span><small>PF ${num(r.metrics?.profit_factor)} · DD ${usd(r.metrics?.maximum_drawdown_dollars)}</small></div></article>`).join(''):'No research runs found.';
-  $$('.run-row').forEach(row=>row.onclick=()=>selectRun(row.dataset.run));
+const $=s=>document.querySelector(s);
+const esc=v=>String(v??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const num=(v,d=1)=>Number.isFinite(Number(v))?Number(v).toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d}):'—';
+const signed=(v,d=2)=>Number.isFinite(Number(v))?`${Number(v)>=0?'+':''}${num(v,d)}`:'—';
+const pct=v=>Number.isFinite(Number(v))?`${num(v,1)}%`:'—';
+const money=v=>Number.isFinite(Number(v))?`${Number(v)<0?'-':''}$${Math.abs(Number(v)).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`:'—';
+const clsR=v=>Number(v)>0?'positive':Number(v)<0?'negative':'';
+
+async function get(url){
+  const r=await fetch(url,{cache:'no-store'});
+  if(r.status===401){location.href='/market/';throw Error('Authentication required')}
+  if(!r.ok)throw Error(`${r.status}`);
+  return r.json();
 }
-async function selectRun(id){
-  const [detail,equity,trades,decisions,blocked,exp,audits,recovery]=await Promise.all([get(`/runs/${id}`),get(`/runs/${id}/equity`),get(`/runs/${id}/trades`),get(`/runs/${id}/decisions`),get(`/runs/${id}/blocked`),get(`/runs/${id}/pending-expirations`),get(`/runs/${id}/risk-audits`),get(`/runs/${id}/recovery`)]);
-  state.run=id;state.detail=detail;state.equity=equity.items;state.trades=trades.items;state.decisions=decisions.items;state.blocked=blocked.items;state.expirations=exp;state.audits=audits.items;state.recovery=recovery.items;
-  $('#globalWarning').classList.toggle('hidden',!detail.manifest.not_valid_for_strategy_evaluation);renderReport();renderTrades();renderDecisions();renderBlocked();show('report');
+
+function metric(label,value,note=''){
+  return `<article class="metric"><span>${esc(label)}</span><strong>${esc(value)}</strong>${note?`<small>${esc(note)}</small>`:''}</article>`;
 }
-function renderReport(){const d=state.detail,m=d.metrics,x=d.manifest,c=d.costs;
-  $('#runMeta').innerHTML=[`Run ${x.run_id}`,`Parent ${x.parent_run_id||'NONE'}`,x.engine_version,`Commit ${x.git_commit}`,`${x.start_time} → ${x.end_time}`,x.status].map(v=>`<span>${esc(v)}</span>`).join('');
-  $('#summaryCards').innerHTML=[['Net P&L',usd(m.net_pnl)],['Gross P&L',usd(m.gross_pnl)],['Return',pct(m.return_percent)],['Win rate',pct(m.win_rate)],['Profit factor',num(m.profit_factor)],['Trades',safe(m.total_trades)],['Expectancy $',usd(m.expectancy_dollars)],['Expectancy R',num(m.expectancy_r)],['Average R',num(m.average_r)],['Max equity DD $',usd(m.maximum_drawdown_dollars)],['Max equity DD %',pct(m.maximum_drawdown_percent)],['Max intraday DD',usd(m.maximum_intraday_drawdown)],['Starting balance',usd(d.account_status.starting_balance)],['Ending balance',usd(d.account_status.ending_balance)],['Commissions',usd(c.commissions)],['Fees',usd(c.fees)],['Adverse slippage',usd(c.adverse_slippage)],['Price improvement',usd(c.price_improvement)]].map(v=>metric(...v)).join('');
-  const dirs=mDirection(d.segments.direction);$('#directionCards').innerHTML=['bullish','bearish'].map(k=>`<div class="direction-card"><h3>${k==='bullish'?'LONG':'SHORT'}</h3>${metricLine(dirs[k])}</div>`).join('');
-  const names={symbol:'Market',strategy_type:'Strategy',setup_grade:'Grade',timeframe:'Timeframe',session:'Session'};$('#breakdowns').innerHTML=Object.entries(names).map(([field,label])=>`<div class="segment"><h3>${label}</h3><div class="segment-grid">${Object.entries(d.segments[field]||{}).map(([name,v])=>`<div class="segment-card"><div class="name">${esc(name)}</div>${metricLine(v)}</div>`).join('')||'<span class="muted">No segment data.</span>'}</div></div>`).join('');
-  $('#accountStatus').innerHTML=Object.entries(d.account_status).map(([k,v])=>kv(k.replaceAll('_',' '),v)).join('');
-  if(d.account_status.profile_verification==='RESEARCH_REFERENCE_PROFILE')$('#accountStatus').insertAdjacentHTML('afterbegin','<div class="warning">REFERENCE PROFILE — NOT VERIFIED AS DEPLOYED PROP CONFIGURATION</div>');
-  const e=x.execution_config||{},a=x.account_profile||{};$('#assumptions').innerHTML=[['Replay mode',x.replay_mode],['Fill model',x.fill_model],['Slippage',JSON.stringify(e.slippage_ticks??e.slippage??'UNKNOWN')],['Commission',JSON.stringify(e.round_turn_commission??e.commission??'UNKNOWN')],['Fees',JSON.stringify(e.fees??'UNKNOWN')],['Ambiguity policy',x.ambiguity_policy],['Pending lifetimes',JSON.stringify(x.pending_lifetime_bars)],['Execution contracts',(x.contracts||[]).join(', ')],['Account profile',a.profile||a.name||'UNKNOWN'],['Trailing-loss basis',a.trailing_loss_basis||'UNKNOWN'],['Git commit',x.git_commit],['Capture ID',x.capture_id]].map(v=>kv(...v)).join('');
-  $('#recoveryTimeline').classList.toggle('empty',!state.recovery.length);$('#recoveryTimeline').innerHTML=state.recovery.length?state.recovery.map(r=>`<div class="timeline-item"><strong>${esc(r.event_time)}</strong><div>${esc(r.decision||r.event_type)} · ${esc(r.symbol)}</div><small class="muted">${esc(r.reason)}</small></div>`).join(''):'No recovery transitions.';
-  draw($('#equityChart'),state.equity,[['balance','#aaa'],['equity','#8fd8de']]);draw($('#drawdownChart'),state.equity,[['equity_drawdown','#d56b6b'],['realized_drawdown','#aaa'],['intrabar_approximate_drawdown','#f1b84b']]);
+
+function renderCorpus(d){
+  const c=d.corpus||{};
+  $('#corpusCards').innerHTML=[
+    ['Decisions',c.decisions??0,`${c.current_run_decisions??0} this run`],
+    ['Actual outcomes',c.closed_actual_trades??0,`${c.wins??0}W / ${c.losses??0}L`],
+    ['Rejected outcomes',c.resolved_counterfactuals??0,`${c.counterfactual_would_win??0} would win`],
+    ['Missed moves',c.missed_opportunities??0,`${c.market_lessons??0} large-move lessons`],
+    ['Shadow outcomes',c.shadow_closed??0,'research-only variants'],
+    ['Backtest runs',c.backtest_runs??0,'immutable research runs'],
+  ].map(x=>metric(...x)).join('');
 }
-function mDirection(d){return d||{}}
-function draw(canvas,rows,series){const empty=canvas.parentElement.querySelector('.chart-empty');empty.style.display=rows.length?'none':'grid';if(!rows.length)return;const ratio=devicePixelRatio||1,w=canvas.clientWidth,h=canvas.clientHeight;canvas.width=w*ratio;canvas.height=h*ratio;const c=canvas.getContext('2d');c.scale(ratio,ratio);const vals=rows.flatMap(r=>series.map(([k])=>Number(r[k])||0)),min=Math.min(...vals),max=Math.max(...vals),range=max-min||1;c.clearRect(0,0,w,h);series.forEach(([key,color])=>{c.strokeStyle=color;c.lineWidth=1.7;c.beginPath();rows.forEach((r,i)=>{const x=i*(w/(Math.max(rows.length-1,1))),y=h-12-((Number(r[key])||0)-min)/range*(h-24);i?c.lineTo(x,y):c.moveTo(x,y)});c.stroke()});canvas.onmousemove=e=>{const i=Math.max(0,Math.min(rows.length-1,Math.round(e.offsetX/w*(rows.length-1)))),r=rows[i],tip=canvas.parentElement.querySelector('.tooltip');tip.style.display='block';tip.style.left=`${Math.min(e.offsetX+10,w-160)}px`;tip.style.top=`${Math.max(5,e.offsetY-35)}px`;tip.innerHTML=`${esc(r.timestamp)}<br>${series.map(([k])=>`${k}: ${usd(r[k])}`).join('<br>')}`};canvas.onmouseleave=()=>canvas.parentElement.querySelector('.tooltip').style.display='none'}
-const tradeFields={symbol:['All markets','NQ','ES','GC'],strategy_type:['All strategies','ICT / OTE','Rejection Block 10/10','MSS Reversal','Trend Continuation Rearm'],timeframe:['All timeframes','1m','5m','15m','1h'],setup_grade:['All grades','A+','A','B+'],direction:['All directions','bullish','bearish'],session:['All sessions','Asia','Tokyo','London','Premarket','New York','NY afternoon'],recovery_state:['All recovery states','NORMAL','SYMBOL_RECOVERY','ACCOUNT_RECOVERY']};
-function filters(el,fields,handler){el.innerHTML=Object.entries(fields).map(([k,v])=>`<select data-field="${k}">${v.map((x,i)=>`<option value="${i?x:''}">${x}</option>`).join('')}</select>`).join('');el.querySelectorAll('select').forEach(x=>x.onchange=handler)}
-function renderTrades(){filters($('#tradeFilters'),tradeFields,renderTradeRows);renderTradeRows()}
-function renderTradeRows(){const f=Object.fromEntries($$('#tradeFilters select').map(x=>[x.dataset.field,x.value]));const rows=state.trades.filter(r=>Object.entries(f).every(([k,v])=>!v||String(r[k]||'UNKNOWN')===v));$('#tradeBody').innerHTML=rows.length?rows.map(t=>`<tr data-id="${esc(t.trade_id)}"><td>${esc(t.signal_time)}</td><td>${esc(t.symbol)}</td><td>${esc(t.execution_contract)}</td><td>${esc(t.strategy_type)}</td><td>${esc(t.timeframe)}</td><td>${esc(t.session)}</td><td>${esc(t.direction)}</td><td>${esc(t.setup_grade)}</td><td>${safe(t.quantity)}</td><td>${num(t.actual_fill)}</td><td>${num(t.exit_fill)}</td><td>${num(t.realized_r)}</td><td>${usd(t.gross_pnl)}</td><td>${usd(t.costs)}</td><td>${usd(t.net_pnl)}</td><td>${num(t.mfe_r)}R / ${num(t.mae_r)}R<br><small>${esc(t.excursion_quality)}</small></td><td>${esc(t.exit_reason)}</td><td>${esc((t.ambiguity_flags||[]).join(', ')||'NONE')}</td></tr>`).join(''):'<tr><td colspan="18" class="empty">No trades match these filters.</td></tr>';$$('#tradeBody tr[data-id]').forEach(x=>x.onclick=()=>inspectTrade(x.dataset.id))}
-async function inspectTrade(id){const d=await get(`/runs/${state.run}/trades/${id}`),t=d.trade,a=d.risk_audits[0]||{};$('#tradeInspector').classList.remove('hidden');$('#tradeInspector').innerHTML=`<button class="close">Close</button><span class="kicker">COMPLETE STORED RECORD</span><h2>${esc(t.symbol)} ${esc(t.direction)} · ${esc(t.strategy_type)}</h2><h3>Reasoning path</h3><pre class="json">${esc(JSON.stringify(d.reasoning,null,2))}</pre><h3>Risk audit</h3><div class="kv-grid">${['base_risk','evaluation_available_risk','session_multiplier','grade_multiplier','strategy_multiplier','entry_location_multiplier','lifetime_multiplier','recovery_multiplier','pacing_multiplier','final_allowed_risk','per_contract_risk','quantity','actual_risk','unused_risk','source'].map(k=>kv(k.replaceAll('_',' '),a[k])).join('')}</div><h3>Execution</h3><div class="kv-grid">${['pending_time','fill_time','actual_fill','stop_price','target_price','exit_time','exit_fill','commission','fees','adverse_slippage_cost','price_improvement','mfe_r','mae_r','realized_r','net_pnl'].map(k=>kv(k.replaceAll('_',' '),t[k])).join('')}</div>`;$('#tradeInspector .close').onclick=()=>$('#tradeInspector').classList.add('hidden')}
-function renderDecisions(){filters($('#decisionFilters'),{symbol:['All symbols','NQ','ES','GC'],timeframe:['All timeframes','1m','5m','15m','1h'],setup_grade:['All grades','A+','A','B+']},renderDecisionRows);renderDecisionRows()}
-function renderDecisionRows(){const f=Object.fromEntries($$('#decisionFilters select').map(x=>[x.dataset.field,x.value]));const rows=state.decisions.filter(r=>Object.entries(f).every(([k,v])=>!v||String(r[k]||'UNKNOWN')===v));$('#decisionBody').innerHTML=rows.length?rows.map(r=>`<tr><td>${esc(r.event_time)}</td><td>${esc(r.event_type)}</td><td>${esc(r.symbol)}</td><td>${esc(r.timeframe)}</td><td>${esc(r.strategy_type)}</td><td>${esc(r.setup_grade)}</td><td>${esc(r.decision)}</td><td>${esc(r.reason)}</td><td>${num(r.quality_score)}</td><td>${num(r.risk_reward)}</td></tr>`).join(''):'<tr><td colspan="10" class="empty">No decisions match these filters.</td></tr>'}
-function renderBlocked(){const card=r=>`<div class="decision-card"><strong>${esc(r.event_time)} · ${esc(r.symbol)} ${esc(r.timeframe)}</strong><div>${esc(r.strategy_type)} · ${esc(r.direction)} · ${esc(r.setup_grade)} · score ${num(r.quality_score)} · R:R ${num(r.risk_reward)}</div><div class="reason">${esc(r.reason||r.decision)}</div><small class="muted">OTE ${esc(JSON.stringify(r.ote||{}))} · SMT ${esc(JSON.stringify(r.smt||{}))} · recovery ${esc(JSON.stringify(r.recovery_detail||{}))}</small></div>`;$('#blockedList').classList.toggle('empty',!state.blocked.length);$('#blockedList').innerHTML=state.blocked.length?state.blocked.map(card).join(''):'No blocked setups.';const e=state.expirations;$('#expirationStats').innerHTML=(e?.by_timeframe||[]).map(x=>`<span class="chip">${esc(x.timeframe)}: ${x.count} expired · ${x.structure_valid} valid · ${x.unknown} unknown</span>`).join('');$('#expirationList').innerHTML=e?.items?.length?e.items.map(card).join(''):'No expired pending setups.';$('#riskAudits').innerHTML=state.audits.length?state.audits.map(a=>`<div class="decision-card"><strong>${esc(a.setup_id)}</strong>${a.no_reapplication?'<div class="warning">OPERATION_7_FINAL_ALLOWED_RISK_NO_REAPPLICATION</div>':''}${['base_risk','evaluation_available_risk','session_multiplier','grade_multiplier','strategy_multiplier','entry_location_multiplier','lifetime_multiplier','recovery_multiplier','pacing_multiplier','final_allowed_risk','per_contract_risk','quantity','actual_risk','unused_risk'].map(k=>kv(k.replaceAll('_',' '),a[k])).join('')}</div>`).join(''):'No risk audits.'}
-async function renderCoverage(){const d=await get(`/coverage${state.detail?`?capture_id=${encodeURIComponent(state.detail.manifest.capture_id)}`:''}`);$('#coverageWarning').classList.toggle('hidden',!d.warning);$('#coverageWarning').textContent=d.warning||'';$('#coverageCards').classList.toggle('empty',!d.rows.length);$('#coverageCards').innerHTML=d.rows.length?d.rows.map(r=>`<div class="coverage-card"><h3>${esc(r.root)} · ${esc(r.contract)}</h3><small class="muted">${esc(r.start)} → ${esc(r.end)}</small><div class="bar"><i style="width:${Math.max(0,Math.min(100,r.coverage_percentage))}%"></i></div>${kv('Events',r.events)}${Object.entries(r.bars).map(([k,v])=>kv(`${k} bars`,v)).join('')}${kv('Gaps',r.gaps)}${kv('Coverage',pct(r.coverage_percentage))}</div>`).join(''):'No historical coverage found.';$('#integrityFindings').innerHTML=d.findings.map(f=>`<div class="decision-card"><strong>${esc(f.severity)} · ${esc(f.finding_type)}</strong><div>${esc(f.root_symbol)} ${esc(f.contract)} ${esc(f.timeframe)}</div><small class="muted">${esc(f.details)}</small></div>`).join('')}
-$('#labNav').onclick=e=>{const b=e.target.closest('button[data-view]');if(!b)return;if(b.dataset.view!=='runs'&&!state.run&&b.dataset.view!=='coverage')return;show(b.dataset.view);if(b.dataset.view==='coverage')renderCoverage()};
-(async()=>{try{state.runs=(await get('/runs')).runs;renderRuns()}catch(e){$('#runList').textContent=`Research API unavailable: ${e.message}`}})();
+
+function renderReadiness(d){
+  const r=d.readiness||{};
+  $('#readinessValue').textContent=pct(r.overall??0);
+  $('#labStage').textContent=String(r.stage||'COLLECTING').replaceAll('_',' ');
+  const items=[
+    ['Decision recorder',r.decision_recorder],
+    ['Outcome labels',r.outcome_labels],
+    ['Missed-move library',r.missed_move_library],
+    ['Shadow ranker',r.shadow_ranker],
+  ];
+  $('#readinessBars').innerHTML=items.map(([label,value])=>`<div class="readiness-item"><div class="readiness-line"><span>${esc(label)}</span><strong>${pct(value??0)}</strong></div><div class="progress"><i style="width:${Math.max(0,Math.min(100,Number(value)||0))}%"></i></div></div>`).join('');
+}
+
+function renderRanker(d){
+  const rows=d.shadow_ranker||[];
+  const el=$('#rankerList');
+  el.classList.toggle('empty',!rows.length);
+  el.innerHTML=rows.length?rows.map(r=>`<div class="rank-row"><div class="rank-top"><div><div class="rank-title">${esc(r.timeframe)} · ${esc(r.strategy)}</div><div class="rank-meta"><span>${r.sample} samples</span><span>${pct(r.win_rate)} win</span><span class="${clsR(r.avg_r)}">${signed(r.avg_r)}R avg</span><span>${pct(r.confidence)} confidence</span></div></div><div><span class="status ${String(r.status||'').toLowerCase()}">${esc(r.status)}</span><div class="rank-score">${num(r.evidence_score,1)}</div></div></div></div>`).join(''):'Collecting closed outcomes.';
+}
+
+function renderTargets(d){
+  const x=d.extended_targets||{};
+  const sample=Number(x.sample||0);
+  const rate=(n)=>sample?`${Math.round(Number(n||0)/sample*100)}%`:'—';
+  $('#targetAudit').innerHTML=[['1R',x.reached_1r],['2R',x.reached_2r],['3R',x.reached_3r],['4R',x.reached_4r]].map(([label,value])=>`<div class="target-cell"><span>Reached ${label}</span><strong>${rate(value)}</strong><small class="muted">${value||0}/${sample}</small></div>`).join('');
+}
+
+function renderMissed(d){
+  const rows=d.recent_missed||[];
+  $('#missedCount').textContent=`${d.corpus?.missed_opportunities||0} MISSED`;
+  const el=$('#missedList');el.classList.toggle('empty',!rows.length);
+  el.innerHTML=rows.length?rows.map(r=>`<article class="event-card"><strong>${esc(r.timeframe)} · ${esc(String(r.direction||'').toUpperCase())} · ${signed(r.move_points,1)} pts</strong><div class="event-meta"><span>${esc(r.started_at)}</span><span>${esc(r.setup_status||'NO CANDIDATE')}</span></div><p>${esc(r.summary||r.block_reason||'Large move was observed without an executable setup candidate.')}</p></article>`).join(''):'No missed large-move lessons yet.';
+}
+
+function renderCounterfactuals(d){
+  const rows=d.recent_counterfactuals||[];
+  const el=$('#counterfactualList');el.classList.toggle('empty',!rows.length);
+  el.innerHTML=rows.length?rows.map(r=>`<div class="counter-row"><div class="counter-top"><strong>${esc(r.timeframe)} · ${esc(String(r.direction||'').toUpperCase())}</strong><span class="status ${String(r.outcome||'').includes('WIN')?'promising':String(r.outcome||'').includes('LOSE')?'weak':''}">${esc(r.outcome)}</span></div><div class="counter-meta"><span>MFE ${signed(r.max_favorable_r)}R</span><span>MAE ${signed(r.max_adverse_r)}R</span><span>${esc(r.blocked_status)}</span></div><p>${esc(r.blocked_reason||'Blocked by the live quality pipeline.')}</p></div>`).join(''):'No resolved rejected setups yet.';
+}
+
+function renderFeatures(d){
+  const rows=d.top_learning_features||[];
+  const el=$('#featureList');el.classList.toggle('empty',!rows.length);
+  el.innerHTML=rows.length?rows.map(r=>`<div class="feature-row"><div><strong>${esc(String(r.feature||'').replaceAll('_',' '))}</strong><small>${r.bullish_hits||0} bullish · ${r.bearish_hits||0} bearish</small></div><div><strong>${r.lesson_hits||0}</strong><small>${num(r.total_move_points,1)} pts</small></div></div>`).join(''):'No feature evidence yet.';
+}
+
+function renderWalk(d){
+  const w=d.walk_forward||{};
+  $('#walkStatus').textContent=String(w.status||'COLLECTING').replaceAll('_',' ');
+  if(w.status==='COLLECTING'){
+    $('#walkForward').innerHTML=`<div class="walk-big">${w.sample||0}/${w.minimum_sample||20}</div><p class="fineprint">${esc(w.note||'Collecting chronological outcomes.')}</p>`;return;
+  }
+  $('#walkForward').innerHTML=`<div class="walk-big">70 / 30</div><div class="walk-stats"><div class="walk-stat"><span>TRAIN</span><strong>${w.train_sample||0}</strong></div><div class="walk-stat"><span>UNSEEN TEST</span><strong>${w.test_sample||0}</strong></div><div class="walk-stat"><span>SELECTED</span><strong>${w.selected_test_sample||0}</strong></div><div class="walk-stat"><span>SELECTED R</span><strong class="${clsR(w.selected_test_total_r)}">${signed(w.selected_test_total_r)}R</strong></div><div class="walk-stat"><span>SELECTED AVG</span><strong class="${clsR(w.selected_test_avg_r)}">${signed(w.selected_test_avg_r)}R</strong></div><div class="walk-stat"><span>ALL TEST AVG</span><strong class="${clsR(w.all_test_avg_r)}">${signed(w.all_test_avg_r)}R</strong></div></div><p class="fineprint">${esc(w.note||'Research-only chronological holdout.')}</p>`;
+}
+
+function renderMacro(d){
+  const m=d.macro_4h||{};const direction=String(m.direction||'unknown').toLowerCase();
+  $('#macro4h').innerHTML=`<span class="eyebrow">4H MACRO</span><div class="macro-direction ${esc(direction)}">${esc(direction)}</div><p>${esc(m.note||'4H context is warming up.')}</p><div class="counter-meta"><span>${m.bars||0} bars</span><span>${m.last_close?money(m.last_close):'—'}</span><span>${esc(m.last_close_time||'')}</span></div>`;
+}
+
+function renderDecisions(d){
+  const rows=d.recent_decisions||[];const el=$('#decisionList');el.classList.toggle('empty',!rows.length);
+  el.innerHTML=rows.length?rows.map(r=>`<div class="decision-row"><div><strong>${esc(r.timeframe)} · ${esc(String(r.direction||'').toUpperCase())}</strong><div class="decision-meta"><span>${esc(r.created_at)}</span></div></div><div><strong>${esc(r.strategy)}</strong><div class="decision-meta"><span>${esc(r.grade||'—')}</span><span>${num(r.risk_reward,2)}R offered</span></div></div><p>${esc(String(r.status||'').replaceAll('_',' '))}</p><span class="status">${esc(r.trigger_type||'—')}</span></div>`).join(''):'Waiting for decisions.';
+}
+
+function renderRuns(runs){
+  $('#runCount').textContent=`${runs.length} RUN${runs.length===1?'':'S'}`;const el=$('#runList');el.classList.toggle('empty',!runs.length);
+  el.innerHTML=runs.length?runs.slice(0,12).map(r=>`<div class="run-row"><div><strong>${esc(r.run_id)}</strong><div class="run-meta"><span>${esc(r.engine_version)}</span><span>${esc(r.replay_mode)}</span></div></div><div><strong>${r.metrics?.total_trades??0} trades</strong><div class="run-meta"><span>${pct(r.metrics?.win_rate)}</span><span>PF ${num(r.metrics?.profit_factor,2)}</span></div></div><div><strong class="${clsR(r.metrics?.net_pnl)}">${money(r.metrics?.net_pnl)}</strong><div class="run-meta"><span>DD ${money(r.metrics?.maximum_drawdown_dollars)}</span></div></div></div>`).join(''):'No research runs found.';
+}
+
+function renderTraining(d){
+  $('#labRun').textContent=`RUN ${d.run_id||'—'} · ${d.build||'7.2T'}`;
+  $('#labUpdated').textContent=d.generated_at?`Updated ${new Date(d.generated_at).toLocaleTimeString()}`:'Waiting for data';
+  renderCorpus(d);renderReadiness(d);renderRanker(d);renderTargets(d);renderMissed(d);renderCounterfactuals(d);renderFeatures(d);renderWalk(d);renderMacro(d);renderDecisions(d);
+}
+
+async function refreshTraining(){
+  try{renderTraining(await get(`/market/api/training?lab=${Date.now()}`))}
+  catch(e){$('#labStage').textContent='OFFLINE';$('#labUpdated').textContent=`Training API unavailable: ${e.message}`}
+  setTimeout(refreshTraining,5000);
+}
+
+(async()=>{
+  refreshTraining();
+  try{const r=await get('/market/api/research/runs');renderRuns(r.runs||[])}
+  catch(e){$('#runList').textContent=`Backtest store unavailable: ${e.message}`}
+})();
