@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from fastapi import Request
 
 from src.dashboard import server_72s as base
@@ -17,6 +15,8 @@ def _promote_engine_72t() -> str:
 def _install_training_api_72t() -> None:
     from src.dashboard import app as dashboard
 
+    # Keep 4H chart/context and Strategy Lab available, but let the normal
+    # dashboard render its original pre-7.2T Overview again.
     dashboard.CHART_TIMEFRAMES.add("4h")
     expected = f"{dashboard.BASE_PATH}/api/training"
     if any(getattr(route, "path", None) == expected for route in dashboard.app.routes):
@@ -34,33 +34,14 @@ def _install_training_api_72t() -> None:
     )
 
 
-def _patch_minimal_dashboard_assets_72t() -> None:
-    static_dir = Path(__file__).resolve().parent / "static"
-    path = static_dir / "index.html"
-    if not path.exists():
-        return
-    text = path.read_text(encoding="utf-8")
-    css_tag = '<link rel="stylesheet" href="/market/assets/dashboard-minimal72t.css?v=7.2t4">'
-    js_tag = '<script src="/market/assets/dashboard-minimal72t.js?v=7.2t4" defer></script>'
-    changed = False
-    if css_tag not in text and "</head>" in text:
-        text = text.replace("</head>", f"  {css_tag}\n</head>", 1)
-        changed = True
-    if js_tag not in text and "</body>" in text:
-        text = text.replace("</body>", f"{js_tag}\n</body>", 1)
-        changed = True
-    if changed:
-        path.write_text(text, encoding="utf-8")
-
-
 def main() -> None:
     _install_training_api_72t()
-    _patch_minimal_dashboard_assets_72t()
-    # Reuse 7.2S's stable wipe-scoped run and unified calendar contract while
-    # promoting only the engine module and the visible dashboard surface.
+    # Do not inject dashboard-minimal72t.css/js. The base 7.2S dashboard owns
+    # the visible Overview again: Total R, Win Rate, All-Time P/L, Today's P/L,
+    # Markets, Equity Curve, Trade Queue, Strategy Progress and recent trades.
     base._promote_engine_72s = _promote_engine_72t
     print(
-        "Operation 7.2T supervisor: minimal Gold monitor + Strategy Lab training cockpit + 4H macro context; "
+        "Operation 7.2T supervisor: classic pre-simplify Overview restored + Strategy Lab + 4H macro context; "
         "7.2S VERIFY accounting preserved; engine=src.main_72t",
         flush=True,
     )
