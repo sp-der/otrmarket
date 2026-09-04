@@ -5,6 +5,13 @@ from pathlib import Path
 
 from fastapi import Request
 
+from src.storage.database_concurrency80 import install as install_sqlite_concurrency80
+
+# Install the storage contract before any inherited dashboard module binds
+# get_connection by value. This keeps schema/migration work out of live API
+# requests and prevents 15x Replay from turning SQLite into a write-lock jam.
+install_sqlite_concurrency80()
+
 from src.dashboard import server_72 as core72
 from src.dashboard import server_72n as dashboard72n
 from src.dashboard import server_72q as verify72q
