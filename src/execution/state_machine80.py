@@ -15,11 +15,16 @@ class TransitionDecision80:
     reason: str = ""
 
 
+# Broker callbacks are event-driven and may skip intermediate acknowledgement
+# states. The graph therefore permits forward progress while refusing any state
+# regression. Exact duplicate event IDs are filtered before this resolver.
 _ALLOWED = {
     CommandStatus.PENDING.value: {
         CommandStatus.CLAIMED.value,
         CommandStatus.ACKNOWLEDGED.value,
         CommandStatus.WORKING.value,
+        CommandStatus.PARTIAL.value,
+        CommandStatus.FILLED.value,
         CommandStatus.REJECTED.value,
         CommandStatus.CANCELLED.value,
         CommandStatus.EXPIRED.value,
@@ -52,6 +57,9 @@ _ALLOWED = {
         CommandStatus.REJECTED.value,
         CommandStatus.CANCELLED.value,
     },
+    # A protective-order rejection can arrive after an entry fill. We accept
+    # that terminal failure so reconciliation can fail closed around the broker
+    # exposure rather than pretending the command is still healthy.
     CommandStatus.FILLED.value: {
         CommandStatus.CLOSED.value,
         CommandStatus.REJECTED.value,
@@ -97,7 +105,12 @@ def resolve_transition80(current: str, target: str) -> TransitionDecision80:
             reason=f"Terminal command state {current} cannot regress to {target}.",
         )
     if target in _ALLOWED.get(current, set()):
-        return TransitionDecision80(current, target, True, reason=f"Legal execution transition {current}->{target}.")
+        return TransitionDecision80(
+            current,
+            target,
+            True,
+            reason=f"Legal execution transition {current}->{target}.",
+        )
     if _PROGRESS.get(target, -1) <= _PROGRESS.get(current, -1):
         return TransitionDecision80(
             current,
