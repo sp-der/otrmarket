@@ -62,6 +62,10 @@ def _patch_runtime_manifest_80() -> None:
                 "A filled broker position must have a matching working protective stop or reconciliation fails closed and new dispatch is blocked",
                 "src/execution/live/store.py",
             ),
+            "Gold early-arm conversion": (
+                "4/6 7.2H geometry is chart-preview only; fresh 5/6+ Gold pre-arms may enter the normal 8.0 pipeline at reduced risk without bypassing quality/session/account/no-chase gates",
+                "src/otr8/candidates.py + src/main_80.py",
+            ),
         }
         for name, (value, source) in additions.items():
             if name in by_name:
@@ -73,6 +77,23 @@ def _patch_runtime_manifest_80() -> None:
         runtime.console.log(f"Operation 8.0 manifest audit warning: {exc}")
 
 
+def _quality_gate_80(connection, setup, histories=None):
+    """Keep pre-arm previews visible while making them impossible to execute."""
+    if bool(getattr(setup, "metadata", {}).get("preview_only_80")):
+        score = int(setup.metadata.get("checklist_score", 0) or 0)
+        total = int(setup.metadata.get("checklist_total", 6) or 6)
+        return (
+            False,
+            f"Gold early-arm chart preview only at {score}/{total}; require 5/6+ plus a fresh post-displacement FVG before execution.",
+        )
+    return op58._adaptive_quality_gate(connection, setup, histories)
+
+
+# Preserve the inherited gate identity for runtime parity checks while wrapping
+# only the Operation 8.0 preview-only lane.
+_quality_gate_80.__name__ = getattr(op58._adaptive_quality_gate, "__name__", "_quality_gate_80")
+
+
 def _install_pipeline_80() -> OTRPipeline80:
     global pipeline_80
     if pipeline_80 is not None:
@@ -81,7 +102,7 @@ def _install_pipeline_80() -> OTRPipeline80:
     pipeline_80 = OTRPipeline80(
         runtime=runtime,
         session_gate=op58.evaluate_session_consistency_58,
-        quality_gate=op58._adaptive_quality_gate,
+        quality_gate=_quality_gate_80,
         setup_risk=op58.base._setup_risk,
         continuation=op62.continuation,
         shadow_register=op58.base._register_48_shadow,
@@ -149,6 +170,7 @@ def main() -> None:
     config = ExecutionConfig.from_env()
     runtime.console.log(
         "Operation 8.0 active: explicit decision pipeline + Gold regime context + setup arbiter + canonical trade plan; "
+        "Gold 4/6 pre-arms are chart previews and fresh 5/6+ arms can enter the reduced-risk pipeline; "
         "7.2Q Gold 1m firewall, 7.2R momentum recognition, 7.2S ledger, 7.2T 4H/training/one-symbol protection retained; "
         "5m intrabar now uses the central pipeline; broker event state regression is blocked and filled positions require protective-stop reconciliation; "
         f"4h_backfill_rows={derived}; active_survivors={reconciliation.get('surviving', 0)}; "
