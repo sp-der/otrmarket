@@ -32,6 +32,21 @@ class OverviewDecisionChart80Tests(unittest.TestCase):
         self.assertIn("SL", script)
         self.assertIn("TP", script)
 
+    def test_gold_chart_is_larger_and_user_resizable(self):
+        css = (self.static / "overview-chart-resize80.css").read_text(encoding="utf-8")
+        script = (self.static / "overview-chart-resize80.js").read_text(encoding="utf-8")
+        server = (self.root / "src" / "dashboard" / "server_80.py").read_text(encoding="utf-8")
+
+        self.assertIn("--otr8-chart-height:520px", css)
+        self.assertIn(".otr8-chart-splitter", css)
+        self.assertIn(".otr8-chart-height-handle", css)
+        self.assertIn("otr8-chart-splitter", script)
+        self.assertIn("otr8-chart-height-handle", script)
+        self.assertIn("localStorage", script)
+        self.assertIn("ResizeObserver", script)
+        self.assertIn("overview-chart-resize80.css?v=8.0-live2", server)
+        self.assertIn("overview-chart-resize80.js?v=8.0-live2", server)
+
 
 if __name__ == "__main__":
     unittest.main()
