@@ -106,4 +106,4 @@ Use the conversion funnel to prove that 8.1 improves selected-to-fill conversion
 
 ## Promotion status
 
-Staging promotion gate: **76/76 tests passing** with `src.main_81` booting in EVAL mode and the conversion endpoint registered. Production promotion is a fast-forward from the tested Work branch so the tested commit set, not a rebuilt patch stack, becomes authoritative.
+**READY FOR PRODUCTION REPLAY.** Staging gate passed **76/76 tests**, `src.main_81` booted in EVAL mode, the conversion endpoint registered successfully, and the production configuration is set for the approved 8.1 risk contract.
