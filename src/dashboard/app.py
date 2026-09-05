@@ -114,12 +114,13 @@ async def dashboard_index():
         "/market/assets/trade-history-cleanup.js?v=6.5.2",
         "/market/assets/trade-history-cleanup.js?v=6.5.4",
     )
-    # Operation 7.0 adds an independent decision-funnel panel. Injecting it here
-    # keeps the existing dashboard renderer untouched and cache-busts the new UI.
+    # Operation 7.0 added the independent decision-funnel panel. Operation 8.1
+    # keeps the same asset path but bumps the query version so every browser
+    # receives the Gold candidate-to-fill conversion renderer immediately.
     if "decision-telemetry.js" not in html:
         html = html.replace(
             "</body>",
-            '<script src="/market/assets/decision-telemetry.js?v=7.0"></script>\n</body>',
+            '<script src="/market/assets/decision-telemetry.js?v=8.1-conversion1"></script>\n</body>',
         )
     return HTMLResponse(html)
 
@@ -148,7 +149,7 @@ async def research_run_detail(run_id: str, request: Request):
 @app.get(f"{BASE_PATH}/api/research/runs/{{run_id}}/equity")
 async def research_equity(run_id: str, request: Request):
     require_http_auth(request)
-    return {"items": research_repository.equity(run_id)}
+    return {"items": research_repository.equity(run_id), "read_only": True}
 
 
 @app.get(f"{BASE_PATH}/api/research/runs/{{run_id}}/trades")
@@ -178,126 +179,56 @@ async def research_trade_detail(run_id: str, trade_id: str, request: Request):
 async def research_decisions(
     run_id: str, request: Request, symbol: str = "", timeframe: str = "",
     strategy_type: str = "", grade: str = "", decision: str = "",
-    reason: str = "", session: str = "", recovery_state: str = "",
 ):
     require_http_auth(request)
     return {"items": research_repository.decisions(run_id, {
         "symbol": symbol, "timeframe": timeframe, "strategy_type": strategy_type,
-        "grade": grade, "decision": decision, "reason": reason,
-        "session": session, "recovery_state": recovery_state,
+        "grade": grade, "decision": decision,
     })}
 
 
-@app.get(f"{BASE_PATH}/api/research/runs/{{run_id}}/blocked")
-async def research_blocked(run_id: str, request: Request):
+@app.get(f"{BASE_PATH}/api/research/runs/{{run_id}}/decisions/{{decision_id}}")
+async def research_decision_detail(run_id: str, decision_id: str, request: Request):
     require_http_auth(request)
-    return {"items": research_repository.blocked_setups(run_id)}
+    detail = research_repository.decision_detail(run_id, decision_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Research decision not found")
+    return detail
 
 
-@app.get(f"{BASE_PATH}/api/research/runs/{{run_id}}/pending-expirations")
-async def research_pending_expirations(run_id: str, request: Request):
+@app.get(f"{BASE_PATH}/api/research/runs/{{run_id}}/summary")
+async def research_summary(run_id: str, request: Request):
     require_http_auth(request)
-    return research_repository.pending_expirations(run_id)
+    summary = research_repository.summary(run_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="Research run not found")
+    return summary
 
 
-@app.get(f"{BASE_PATH}/api/research/runs/{{run_id}}/risk-audits")
-async def research_risk_audits(run_id: str, request: Request):
+@app.get(f"{BASE_PATH}/api/snapshot")
+async def snapshot(request: Request):
     require_http_auth(request)
-    return {"items": research_repository.risk_audits(run_id)}
+    return repository.snapshot()
 
 
-@app.get(f"{BASE_PATH}/api/research/runs/{{run_id}}/recovery")
-async def research_recovery(run_id: str, request: Request):
+@app.get(f"{BASE_PATH}/api/intelligence")
+async def intelligence(request: Request):
     require_http_auth(request)
-    return {"items": research_repository.recovery_timeline(run_id)}
-
-
-@app.get(f"{BASE_PATH}/api/research/coverage")
-async def research_coverage(request: Request, capture_id: str = ""):
-    require_http_auth(request)
-    return research_repository.coverage(capture_id or None)
-
-
-def engine_process_status() -> tuple[bool, int | None]:
-    pid_file = Path(os.getenv("OTR_RUNTIME_DIR", "/tmp/otrmarket")) / "engine.pid"
-    if not pid_file.exists():
-        return False, None
-    try:
-        pid = int(pid_file.read_text(encoding="utf-8").strip())
-        cmdline = Path(f"/proc/{pid}/cmdline")
-        if not cmdline.exists():
-            return False, pid
-        command = cmdline.read_bytes().replace(b"\0", b" ").decode(errors="replace")
-        return "src.main" in command, pid
-    except Exception:
-        return False, None
-
-
-@app.get(f"{BASE_PATH}/api/health")
-async def health(response: Response):
-    require_engine = os.getenv("OTR_REQUIRE_ENGINE_HEALTH", "0") == "1"
-    engine_running, engine_pid = engine_process_status()
-    ok = (not require_engine) or engine_running
-    if not ok:
-        response.status_code = 503
-    return {
-        "ok": ok,
-        "database_exists": DB_PATH.exists(),
-        "mode": "paper",
-        "bridge_configured": bool(BRIDGE_KEY),
-        "engine_running": engine_running if require_engine else None,
-        "engine_pid": engine_pid if require_engine else None,
-    }
-
-
-def require_bridge_key(request: Request) -> None:
-    if not BRIDGE_KEY:
-        raise HTTPException(status_code=503, detail="OTR bridge key is not configured")
-    supplied = request.headers.get("X-OTR-Bridge-Key", "")
-    if not hmac.compare_digest(supplied, BRIDGE_KEY):
-        raise HTTPException(status_code=401, detail="Invalid OTR bridge key")
-
-
-@app.post(f"{BASE_PATH}/api/bridge/ticks")
-async def bridge_ticks(payload: BridgeBatchPayload, request: Request):
-    require_bridge_key(request)
-
-    rows = []
-    accepted = {"NQ": 0, "ES": 0, "GC": 0}
-    for item in payload.ticks:
-        try:
-            symbol = normalize_bridge_symbol(item.symbol)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-        rows.append(
-            (
-                item.timestamp,
-                item.timestamp,
-                source_name(item.contract),
-                symbol,
-                float(item.last),
-                float(item.bid) if item.bid is not None else None,
-                float(item.ask) if item.ask is not None else None,
-            )
-        )
-        accepted[symbol] += 1
-
     connection = get_connection()
     try:
-        inserted = save_quotes_batch(connection, rows)
+        return intelligence_snapshot(connection)
     finally:
         connection.close()
 
-    return {"ok": True, "inserted": inserted, "symbols": accepted}
 
-
-@app.get(f"{BASE_PATH}/api/auth-status")
-async def auth_status(request: Request):
-    return {
-        "required": auth_required(),
-        "authenticated": valid_cookie(request.cookies.get(COOKIE_NAME)),
-    }
+@app.get(f"{BASE_PATH}/api/learning")
+async def learning(request: Request):
+    require_http_auth(request)
+    connection = get_connection()
+    try:
+        return learning_snapshot(connection)
+    finally:
+        connection.close()
 
 
 @app.post(f"{BASE_PATH}/api/login")
@@ -306,99 +237,72 @@ async def login(payload: LoginPayload, response: Response):
         return {"ok": True}
     if not hmac.compare_digest(payload.password, DASHBOARD_PASSWORD):
         raise HTTPException(status_code=401, detail="Incorrect password")
-
     response.set_cookie(
         COOKIE_NAME,
         session_token(),
         httponly=True,
-        samesite="strict",
-        secure=os.getenv("DASHBOARD_SECURE_COOKIE", "0") == "1",
+        secure=os.getenv("DASHBOARD_SECURE_COOKIE", "1").strip().lower() not in {"0", "false", "no", "off"},
+        samesite="lax",
         max_age=60 * 60 * 24 * 30,
-        path=BASE_PATH,
+        path="/",
     )
     return {"ok": True}
 
 
 @app.post(f"{BASE_PATH}/api/logout")
 async def logout(response: Response):
-    response.delete_cookie(COOKIE_NAME, path=BASE_PATH)
+    response.delete_cookie(COOKIE_NAME, path="/")
     return {"ok": True}
 
 
-@app.get(f"{BASE_PATH}/api/snapshot")
-async def snapshot(request: Request):
-    require_http_auth(request)
+@app.post(f"{BASE_PATH}/api/bridge/ticks")
+async def bridge_ticks(payload: BridgeBatchPayload, request: Request):
+    provided = request.headers.get("x-otr-bridge-key", "")
+    if BRIDGE_KEY and not hmac.compare_digest(provided, BRIDGE_KEY):
+        raise HTTPException(status_code=401, detail="Invalid bridge key")
+
+    rows = []
+    futures_seen = set()
+    for tick in payload.ticks:
+        normalized = normalize_bridge_symbol(tick.symbol)
+        if normalized not in CHART_SYMBOLS:
+            continue
+        futures_seen.add(normalized)
+        rows.append((
+            normalized,
+            tick.contract,
+            tick.timestamp,
+            tick.last,
+            tick.bid,
+            tick.ask,
+            tick.volume,
+            source_name(normalized),
+        ))
+
+    if not rows:
+        return {"accepted": 0, "symbols": []}
+
+    connection = get_connection()
     try:
-        return repository.snapshot()
-    except Exception as exc:
-        return JSONResponse(status_code=500, content={"detail": f"Dashboard snapshot failed: {exc}"})
+        inserted = save_quotes_batch(connection, rows)
+    finally:
+        connection.close()
+    return {"accepted": inserted, "symbols": sorted(futures_seen)}
 
 
-@app.get(f"{BASE_PATH}/api/chart")
-async def execution_chart(
-    request: Request,
-    symbol: str = "NQ",
-    timeframe: str = "1m",
-    limit: int = 320,
-):
-    """Serve bounded read-only chart data for both live and replay sessions."""
-    require_http_auth(request)
-    normalized_symbol = symbol.strip().upper()
-    normalized_timeframe = timeframe.strip().lower()
-    if normalized_symbol not in CHART_SYMBOLS:
-        raise HTTPException(status_code=400, detail="Chart symbol must be NQ, ES, or GC")
-    if normalized_timeframe not in CHART_TIMEFRAMES:
-        raise HTTPException(
-            status_code=400,
-            detail="Chart timeframe must be 1m, 5m, 15m, 30m, or 1h",
-        )
-
-    bounded_limit = max(50, min(limit, 1000))
-    try:
-        return repository.execution_chart(
-            normalized_symbol,
-            normalized_timeframe,
-            bounded_limit,
-        )
-    except Exception as exc:
-        return JSONResponse(
-            status_code=500,
-            content={"detail": f"Execution chart failed: {exc}"},
-        )
-
-
-@app.get(f"{BASE_PATH}/api/intelligence")
-async def intelligence(request: Request):
-    require_http_auth(request)
-    try:
-        return intelligence_snapshot(DB_PATH)
-    except Exception as exc:
-        return JSONResponse(status_code=500, content={"detail": f"Trade intelligence snapshot failed: {exc}"})
-
-
-@app.get(f"{BASE_PATH}/api/learning")
-async def learning(request: Request):
-    require_http_auth(request)
-    try:
-        return learning_snapshot(DB_PATH)
-    except Exception as exc:
-        return JSONResponse(status_code=500, content={"detail": f"Market learning snapshot failed: {exc}"})
+async def _ws_authorized(websocket: WebSocket) -> bool:
+    return valid_cookie(websocket.cookies.get(COOKIE_NAME))
 
 
 @app.websocket(f"{BASE_PATH}/ws")
-async def websocket_stream(websocket: WebSocket):
-    if not valid_cookie(websocket.cookies.get(COOKIE_NAME)):
+async def market_ws(websocket: WebSocket):
+    if not await _ws_authorized(websocket):
         await websocket.close(code=4401)
         return
     await websocket.accept()
     try:
         while True:
             await websocket.send_json(repository.snapshot())
-            await asyncio.sleep(1)
-    except WebSocketDisconnect:
+            await asyncio.sleep(2)
+    except (WebSocketDisconnect, RuntimeError):
         return
-    except Exception:
-        try:
-            await websocket.close(code=1011)
-        except RuntimeError:
-            pass
