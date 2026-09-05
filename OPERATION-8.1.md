@@ -65,10 +65,41 @@ The universal 1.50R wall is replaced for A/A+ Gold setups:
 
 The old two-per-day continuation re-arm quota is not authoritative in 8.1. Continuations still need fresh displacement, higher-timeframe support, Gold-regime compatibility, exposure clearance, cooldown clearance and the normal account guard.
 
+## Conversion funnel instrumentation
+
+Operation 8.1 measures the real execution chain from `decision_traces_80` and joins each selected idea to its current `paper_trades` state:
+
+`detected -> qualified -> arbiter selected -> pending registered -> filled/open -> closed`
+
+The Overview Gold Decision Funnel now shows those stages directly, plus conversion percentages by timeframe and terminal drop-off buckets.
+
+The protected endpoint is:
+
+`GET /market/api/otr81/conversion`
+
+It reports the active Gold session when one is in progress, otherwise the current replay trading day. It distinguishes, among others:
+
+- `rr_blocked`
+- `context_blocked`
+- `quality_blocked`
+- `arbiter_blocked`
+- `guard_blocked`
+- `risk_rejected`
+- `missed_extended`
+- `expired_entry`
+- `waiting_entry`
+
+Because `paper_trades` is joined at read time, a decision originally traced as `PENDING` later moves naturally into filled, closed, missed, or expired statistics without rewriting historical decision traces.
+
 ## Validation goal
 
-Measure the full funnel:
+Use the conversion funnel to prove that 8.1 improves selected-to-fill conversion without sacrificing expectancy or drawdown control. Compare:
 
-`candidate -> qualified -> arbiter selected -> execution zone armed -> pending registered -> filled/open -> closed`
-
-Track failures separately, especially `QUALITY_BLOCKED`, `ARBITER_BLOCKED`, `MISSED_EXTENDED`, `EXPIRED_BEFORE_ENTRY`, `RISK_REJECTED` and account-guard blocks.
+- detected-to-qualified rate
+- qualified-to-selected rate
+- selected-to-registered rate
+- registered-to-fill rate
+- selected-to-fill rate
+- win/loss outcome after fill
+- drop-offs by timeframe and strategy
+- session P/L, average R, profit factor and maximum drawdown
