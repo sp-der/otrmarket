@@ -10,7 +10,7 @@ from src.storage.database import get_connection, get_engine_state, set_engine_st
 
 
 RUN_RESET_STATE_KEY_81 = "operation81_run_reset_generation"
-RUN_RESET_GENERATION_81 = "overnight-2026-09-05-b"
+RUN_RESET_GENERATION_81 = "overnight-2026-09-05-c"
 RUN_RESET_TABLES_81 = (
     "paper_trades",
     "strategy_setups",
@@ -104,21 +104,25 @@ def _install_conversion_api_81() -> None:
 
 
 def _install_connection_fallback_81() -> None:
-    """Keep dashboard connection status truthful behind Vercel rewrites.
+    """Keep the full dashboard live behind Vercel rewrites.
 
     Vercel serves /gold correctly and proxies the HTTP APIs, but its current rewrite
-    path does not preserve the dashboard websocket upgrade. The trading engine and
-    bridge remain healthy, so the UI should use the already-working snapshot API as
-    its liveness authority instead of flashing Connecting/Reconnecting forever.
+    path does not preserve the dashboard websocket upgrade. Operation 8.1 therefore
+    polls the already-working snapshot endpoint and feeds that payload into the same
+    renderer app.js uses for websocket snapshots. This keeps markets, P/L, trades,
+    scanner, queue, EVAL cards and connection status updating without a websocket.
     """
     path = Path(__file__).resolve().parent / "static" / "index.html"
     if not path.exists():
         return
     text = path.read_text(encoding="utf-8")
-    tag = '<script src="/market/assets/connection-poll81.js?v=8.1-live1" defer></script>'
-    if tag not in text and "</body>" in text:
+    old = '<script src="/market/assets/connection-poll81.js?v=8.1-live1" defer></script>'
+    tag = '<script src="/market/assets/connection-poll81.js?v=8.1-live2" defer></script>'
+    if old in text:
+        text = text.replace(old, tag)
+    elif tag not in text and "</body>" in text:
         text = text.replace("</body>", f"{tag}\n</body>", 1)
-        path.write_text(text, encoding="utf-8")
+    path.write_text(text, encoding="utf-8")
 
 
 def main() -> None:
@@ -136,7 +140,7 @@ def main() -> None:
         "Operation 8.1 supervisor: Operation 8.0 dashboard + Gold Execution Conversion engine; "
         "first-touch zones, registration-time entry life, dynamic R:R, $750/$500 eval sizing, "
         "detected->qualified->selected->registered->filled conversion telemetry, and Vercel-safe "
-        "snapshot connection fallback enabled; "
+        "full snapshot rendering fallback enabled; "
         f"overnight_reset_rows={sum(reset_counts.values())}.",
         flush=True,
     )
