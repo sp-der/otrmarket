@@ -7,6 +7,9 @@ import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+from src.execution.live.config import ExecutionConfig
+from src.execution.live.models import ExecutionMode
+from src.execution.live.sizing import build_execution_intent
 from src.otr8.execution_policy81 import (
     FULL_RISK_DOLLARS,
     PENDING_BARS_81,
@@ -119,6 +122,30 @@ class Operation81PolicyTests(unittest.TestCase):
         setup.metadata["strategy"] = "MSS_REVERSAL"
         risk, _ = eval_risk81(decision, setup)
         self.assertEqual(risk, REDUCED_RISK_DOLLARS)
+
+    def test_live_mgc_sizing_can_translate_750_budget_without_exceeding_it(self):
+        setup = setup_stub(grade="A+", score=6)
+        setup.entry_price = 4300.0
+        setup.stop_price = 4295.0
+        setup.target_price = 4306.0
+        setup.risk_reward = 1.20
+        config = ExecutionConfig(
+            mode=ExecutionMode.PAPER,
+            armed=False,
+            live_allowed=False,
+            certified=False,
+            account="Sim101",
+            max_micros=20,
+            max_risk_dollars=750.0,
+        )
+        intent = build_execution_intent(setup, risk_dollars=750.0, config=config, now=NOW)
+        # MGC is $10/point. A five-point stop is $50/contract, so 15 micros
+        # consume the full $750 budget without ever crossing it.
+        self.assertEqual(intent.execution_contract, "MGC")
+        self.assertEqual(intent.quantity, 15)
+        self.assertEqual(intent.per_contract_risk, 50.0)
+        self.assertEqual(intent.risk_dollars, 750.0)
+        self.assertLessEqual(intent.risk_dollars, intent.requested_risk)
 
 
 class Operation81RuntimeTests(unittest.TestCase):
