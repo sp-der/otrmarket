@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import asdict
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,14 +25,15 @@ if __name__ == "__main__":
     args = parse_args()
     connection = get_connection()
     try:
-        records = run_recent_gold_parity(connection, limit=args.limit)
+        report = run_recent_gold_parity(connection, limit=args.limit)
     finally:
         connection.close()
 
     summary = {
-        "records": len(records),
-        "trade_path_matches": sum(1 for item in records if item.matched_trade_path),
-        "full_matches": sum(1 for item in records if item.matched_full),
+        "requested": report.requested,
+        "records": len(report.records),
+        "trade_path_matches": report.trade_path_matches,
+        "full_matches": report.full_matches,
         "mismatches": [
             {
                 "setup_id": item.setup_id,
@@ -41,8 +41,12 @@ if __name__ == "__main__":
                 "details": list(item.difference_details),
                 "note": item.note,
             }
-            for item in records
+            for item in report.records
             if not item.matched_full
+        ],
+        "skipped": [
+            {"setup_id": item.setup_id, "error": item.error}
+            for item in report.errors
         ],
     }
     print(json.dumps(summary, indent=2, sort_keys=True))
