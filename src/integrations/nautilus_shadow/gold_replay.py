@@ -168,20 +168,14 @@ def replay_gold_ticks(ticks: Iterable[StoredGoldTick]) -> GoldReplayReport:
     try:
         from nautilus_trader.backtest.config import BacktestEngineConfig
         from nautilus_trader.backtest.engine import BacktestEngine
-        from nautilus_trader.model import AssetClass
-        from nautilus_trader.model import Currency
-        from nautilus_trader.model import FuturesContract
-        from nautilus_trader.model import InstrumentId
-        from nautilus_trader.model import Price
-        from nautilus_trader.model import Quantity
-        from nautilus_trader.model import QuoteTick
-        from nautilus_trader.model import Symbol
-        from nautilus_trader.model.enums import AccountType, OmsType
+        from nautilus_trader.model import Currency, InstrumentId, Price, Quantity, QuoteTick, Symbol
+        from nautilus_trader.model.enums import AccountType, AssetClass, OmsType
         from nautilus_trader.model.identifiers import TraderId, Venue
+        from nautilus_trader.model.instruments import FuturesContract
         from nautilus_trader.model.objects import Money
     except ImportError as exc:
         raise RuntimeError(
-            "NautilusTrader is not installed. Install requirements-nautilus.txt for shadow replay."
+            f"NautilusTrader shadow API import failed: {exc}. Install the pinned requirements-nautilus.txt."
         ) from exc
 
     raw_contract = next((item.contract for item in reversed(items) if item.contract), "GC SHADOW")
@@ -233,8 +227,6 @@ def replay_gold_ticks(ticks: Iterable[StoredGoldTick]) -> GoldReplayReport:
         previous_ns = 0
         for item in items:
             event_ns = int(_aware_utc(item.timestamp).timestamp() * 1_000_000_000)
-            # Keep deterministic ordering even when NinjaTrader emits multiple
-            # updates with the exact same timestamp.
             if event_ns <= previous_ns:
                 event_ns = previous_ns + 1
             previous_ns = event_ns
