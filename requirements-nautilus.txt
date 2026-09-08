@@ -1,0 +1,4 @@
+# Optional shadow/backtest integration only.
+# Keep this separate from production requirements until parity testing is complete.
+# Pinned so replay/execution behavior cannot silently change under us.
+nautilus_trader==1.231.0
