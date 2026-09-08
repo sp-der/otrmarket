@@ -60,3 +60,6 @@ jobs:
 
       - name: Run synthetic MGC bracket through Nautilus
         run: python scripts/smoke_nautilus_execution_parity.py
+
+      - name: Run end-to-end Gold parity ledger smoke
+        run: python scripts/smoke_nautilus_parity_ledger.py
