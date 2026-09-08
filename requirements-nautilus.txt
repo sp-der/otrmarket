@@ -1,0 +1,3 @@
+# Optional shadow/backtest integration only.
+# Keep this separate from production requirements until parity testing is complete.
+nautilus_trader>=1.220.0
