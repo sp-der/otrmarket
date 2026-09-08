@@ -9,11 +9,12 @@ The goal is not to replace OTR execution. The goal is to run the same accepted O
 ## Safety rules
 
 1. `OTR_NAUTILUS_SHADOW=0` is the default.
-2. Nautilus is installed from `requirements-nautilus.txt`, not production `requirements.txt`.
+2. Nautilus is pinned separately in `requirements-nautilus.txt`; the production image also installs that pinned diagnostic runtime so the authenticated parity page can operate against Railway's persistent replay database.
 3. Shadow failures never block OTR setups, paper fills, Sim101 commands, or live safety logic.
 4. Nautilus cannot become authoritative until replay parity has been measured and explicitly promoted.
 5. The dependency is pinned to `nautilus_trader==1.231.0` so results do not silently change after an upstream release.
 6. The parity ledger is additive and never rewrites `strategy_setups`, `paper_trades`, or market history.
+7. Installing the Nautilus package does not connect it to NinjaTrader or OTR's broker gateway. The production parity surface only reads persisted trades/quotes and writes diagnostic ledger rows.
 
 ## Environment flags
 
@@ -119,7 +120,17 @@ A P/L-only mismatch is tracked separately from trade-path parity because OTR pap
 
 ### Replay workflow
 
-For the next Gold replay, run OTR normally. The Nautilus integration does not change setup recognition, trade approval, NinjaTrader execution, stop/target management, or eval controls. After replay, run the parity ledger while the relevant raw GC ticks are still retained:
+For the next Gold replay, run OTR normally. The Nautilus integration does not change setup recognition, trade approval, NinjaTrader execution, stop/target management, or eval controls. After replay, run the parity ledger while the relevant raw GC ticks are still retained.
+
+On Railway production, sign into the normal OTR Market dashboard and open:
+
+```text
+/market/nautilus-parity
+```
+
+The page uses the existing dashboard session and exposes two diagnostic actions only: refresh the persisted ledger and run parity for the most recent 1-25 closed Gold trades. The run is executed in FastAPI's worker thread rather than the async dashboard loop.
+
+For local/dev usage the equivalent command remains:
 
 ```bash
 python scripts/run_nautilus_parity_ledger.py --limit 10
@@ -129,12 +140,14 @@ Start with the most recent 10 closed Gold trades. If a longer replay produces mo
 
 ## CI certification
 
-The Nautilus CI lane now verifies all four layers:
+The Nautilus CI lane verifies all four layers:
 
 1. optional Nautilus runtime imports;
 2. synthetic MGC market replay;
 3. synthetic MGC bracket execution;
 4. an end-to-end in-memory OTR database → GC contract recovery → MGC bracket → parity-ledger full match.
+
+The normal regression lane also verifies the Operation 8.1 parity dashboard surface, persisted summary projection, route idempotency, and its explicit shadow-only labeling without requiring Nautilus to import during ordinary application startup.
 
 ## Promotion criteria
 
