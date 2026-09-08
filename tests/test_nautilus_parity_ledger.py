@@ -3,15 +3,19 @@ from __future__ import annotations
 import json
 import sqlite3
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 from src.integrations.nautilus_shadow.ledger import (
     GoldTradeCandidate,
     ParityLedgerRecord,
     classify_parity_differences,
     ensure_parity_ledger,
+    load_candidate_ticks,
     load_closed_gold_candidates,
     persist_parity_record,
+    resolve_signal_contract,
+    run_recent_gold_parity,
     shadow_quantity,
     trade_path_match,
 )
@@ -23,6 +27,16 @@ class NautilusParityLedgerTests(unittest.TestCase):
         connection = sqlite3.connect(":memory:")
         connection.executescript(
             """
+            CREATE TABLE market_quotes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                received_at TEXT NOT NULL,
+                exchange_time TEXT,
+                source TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                price REAL,
+                bid REAL,
+                ask REAL
+            );
             CREATE TABLE strategy_setups (
                 setup_id TEXT PRIMARY KEY,
                 symbol TEXT NOT NULL,
@@ -72,13 +86,43 @@ class NautilusParityLedgerTests(unittest.TestCase):
             target_price=3504.0,
             risk_reward=2.0,
             paper_status="CLOSED",
-            opened_at=now,
-            closed_at=now,
+            opened_at=now + timedelta(seconds=1),
+            closed_at=now + timedelta(seconds=5),
             exit_price=3504.0,
             result="WIN",
             result_r=2.0,
             risk_dollars=risk_dollars,
             result_dollars=risk_dollars * 2.0,
+        )
+
+    def insert_candidate_rows(self, connection: sqlite3.Connection) -> None:
+        setup_values = (
+            "gc-1", "GC", "5m", "bullish", "2026-09-01T13:30:00+00:00",
+            "FVG", 3500.0, 3498.0, 3504.0, 2.0, "ACCEPTED", "{}",
+        )
+        connection.execute(
+            "INSERT INTO strategy_setups VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            setup_values,
+        )
+        connection.execute(
+            """
+            INSERT INTO paper_trades VALUES (
+                'gc-1','GC','5m','bullish','CLOSED',3500,3498,3504,
+                '2026-09-01T13:30:01+00:00','2026-09-01T13:30:05+00:00',3504,
+                'WIN',2.0,100,200,NULL,'2026-09-01T13:30:05+00:00'
+            )
+            """
+        )
+        connection.commit()
+
+    def add_quote(self, connection, timestamp: datetime, contract: str, price: float) -> None:
+        text = timestamp.isoformat()
+        connection.execute(
+            """
+            INSERT INTO market_quotes(received_at, exchange_time, source, symbol, price, bid, ask)
+            VALUES (?, ?, ?, 'GC', ?, ?, ?)
+            """,
+            (text, text, f"ninjatrader:{contract}", price, price, price),
         )
 
     def test_ledger_schema_is_additive(self):
@@ -123,27 +167,53 @@ class NautilusParityLedgerTests(unittest.TestCase):
     def test_load_candidates_filters_closed_gold_only(self):
         connection = self.connection()
         try:
-            setup_values = (
-                "gc-1", "GC", "5m", "bullish", "2026-09-01T13:30:00+00:00",
-                "FVG", 3500.0, 3498.0, 3504.0, 2.0, "ACCEPTED", "{}",
-            )
-            connection.execute(
-                "INSERT INTO strategy_setups VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                setup_values,
-            )
-            connection.execute(
-                """
-                INSERT INTO paper_trades VALUES (
-                    'gc-1','GC','5m','bullish','CLOSED',3500,3498,3504,
-                    '2026-09-01T13:30:01+00:00','2026-09-01T13:31:00+00:00',3504,
-                    'WIN',2.0,100,200,NULL,'2026-09-01T13:31:00+00:00'
-                )
-                """
-            )
+            self.insert_candidate_rows(connection)
             rows = load_closed_gold_candidates(connection, limit=10)
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0].setup_id, "gc-1")
             self.assertEqual(rows[0].result_dollars, 200.0)
+        finally:
+            connection.close()
+
+    def test_candidate_ticks_never_include_pre_setup_quotes(self):
+        connection = self.connection()
+        try:
+            candidate = self.candidate()
+            self.add_quote(connection, candidate.created_at - timedelta(seconds=1), "GC DEC26", 3499.0)
+            self.add_quote(connection, candidate.created_at, "GC DEC26", 3501.0)
+            self.add_quote(connection, candidate.created_at + timedelta(seconds=1), "GC DEC26", 3500.0)
+            connection.commit()
+            ticks = load_candidate_ticks(connection, candidate, signal_contract="GC DEC26")
+            self.assertEqual([item.price for item in ticks], [3501.0, 3500.0])
+            self.assertTrue(all(item.timestamp >= candidate.created_at for item in ticks))
+        finally:
+            connection.close()
+
+    def test_contract_resolution_anchors_to_setup_creation(self):
+        connection = self.connection()
+        try:
+            candidate = self.candidate()
+            self.add_quote(connection, candidate.created_at, "GC DEC26", 3500.0)
+            self.add_quote(connection, candidate.created_at + timedelta(days=1), "GC FEB27", 3550.0)
+            connection.commit()
+            self.assertEqual(resolve_signal_contract(connection, candidate), "GC DEC26")
+        finally:
+            connection.close()
+
+    def test_batch_reports_one_trade_error_without_aborting(self):
+        connection = self.connection()
+        try:
+            self.insert_candidate_rows(connection)
+            with patch(
+                "src.integrations.nautilus_shadow.ledger.run_candidate_parity",
+                side_effect=ValueError("retention rolled past trade"),
+            ):
+                report = run_recent_gold_parity(connection, limit=10)
+            self.assertEqual(report.requested, 1)
+            self.assertEqual(report.records, ())
+            self.assertEqual(len(report.errors), 1)
+            self.assertEqual(report.errors[0].setup_id, "gc-1")
+            self.assertIn("retention", report.errors[0].error)
         finally:
             connection.close()
 
