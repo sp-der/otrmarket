@@ -95,13 +95,15 @@ Phase 4 adds the `nautilus_shadow_parity` SQLite table and an offline comparison
 For each recent closed OTR Gold paper trade the runner:
 
 1. loads the persisted OTR setup and paper-trade outcome;
-2. resolves the NinjaTrader Gold contract around the trade;
+2. resolves the NinjaTrader Gold contract at the time the setup was created;
 3. maps execution to MGC using OTR's existing execution-contract rules;
 4. maps the paper risk budget to whole MGC contracts;
-5. loads the retained replay ticks covering the setup through close;
+5. loads retained replay ticks beginning at the setup creation time, never before it;
 6. runs the bracket through Nautilus;
 7. compares OTR and Nautilus entry, state, exit, result, R, and P/L;
 8. upserts one diagnostic ledger row for the setup.
+
+The runner intentionally never feeds Nautilus quotes from before `strategy_setups.created_at`. This prevents a shadow limit order from filling before OTR had actually generated the setup.
 
 Run it manually after installing the optional Nautilus dependency:
 
@@ -109,9 +111,30 @@ Run it manually after installing the optional Nautilus dependency:
 python scripts/run_nautilus_parity_ledger.py --limit 10
 ```
 
+The JSON result reports `requested`, successful `records`, trade-path/full-match counts, detailed mismatches, and `skipped` trades. A trade is skipped rather than aborting the batch when its required raw ticks have already rolled outside OTR's quote-retention window.
+
 Difference categories are `IDENTITY`, `STATE`, `ENTRY`, `EXIT`, `RESULT`, `R_MULTIPLE`, `PNL`, and `OTHER`.
 
 A P/L-only mismatch is tracked separately from trade-path parity because OTR paper risk can be an exact dollar amount while MGC execution must use whole contracts. For example, a $105 paper risk budget with a two-point MGC stop can fund five contracts and therefore exposes $100 of actual MGC risk.
+
+### Replay workflow
+
+For the next Gold replay, run OTR normally. The Nautilus integration does not change setup recognition, trade approval, NinjaTrader execution, stop/target management, or eval controls. After replay, run the parity ledger while the relevant raw GC ticks are still retained:
+
+```bash
+python scripts/run_nautilus_parity_ledger.py --limit 10
+```
+
+Start with the most recent 10 closed Gold trades. If a longer replay produces more trades than the retained raw quote window can cover, the runner will preserve the comparisons it can make and explicitly list older trades it skipped.
+
+## CI certification
+
+The Nautilus CI lane now verifies all four layers:
+
+1. optional Nautilus runtime imports;
+2. synthetic MGC market replay;
+3. synthetic MGC bracket execution;
+4. an end-to-end in-memory OTR database → GC contract recovery → MGC bracket → parity-ledger full match.
 
 ## Promotion criteria
 
