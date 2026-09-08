@@ -54,3 +54,6 @@ jobs:
         env:
           OTR_NAUTILUS_SHADOW: "1"
         run: python scripts/probe_nautilus_shadow.py
+
+      - name: Run synthetic MGC replay through Nautilus
+        run: python scripts/smoke_nautilus_gc_replay.py
