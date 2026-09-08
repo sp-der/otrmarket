@@ -1,4 +1,6 @@
-# Optional shadow/backtest integration only.
-# Keep this separate from production requirements until parity testing is complete.
+# Pinned Nautilus shadow/backtest integration.
+# Kept separate from OTR's core requirements so application dependencies and
+# shadow-engine promotion remain explicit; the production Docker image installs
+# this file only to power authenticated replay diagnostics.
 # Pinned so replay/execution behavior cannot silently change under us.
 nautilus_trader==1.231.0
