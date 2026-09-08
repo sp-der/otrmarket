@@ -206,8 +206,6 @@ def replay_gold_ticks(ticks: Iterable[StoredGoldTick]) -> GoldReplayReport:
 
     config = BacktestEngineConfig(
         trader_id=TraderId("OTR-SHADOW-001"),
-        bypass_logging=True,
-        run_analysis=False,
     )
     engine = BacktestEngine(config=config)
     venue = Venue("OTR")
