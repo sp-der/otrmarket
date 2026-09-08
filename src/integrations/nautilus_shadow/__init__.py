@@ -9,7 +9,9 @@ from .config import NautilusShadowConfig
 from .execution_parity import NautilusBracketResult, ShadowBracketIntent, simulate_gold_bracket
 from .ledger import (
     GoldTradeCandidate,
+    ParityBatchReport,
     ParityLedgerRecord,
+    ParityRunError,
     ensure_parity_ledger,
     run_recent_gold_parity,
 )
@@ -23,7 +25,9 @@ __all__ = [
     "NautilusBracketResult",
     "ShadowBracketIntent",
     "GoldTradeCandidate",
+    "ParityBatchReport",
     "ParityLedgerRecord",
+    "ParityRunError",
     "ExecutionSnapshot",
     "ParityResult",
     "compare_execution_snapshots",
