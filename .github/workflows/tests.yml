@@ -57,3 +57,6 @@ jobs:
 
       - name: Run synthetic MGC replay through Nautilus
         run: python scripts/smoke_nautilus_gc_replay.py
+
+      - name: Run synthetic MGC bracket through Nautilus
+        run: python scripts/smoke_nautilus_execution_parity.py
