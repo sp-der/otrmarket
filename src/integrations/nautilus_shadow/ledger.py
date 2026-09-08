@@ -64,6 +64,27 @@ class ParityLedgerRecord:
     note: str = ""
 
 
+@dataclass(frozen=True)
+class ParityRunError:
+    setup_id: str
+    error: str
+
+
+@dataclass(frozen=True)
+class ParityBatchReport:
+    requested: int
+    records: tuple[ParityLedgerRecord, ...]
+    errors: tuple[ParityRunError, ...]
+
+    @property
+    def trade_path_matches(self) -> int:
+        return sum(1 for item in self.records if item.matched_trade_path)
+
+    @property
+    def full_matches(self) -> int:
+        return sum(1 for item in self.records if item.matched_full)
+
+
 def _parse_time(value: Any) -> datetime | None:
     if value is None or str(value).strip() == "":
         return None
@@ -189,36 +210,52 @@ def load_closed_gold_candidates(connection: sqlite3.Connection, *, limit: int = 
     return output
 
 
-def resolve_signal_contract(connection: sqlite3.Connection, candidate: GoldTradeCandidate) -> str:
-    """Find the NinjaTrader Gold contract feeding OTR at setup time."""
-    reference = candidate.opened_at or candidate.created_at
-    row = connection.execute(
-        """
-        SELECT source
-        FROM market_quotes
-        WHERE symbol = 'GC'
-          AND source LIKE 'ninjatrader:%'
-          AND COALESCE(exchange_time, received_at) <= ?
-        ORDER BY COALESCE(exchange_time, received_at) DESC, id DESC
-        LIMIT 1
-        """,
-        (reference.isoformat(),),
-    ).fetchone()
-    if row is None:
-        row = connection.execute(
-            """
-            SELECT source
-            FROM market_quotes
-            WHERE symbol = 'GC' AND source LIKE 'ninjatrader:%'
-            ORDER BY id DESC
-            LIMIT 1
-            """
-        ).fetchone()
-    if row is None:
-        return ""
-    source = str(row[0] or "")
+def _source_contract(source: str) -> str:
+    value = str(source or "").strip()
     prefix = "ninjatrader:"
-    return source[len(prefix):].strip() if source.lower().startswith(prefix) else ""
+    return value[len(prefix):].strip() if value.lower().startswith(prefix) else ""
+
+
+def resolve_signal_contract(connection: sqlite3.Connection, candidate: GoldTradeCandidate) -> str:
+    """Find the NinjaTrader Gold contract feeding OTR when the setup was created.
+
+    Timestamp filtering is done in Python rather than lexicographically in SQL so
+    equivalent ISO timestamps using `Z`, offsets, or different fractional-second
+    widths cannot select the wrong futures contract.
+    """
+    reference = candidate.created_at
+    rows = connection.execute(
+        """
+        SELECT COALESCE(exchange_time, received_at), source
+        FROM market_quotes
+        WHERE symbol = 'GC' AND source LIKE 'ninjatrader:%'
+        ORDER BY id DESC
+        LIMIT 50000
+        """
+    ).fetchall()
+    if not rows:
+        return ""
+
+    before: tuple[datetime, str] | None = None
+    after: tuple[datetime, str] | None = None
+    fallback = _source_contract(str(rows[0][1] or ""))
+    for timestamp, source in rows:
+        parsed = _parse_time(timestamp)
+        contract = _source_contract(str(source or ""))
+        if parsed is None or not contract:
+            continue
+        if parsed <= reference:
+            if before is None or parsed > before[0]:
+                before = (parsed, contract)
+        else:
+            if after is None or parsed < after[0]:
+                after = (parsed, contract)
+
+    if before is not None:
+        return before[1]
+    if after is not None:
+        return after[1]
+    return fallback
 
 
 def load_candidate_ticks(
@@ -226,40 +263,48 @@ def load_candidate_ticks(
     candidate: GoldTradeCandidate,
     *,
     signal_contract: str,
-    pre_seconds: int = 30,
     post_seconds: int = 30,
     max_ticks: int = 50_000,
 ) -> list[StoredGoldTick]:
-    start = (candidate.created_at - timedelta(seconds=max(0, int(pre_seconds)))).isoformat()
+    """Load only quotes which existed after OTR created the setup.
+
+    Starting at `created_at` is critical: allowing pre-setup quotes would let the
+    Nautilus limit order fill before OTR had actually generated the trade, which
+    creates a false execution mismatch.
+    """
+    start = candidate.created_at
     end_anchor = candidate.closed_at or candidate.opened_at or candidate.created_at
-    end = (end_anchor + timedelta(seconds=max(0, int(post_seconds)))).isoformat()
+    end = end_anchor + timedelta(seconds=max(0, int(post_seconds)))
     source = f"ninjatrader:{signal_contract}" if signal_contract else None
+    bounded = max(2, min(int(max_ticks), 50_000))
 
-    params: list[Any] = [start, end]
-    source_clause = ""
     if source:
-        source_clause = " AND source = ?"
-        params.append(source)
-    params.append(max(2, min(int(max_ticks), 50_000)))
-
-    rows = connection.execute(
-        f"""
-        SELECT COALESCE(exchange_time, received_at), source, price, bid, ask
-        FROM market_quotes
-        WHERE symbol = 'GC'
-          AND COALESCE(exchange_time, received_at) >= ?
-          AND COALESCE(exchange_time, received_at) <= ?
-          {source_clause}
-        ORDER BY COALESCE(exchange_time, received_at), id
-        LIMIT ?
-        """,
-        tuple(params),
-    ).fetchall()
+        rows = connection.execute(
+            """
+            SELECT COALESCE(exchange_time, received_at), source, price, bid, ask
+            FROM market_quotes
+            WHERE symbol = 'GC' AND source = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (source, bounded),
+        ).fetchall()
+    else:
+        rows = connection.execute(
+            """
+            SELECT COALESCE(exchange_time, received_at), source, price, bid, ask
+            FROM market_quotes
+            WHERE symbol = 'GC' AND source LIKE 'ninjatrader:%'
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (bounded,),
+        ).fetchall()
 
     ticks: list[StoredGoldTick] = []
-    for timestamp, row_source, price, bid, ask in rows:
+    for timestamp, row_source, price, bid, ask in reversed(rows):
         parsed = _parse_time(timestamp)
-        if parsed is None:
+        if parsed is None or parsed < start or parsed > end:
             continue
         reference = price
         if reference is None:
@@ -278,6 +323,7 @@ def load_candidate_ticks(
                 ask=float(ask) if ask is not None else None,
             )
         )
+    ticks.sort(key=lambda item: item.timestamp)
     return ticks
 
 
@@ -346,7 +392,10 @@ def run_candidate_parity(
     execution = execution_contract("GC", signal or None)
     ticks = load_candidate_ticks(connection, candidate, signal_contract=signal)
     if len(ticks) < 2:
-        raise ValueError(f"Not enough retained Gold ticks for setup {candidate.setup_id}")
+        raise ValueError(
+            f"Not enough retained post-setup Gold ticks for {candidate.setup_id}; "
+            "the raw quote retention window may have rolled past this trade"
+        )
 
     quantity = shadow_quantity(candidate)
     intent = ShadowBracketIntent(
@@ -391,9 +440,19 @@ def run_candidate_parity(
     return record
 
 
-def run_recent_gold_parity(connection: sqlite3.Connection, *, limit: int = 10) -> list[ParityLedgerRecord]:
+def run_recent_gold_parity(connection: sqlite3.Connection, *, limit: int = 10) -> ParityBatchReport:
+    """Compare recent closed Gold trades without aborting on one stale tick window."""
     ensure_parity_ledger(connection)
+    candidates = load_closed_gold_candidates(connection, limit=limit)
     records: list[ParityLedgerRecord] = []
-    for candidate in load_closed_gold_candidates(connection, limit=limit):
-        records.append(run_candidate_parity(connection, candidate))
-    return records
+    errors: list[ParityRunError] = []
+    for candidate in candidates:
+        try:
+            records.append(run_candidate_parity(connection, candidate))
+        except (RuntimeError, ValueError, sqlite3.Error) as exc:
+            errors.append(ParityRunError(candidate.setup_id, str(exc)))
+    return ParityBatchReport(
+        requested=len(candidates),
+        records=tuple(records),
+        errors=tuple(errors),
+    )
