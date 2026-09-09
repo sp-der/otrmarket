@@ -19,6 +19,7 @@ from src.dashboard import server_72q as verify72q
 from src.dashboard import server_72s as verify72s
 from src.dashboard import server_72t as legacy
 from src.research.execution_lab80 import execution_lab_snapshot80
+from src.research.lab_v01_routes import install_research_lab_routes
 from src.storage.database import get_connection
 
 
@@ -170,9 +171,10 @@ def main() -> None:
     verify72s._install_verify_calendar_contract_72s()
     _install_overview_chart80_assets()
     _install_otr8_api()
+    install_research_lab_routes()
     engine_module = _promote_engine_80()
     print(
-        "Operation 8.0 supervisor: direct clean handoff + NinjaTrader-backed Gold decision chart + Strategy Lab + Execution Lab APIs; "
+        "Operation 8.0 supervisor: direct clean handoff + NinjaTrader-backed Gold decision chart + Strategy Lab + Execution Lab APIs + OTR Research Lab v0.1; "
         "chart live-refresh + UI readability + horizontal zoom/pan active; boot wipe disabled unless OTR_FULL_VERIFY_WIPE_ON_BOOT=true; "
         f"engine={engine_module} verify_run_id={run_id or 'inactive'} full_reset_rows={sum(reset_counts.values())}",
         flush=True,
