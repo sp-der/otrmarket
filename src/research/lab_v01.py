@@ -286,7 +286,7 @@ def evidence_metrics(trades: list[dict[str, Any]]) -> dict[str, Any]:
     r_values = [value for value in (_number(trade.get("result_r")) for trade in trades) if value is not None]
     gross_win = sum(value for value in pnl_values if value > 0)
     gross_loss = abs(sum(value for value in pnl_values if value < 0))
-    profit_factor = gross_win / gross_loss if gross_loss > 0 else (None if gross_win <= 0 else float("inf"))
+    profit_factor = gross_win / gross_loss if gross_loss > 0 else None
 
     ordered = sorted(trades, key=lambda trade: str(trade.get("closed_at") or ""))
     equity = 0.0
@@ -325,7 +325,7 @@ def evidence_metrics(trades: list[dict[str, Any]]) -> dict[str, Any]:
         "net_pnl": round(sum(pnl_values), 2),
         "gross_win": round(gross_win, 2),
         "gross_loss": round(gross_loss, 2),
-        "profit_factor": round(profit_factor, 4) if profit_factor is not None and math.isfinite(profit_factor) else profit_factor,
+        "profit_factor": round(profit_factor, 4) if profit_factor is not None else None,
         "max_drawdown": round(max_drawdown, 2),
         "parity_samples": parity_samples,
         "parity_path_matches": path_matches,
@@ -529,7 +529,7 @@ def _store_evidence(connection, scope_key: str, metrics: dict[str, Any], payload
             metrics["net_pnl"],
             metrics["gross_win"],
             metrics["gross_loss"],
-            None if metrics["profit_factor"] == float("inf") else metrics["profit_factor"],
+            metrics["profit_factor"],
             metrics["max_drawdown"],
             metrics["parity_samples"],
             metrics["parity_path_matches"],
