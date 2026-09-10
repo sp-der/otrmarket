@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime
 import hashlib
 import json
-import os
 from pathlib import Path
 import sqlite3
 import sys
@@ -139,7 +137,6 @@ def execute(request: dict) -> dict:
     historical.row_factory = sqlite3.Row
     try:
         mode = request["replay_mode"]
-        args = [request["capture_id"], request["start_time"], request["end_time"]]
         contracts = request["contracts"]
         placeholders = ",".join("?" for _ in contracts)
         if mode == "TICK_EXACT":

@@ -19,7 +19,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="OTR research-only historical futures store")
     parser.add_argument("--database", default="data/otr_historical.db")
     commands = parser.add_subparsers(dest="command", required=True)
-    initialize = commands.add_parser("init")
+    commands.add_parser("init")
     importer = commands.add_parser("import-retained")
     importer.add_argument("--production-db", default="data/otrmarket.db")
     importer.add_argument("--capture-id", default=None)

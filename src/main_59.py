@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import time, timezone
+from datetime import timezone
 
 from src import main_58 as op58
 from src.risk.session_consistency import SessionConsistencyConfig, SessionConsistencyDecision
