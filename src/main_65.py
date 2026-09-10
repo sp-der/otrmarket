@@ -4,7 +4,6 @@ import asyncio
 from copy import deepcopy
 
 from src import main_64 as op64
-from src.strategies.candles import TIMEFRAME_SECONDS
 from src.strategies.models import Candle
 
 
