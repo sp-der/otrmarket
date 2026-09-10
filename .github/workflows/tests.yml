@@ -26,11 +26,17 @@ jobs:
           pip install -r requirements.txt
           pip install ruff
 
-      - name: Static hygiene
-        run: ruff check src scripts --select E9,F401,F811,F821,F841
+      - name: Dependency integrity
+        run: python -m pip check
 
-      - name: Compile source
-        run: python -m compileall -q src scripts
+      - name: Static hygiene
+        run: ruff check src scripts tests --select E9,F401,F811,F821,F841
+
+      - name: Compile Python
+        run: python -m compileall -q src scripts tests
+
+      - name: Validate shell launchers
+        run: bash -n run_all.sh run_dashboard.sh
 
       - name: Run tests
         run: python -m unittest discover -s tests -v
@@ -53,6 +59,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install -r requirements-nautilus.txt
+          python -m pip check
 
       - name: Probe Nautilus shadow runtime
         env:
