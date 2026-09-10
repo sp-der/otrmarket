@@ -26,11 +26,17 @@ def _utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _truthy_env(name: str, default: bool = True) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+def _truthy(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _auto_enabled() -> bool:
+    explicit = os.getenv("OTR_NAUTILUS_AUTO_CERTIFY")
+    if explicit is not None:
+        return _truthy(explicit)
+    # Railway always injects these variables. Default-on there keeps production
+    # automatic without making imports/tests/local development spawn a daemon.
+    return bool(os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_PROJECT_ID"))
 
 
 def _poll_seconds() -> float:
@@ -64,7 +70,7 @@ def ensure_auto_certify_schema(connection: sqlite3.Connection) -> None:
 
 def _candidate_by_setup_id(connection: sqlite3.Connection, setup_id: str):
     # Operation 8.1 keeps a bounded active replay scorecard. Five hundred closed
-    # trades is intentionally well beyond a normal certification backlog while
+    # trades is intentionally beyond a normal certification backlog while still
     # avoiding an unbounded scan if an old database is attached.
     for candidate in load_closed_gold_candidates(connection, limit=500):
         if candidate.setup_id == str(setup_id):
@@ -182,22 +188,12 @@ def process_one_auto_certification(
             status = "ERROR"
             completed = True
         _mark_job(connection, setup_id, status, error=message, completed=completed)
-        return {
-            "setup_id": setup_id,
-            "status": status,
-            "attempts": attempts,
-            "error": message,
-        }
+        return {"setup_id": setup_id, "status": status, "attempts": attempts, "error": message}
     except Exception as exc:  # diagnostics must never interrupt OTR runtime
         message = f"{type(exc).__name__}: {exc}"
         status = "RETRY" if attempts < MAX_ATTEMPTS else "ERROR"
         _mark_job(connection, setup_id, status, error=message, completed=attempts >= MAX_ATTEMPTS)
-        return {
-            "setup_id": setup_id,
-            "status": status,
-            "attempts": attempts,
-            "error": message,
-        }
+        return {"setup_id": setup_id, "status": status, "attempts": attempts, "error": message}
 
     _mark_job(connection, setup_id, "CERTIFIED", completed=True)
     return {
@@ -240,16 +236,15 @@ def _worker_loop() -> None:
                     f"Nautilus auto-certifier {status.lower()} for {setup_id}: {result.get('error', '')}",
                     flush=True,
                 )
-            # Process a backlog promptly. The next loop claims the freshest
-            # remaining trade, so a newly closed setup outranks stale history.
+            # A newly closed setup is ordered ahead of stale history on the next
+            # claim, so current replay evidence cannot sit behind an old backlog.
             continue
         _worker_stop.wait(_poll_seconds())
 
 
 def start_auto_certifier() -> bool:
     """Start one daemon worker per dashboard process. Safe to call repeatedly."""
-    if not _truthy_env("OTR_NAUTILUS_AUTO_CERTIFY", True):
-        print("Nautilus auto-certifier disabled by OTR_NAUTILUS_AUTO_CERTIFY.", flush=True)
+    if not _auto_enabled():
         return False
 
     global _worker_thread
@@ -291,7 +286,7 @@ def auto_certifier_snapshot(connection: sqlite3.Connection, *, recent_limit: int
     ).fetchall()
     thread = _worker_thread
     return {
-        "enabled": _truthy_env("OTR_NAUTILUS_AUTO_CERTIFY", True),
+        "enabled": _auto_enabled(),
         "worker_running": bool(thread is not None and thread.is_alive()),
         "poll_seconds": _poll_seconds(),
         "max_attempts": MAX_ATTEMPTS,
