@@ -91,7 +91,6 @@ class InLoopResearchExecutor:
                 favorable=high if trade.intent.direction=="bullish" else low
                 reason=self._preentry_reason(trade,adverse,timestamp) or self._preentry_reason(trade,favorable,timestamp)
             if reason:self._cancel(position,trade,timestamp,close,*reason)
-        pending_before={t.intent.setup_id for t in self.simulator.pending}
         self.simulator.on_candle(timestamp,open_price,high,low,close,symbol)
         changed=self._sync(before)
         adverse={symbol:min(low,close) if any(t.intent.symbol==symbol and t.intent.direction=="bullish" for t in self.simulator.open) else max(high,close)}
@@ -108,12 +107,11 @@ class InLoopResearchExecutor:
     def _states(self):return {key:(value.status,value.result) for key,value in self.positions.items()}
     def _sync(self,before):
         changed=[]
-        records={r["setup_id"]:r for r in self.simulator.records}
         for setup_id,position in list(self.positions.items()):
             trade=self.trade_map[setup_id]
             if trade.status=="OPEN":position.status="OPEN";position.opened_at=trade.fill_time
             elif trade.status=="CLOSED":
-                record=records[setup_id];position.status="CLOSED";position.opened_at=trade.fill_time;position.closed_at=trade.exit_time
+                position.status="CLOSED";position.opened_at=trade.fill_time;position.closed_at=trade.exit_time
                 position.exit_price=trade.exit_fill;position.result="WIN" if trade.net_pnl>0 else "LOSS";position.result_r=trade.realized_r;position.result_dollars=trade.net_pnl
                 self.positions.pop(setup_id,None);self.closed.append(position)
             if before.get(setup_id)!=(position.status,position.result):changed.append(position)
