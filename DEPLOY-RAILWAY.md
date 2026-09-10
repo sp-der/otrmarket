@@ -1,93 +1,74 @@
-# OTR Market Operation 4.3 - Permanent Railway Hosting
+# OTR Market Operation 8.1 - Railway Hosting
 
-This deployment keeps the FastAPI dashboard, WebSocket endpoint, NinjaTrader
-bridge ingress, strategy engine, and SQLite database running outside GitHub
-Codespaces.
+OTR Market production runs the authenticated FastAPI dashboard/supervisor, NinjaTrader bridge ingress, Operation 8.1 Gold engine, SQLite state, Research Lab surfaces, and Nautilus shadow diagnostics on Railway.
 
-## Target URLs
+## Production endpoints
 
-Recommended production hostname:
+- Dashboard: `https://market.otrservicesie.com/market/`
+- NinjaTrader bridge: `https://market.otrservicesie.com/market/api/bridge/ticks`
+- Health: `https://market.otrservicesie.com/market/api/health`
+- Nautilus parity: `https://market.otrservicesie.com/market/nautilus-parity`
 
-- Dashboard: https://market.otrservices.com/market/
-- NinjaTrader bridge: https://market.otrservices.com/market/api/bridge/ticks
-- Health: https://market.otrservices.com/market/api/health
+## Service source and runtime
 
-The root otrservices.com domain can remain available for a future public site.
+Railway deploys `sp-der/otrmarket` from `main` with the repository `Dockerfile` and `railway.json`.
 
-## 1. Deploy the GitHub repo to Railway
+The production service currently uses an explicit start command:
 
-Create a Railway project and deploy the GitHub repository:
+```text
+python -m src.dashboard.server_81
+```
 
-    sp-der/otrmarket
+`run_all.sh` and `run_dashboard.sh` intentionally target the same supervisor for local use.
 
-Railway will detect the Dockerfile and railway.json.
+## Persistent data
 
-## 2. Add a persistent volume
+Mount the Railway volume at:
 
-Attach a volume to the OTR service with mount path:
+```text
+/app/data
+```
 
-    /app/data
+This volume holds the SQLite trading/research state. Do not replace or wipe it during routine code deployments. Operation 8.1's replay-reset marker is idempotent and should only change when a new reset is deliberately approved.
 
-This is required because OTR currently stores quotes, candles, diagnostics,
-setups, paper trades, and engine state in SQLite at ./data/otrmarket.db.
+## Required private variables
 
-## 3. Add service variables
+Keep secrets in Railway Variables, never in GitHub:
 
-Copy the values privately from your local .env into Railway Variables. Never
-commit these values to GitHub.
+```text
+OTR_BRIDGE_KEY=<private bridge key>
+DASHBOARD_PASSWORD=<private dashboard password>
+DASHBOARD_SESSION_SECRET=<long random secret>
+DASHBOARD_SECURE_COOKIE=1
+DASHBOARD_HOST=0.0.0.0
+OTR_ENGINE_MODULE=src.main_81
+```
 
-Required/recommended:
+Railway injects `PORT` automatically. Do not commit secret values or manually hard-code a production port into the application.
 
-    OTR_BRIDGE_KEY=<existing private bridge key>
-    DASHBOARD_PASSWORD=<choose a production dashboard password>
-    DASHBOARD_SESSION_SECRET=<long random secret>
-    DASHBOARD_SECURE_COOKIE=1
-    DASHBOARD_HOST=0.0.0.0
+Execution safety should remain paper/shadow unless live execution is deliberately certified and armed outside the strategy layer. The safe local defaults are documented in `.env.example`.
 
-Railway injects PORT automatically; do not set PORT manually.
+## Deployment verification
 
-ALPACA_API_KEY and ALPACA_API_SECRET are legacy/optional for the current
-NinjaTrader futures path.
+After a deployment, verify all of the following before using a replay as evidence:
 
-## 4. Generate the temporary Railway domain
+1. Railway deployment status is `SUCCESS`.
+2. `/market/api/health` returns healthy status.
+3. Supervisor boot reports `src.main_81` / Operation 8.1.
+4. Trading focus remains Gold and broker gateway remains in the intended PAPER/shadow state.
+5. NinjaTrader bridge POSTs return HTTP 200 while replay data is flowing.
+6. Nautilus smoke/parity tooling remains non-authoritative.
 
-In Railway service Settings -> Networking -> Public Networking, generate a
-Railway domain. Test:
+## NinjaTrader bridge
 
-    https://<railway-domain>/market/api/health
+Every installed `OTRMarketBridge` instance should point at:
 
-Expected JSON includes:
+```text
+https://market.otrservicesie.com/market/api/bridge/ticks
+```
 
-    "ok": true
+Use the same private bridge key configured in Railway. GitHub/Railway code changes do not automatically replace or recompile the locally installed NinjaScript bridge.
 
-## 5. Add market.otrservices.com
+## Optional proxy deployment
 
-In Railway service Settings -> Networking -> Custom Domain, add:
-
-    market.otrservices.com
-
-Railway will show the exact CNAME and TXT verification records. Add both in
-Cloudflare DNS exactly as Railway provides them. Do not guess the target.
-
-After Railway marks the domain verified, test:
-
-    https://market.otrservices.com/market/api/health
-
-## 6. Update NinjaTrader once
-
-On every OTRMarketBridge instance, replace the temporary Codespaces endpoint
-with:
-
-    https://market.otrservices.com/market/api/bridge/ticks
-
-Keep the same OTR_BRIDGE_KEY value that was copied into Railway.
-
-After this change, deleting/recreating Codespaces will not change the bridge
-URL.
-
-## Optional: otrservices.com/market
-
-If you later want the dashboard at https://otrservices.com/market/ as well,
-use the existing deploy/cloudflare-worker-market-proxy.js Worker and set its
-MARKET_ORIGIN variable to https://market.otrservices.com. This is optional;
-NinjaTrader should use the direct market.otrservices.com endpoint.
+`deploy/cloudflare-worker-market-proxy.js` and `deploy/nginx-market.conf.example` are retained as optional deployment references. They are not part of the normal Railway production path.
