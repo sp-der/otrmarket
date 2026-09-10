@@ -1,10 +1,8 @@
 import asyncio
-import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-import websockets
 from rich.console import Console
 from rich.live import Live
 from rich.table import Table
@@ -21,7 +19,6 @@ from src.storage.database import (
     prune_market_quotes,
     save_candle,
     save_diagnostic,
-    save_quote,
     save_setup,
     set_engine_state,
     upsert_paper_trade,
@@ -31,7 +28,6 @@ from src.strategies.confluence import ConfluenceEngine
 from src.strategies.momentum import MomentumTracker
 
 ROOT = Path(__file__).resolve().parents[1]
-COINBASE_URL = "wss://advanced-trade-ws.coinbase.com"
 
 console = Console()
 momentum = MomentumTracker()
@@ -52,7 +48,6 @@ market_state = {
 }
 
 feed_status = {
-    "Coinbase": "DISABLED",
     "NinjaTrader": "WAITING",
 }
 
@@ -270,58 +265,6 @@ def build_dashboard():
 
     return table
 
-
-async def coinbase_collector(connection):
-    """Legacy collector retained but intentionally not started while BTC is disabled."""
-    while True:
-        try:
-            async with websockets.connect(
-                COINBASE_URL,
-                ping_interval=20,
-                ping_timeout=20,
-                close_timeout=10,
-            ) as websocket:
-                await websocket.send(
-                    json.dumps(
-                        {
-                            "type": "subscribe",
-                            "product_ids": ["BTC-USD"],
-                            "channel": "ticker",
-                        }
-                    )
-                )
-                feed_status["Coinbase"] = "CONNECTED"
-
-                async for message in websocket:
-                    data = json.loads(message)
-                    if data.get("channel") != "ticker":
-                        continue
-                    exchange_time = data.get("timestamp")
-                    for event in data.get("events", []):
-                        for ticker in event.get("tickers", []):
-                            if ticker.get("product_id") != "BTC-USD":
-                                continue
-                            price = float(ticker["price"])
-                            bid = float(ticker["best_bid"])
-                            ask = float(ticker["best_ask"])
-                            event_time = parse_timestamp(exchange_time)
-                            process_price(connection, "BTC-USD", price, bid, ask, event_time)
-                            save_quote(
-                                connection,
-                                event_time.isoformat(),
-                                exchange_time,
-                                "coinbase",
-                                "BTC-USD",
-                                price,
-                                bid,
-                                ask,
-                            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            feed_status["Coinbase"] = "RECONNECTING"
-            console.log(f"Coinbase error: {exc}")
-            await asyncio.sleep(5)
 
 
 def _latest_ninjatrader_id(connection) -> int:
