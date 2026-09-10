@@ -29,6 +29,16 @@ jobs:
       - name: Dependency integrity
         run: python -m pip check
 
+      - name: Reject generated repository artifacts
+        shell: bash
+        run: |
+          bad="$(git ls-files | grep -E '(^|/)(__pycache__/|\.pytest_cache/|\.ruff_cache/)|\.(pyc|pyo|log|db|sqlite|sqlite3|bak|tmp)$' || true)"
+          if [ -n "$bad" ]; then
+            echo "Generated/runtime artifacts must not be committed:"
+            echo "$bad"
+            exit 1
+          fi
+
       - name: Static hygiene
         run: ruff check src scripts tests --select E9,F401,F811,F821,F841
 
