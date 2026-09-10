@@ -68,6 +68,32 @@ def ensure_auto_certify_schema(connection: sqlite3.Connection) -> None:
     connection.commit()
 
 
+def recover_interrupted_jobs(connection: sqlite3.Connection) -> int:
+    """Requeue only jobs interrupted by a container/process restart."""
+    ensure_auto_certify_schema(connection)
+    now = _utc_iso()
+    cursor = connection.execute(
+        """
+        UPDATE nautilus_shadow_auto_jobs
+        SET status='RETRY', updated_at=?, completed_at=NULL,
+            last_error='Previous certification attempt was interrupted by process restart.'
+        WHERE status='RUNNING' AND attempts < ?
+        """,
+        (now, MAX_ATTEMPTS),
+    )
+    connection.execute(
+        """
+        UPDATE nautilus_shadow_auto_jobs
+        SET status='ERROR', updated_at=?, completed_at=?,
+            last_error='Certification was interrupted after the maximum retry count.'
+        WHERE status='RUNNING' AND attempts >= ?
+        """,
+        (now, now, MAX_ATTEMPTS),
+    )
+    connection.commit()
+    return max(0, int(cursor.rowcount or 0))
+
+
 def _candidate_by_setup_id(connection: sqlite3.Connection, setup_id: str):
     # Operation 8.1 keeps a bounded active replay scorecard. Five hundred closed
     # trades is intentionally beyond a normal certification backlog while still
@@ -236,8 +262,11 @@ def _worker_loop() -> None:
                     f"Nautilus auto-certifier {status.lower()} for {setup_id}: {result.get('error', '')}",
                     flush=True,
                 )
-            # A newly closed setup is ordered ahead of stale history on the next
-            # claim, so current replay evidence cannot sit behind an old backlog.
+            # WAITING_TICKS and RETRY deliberately yield before another claim so
+            # the bridge can persist fresh quotes instead of burning all retries
+            # in the same millisecond.
+            if status in {"WAITING_TICKS", "RETRY"}:
+                _worker_stop.wait(_poll_seconds())
             continue
         _worker_stop.wait(_poll_seconds())
 
@@ -251,6 +280,21 @@ def start_auto_certifier() -> bool:
     with _worker_lock:
         if _worker_thread is not None and _worker_thread.is_alive():
             return True
+
+        # A deployment can kill the process mid-Nautilus run. Requeue only that
+        # diagnostic job before the replacement worker starts.
+        connection = None
+        try:
+            connection = get_connection()
+            recovered = recover_interrupted_jobs(connection)
+            if recovered:
+                print(f"Nautilus auto-certifier requeued {recovered} interrupted job(s).", flush=True)
+        except Exception as exc:
+            print(f"Nautilus auto-certifier recovery warning: {type(exc).__name__}: {exc}", flush=True)
+        finally:
+            if connection is not None:
+                connection.close()
+
         _worker_stop.clear()
         _worker_thread = threading.Thread(target=_worker_loop, name=_WORKER_NAME, daemon=True)
         _worker_thread.start()
