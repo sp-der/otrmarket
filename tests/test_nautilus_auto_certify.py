@@ -9,7 +9,9 @@ from unittest.mock import patch
 from src.integrations.nautilus_shadow.auto_certify import (
     _auto_enabled,
     auto_certifier_snapshot,
+    ensure_auto_certify_schema,
     process_one_auto_certification,
+    recover_interrupted_jobs,
 )
 
 
@@ -140,7 +142,6 @@ class NautilusAutoCertifyTests(unittest.TestCase):
         self.assertIsNotNone(job[2])
         self.assertEqual(job[3], "")
 
-        # A completed job is never claimed again even if the scanner loops.
         self.assertIsNone(process_one_auto_certification(self.connection, runner=fake_runner))
 
     def test_retention_failure_retries_three_times_then_quarantines_old_trade(self):
@@ -169,6 +170,26 @@ class NautilusAutoCertifyTests(unittest.TestCase):
         self.assertEqual(job[0], "UNAVAILABLE_RETENTION")
         self.assertEqual(job[1], 3)
         self.assertIsNotNone(job[2])
+
+    def test_interrupted_running_job_is_requeued_after_restart(self):
+        ensure_auto_certify_schema(self.connection)
+        self.connection.execute(
+            """
+            INSERT INTO nautilus_shadow_auto_jobs(
+                setup_id,status,attempts,queued_at,updated_at,completed_at,last_error
+            ) VALUES ('auto-1','RUNNING',1,'2026-09-07T13:31:00+00:00','2026-09-07T13:31:00+00:00',NULL,'')
+            """
+        )
+        self.connection.commit()
+        recovered = recover_interrupted_jobs(self.connection)
+        self.assertEqual(recovered, 1)
+        row = self.connection.execute(
+            "SELECT status,attempts,completed_at,last_error FROM nautilus_shadow_auto_jobs WHERE setup_id='auto-1'"
+        ).fetchone()
+        self.assertEqual(row[0], "RETRY")
+        self.assertEqual(row[1], 1)
+        self.assertIsNone(row[2])
+        self.assertIn("interrupted", row[3].lower())
 
     def test_snapshot_reports_job_counts(self):
         process_one_auto_certification(
