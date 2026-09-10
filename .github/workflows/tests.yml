@@ -39,14 +39,21 @@ jobs:
             exit 1
           fi
 
-      - name: Static hygiene
-        run: ruff check src scripts tests --select E9,F401,F811,F821,F841
+      - name: Python static hygiene
+        run: ruff check src scripts tests --select E9,F
 
       - name: Compile Python
         run: python -m compileall -q src scripts tests
 
       - name: Validate shell launchers
         run: bash -n run_all.sh run_dashboard.sh
+
+      - name: Validate dashboard JavaScript syntax
+        shell: bash
+        run: |
+          while IFS= read -r -d '' file; do
+            node --check "$file"
+          done < <(find src/dashboard/static -type f -name '*.js' -print0)
 
       - name: Run tests
         run: python -m unittest discover -s tests -v
