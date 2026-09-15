@@ -1,6 +1,3 @@
-import hashlib
-import sqlite3
-import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -57,7 +54,7 @@ class Phase31PendingTests(unittest.TestCase):
         self.assertEqual(position.cancellation_details["cancellation_reason"],"STALE_AT_REGISTRATION")
 
     def test_unfilled_has_no_recovery(self):
-        ex=executor();position=ex.register_setup(setup(),risk_dollars=250);ex.on_price("NQ",105,BASE+timedelta(minutes=16))
+        ex=executor();ex.register_setup(setup(),risk_dollars=250);ex.on_price("NQ",105,BASE+timedelta(minutes=16))
         self.assertEqual(ex.simulator.account.consecutive_losses,0);self.assertEqual(ex.simulator.account.recovery("NQ","B+",BASE+timedelta(minutes=20))[2],"NORMAL")
 
     def test_stale_can_arm_continuation_but_original_stays_dead(self):
