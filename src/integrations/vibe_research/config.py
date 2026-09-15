@@ -118,6 +118,16 @@ def safe_vibe_environment(config: VibeResearchConfig) -> dict[str, str]:
         value = os.getenv(name)
         if value:
             env[name] = value
+    # Vibe-Trading 0.1.15 supports OpenAI's Responses API and reasoning controls.
+    # Forward only these explicit, non-secret knobs so GPT-5.6 function tools do
+    # not fall back to an incompatible Chat Completions + reasoning combination.
+    for name in (
+        "LANGCHAIN_USE_RESPONSES_API",
+        "LANGCHAIN_REASONING_EFFORT",
+    ):
+        value = os.getenv(name)
+        if value:
+            env[name] = value
     # Provider-specific endpoint overrides are safe to pass, but OTR bridge,
     # dashboard and execution secrets are intentionally absent from this list.
     for name in (
