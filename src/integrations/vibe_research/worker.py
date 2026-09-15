@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import subprocess
 import threading
@@ -26,6 +27,10 @@ _worker_thread: threading.Thread | None = None
 
 def _utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _truthy(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def ensure_vibe_research_schema(connection: sqlite3.Connection) -> None:
@@ -86,9 +91,11 @@ def _terminal_nautilus_status_clause() -> str:
 
 def _claim_next(connection: sqlite3.Connection, config: VibeResearchConfig) -> str | None:
     ensure_vibe_research_schema(connection)
+    active_since = str(os.getenv("OTR_VIBE_ACTIVE_SINCE") or "").strip()
     # Wait until Nautilus has either certified the trade or reached a terminal
     # diagnostic state. This ensures Vibe's packet includes the independent
-    # execution verdict whenever it is available.
+    # execution verdict whenever it is available. When ACTIVE_SINCE is set,
+    # historical replay packets remain preserved but are not silently billed.
     row = connection.execute(
         f"""
         SELECT p.setup_id
@@ -101,25 +108,43 @@ def _claim_next(connection: sqlite3.Connection, config: VibeResearchConfig) -> s
           AND p.opened_at IS NOT NULL
           AND p.closed_at IS NOT NULL
           AND v.setup_id IS NULL
+          AND (?='' OR COALESCE(p.closed_at,p.updated_at) >= ?)
           AND (n.setup_id IS NOT NULL OR nj.status IN {_terminal_nautilus_status_clause()})
         ORDER BY COALESCE(p.closed_at,p.updated_at) ASC
         LIMIT 1
-        """
+        """,
+        (active_since, active_since),
     ).fetchone()
-    if row is None:
-        # When a provider is configured after packets were already captured,
-        # retry the oldest waiting packet instead of dropping that evidence.
-        if config.provider_ready and config.package_installed:
+    if row is None and config.provider_ready and config.package_installed:
+        # RETRY means an analysis for the active replay already failed or was
+        # interrupted. Prefer the newest replay packet by original queue time.
+        row = connection.execute(
+            """
+            SELECT setup_id FROM vibe_research_jobs_v02
+            WHERE status='RETRY'
+              AND (?='' OR queued_at >= ?)
+            ORDER BY queued_at DESC
+            LIMIT 1
+            """,
+            (active_since, active_since),
+        ).fetchone()
+
+        # Old capture-only packets are valuable evidence, but backfilling them
+        # can consume API credit before the current replay is analyzed. Keep
+        # them dormant unless the operator explicitly enables backfill.
+        if row is None and _truthy(os.getenv("OTR_VIBE_BACKFILL_WAITING")):
             row = connection.execute(
                 """
                 SELECT setup_id FROM vibe_research_jobs_v02
-                WHERE status IN ('WAITING_PROVIDER','PACKAGE_UNAVAILABLE','RETRY')
+                WHERE status IN ('WAITING_PROVIDER','PACKAGE_UNAVAILABLE')
+                  AND (?='' OR queued_at >= ?)
                 ORDER BY queued_at ASC
                 LIMIT 1
-                """
+                """,
+                (active_since, active_since),
             ).fetchone()
-        if row is None:
-            return None
+    if row is None:
+        return None
 
     setup_id = str(row[0])
     existing = connection.execute(
@@ -349,8 +374,9 @@ def _worker_loop() -> None:
             setup_id = result.get("setup_id")
             if status == "COMPLETE":
                 print(f"Vibe research stored finding for {setup_id}.", flush=True)
-            elif status in {"ERROR", "PACKAGE_UNAVAILABLE"}:
-                print(f"Vibe research {status.lower()} for {setup_id}: {result.get('error','')}", flush=True)
+            elif status in {"ERROR", "PACKAGE_UNAVAILABLE", "RETRY"}:
+                message = str(result.get("error", "") or "").replace("\n", " ")[-800:]
+                print(f"Vibe research {status.lower()} for {setup_id}: {message}", flush=True)
             # WAITING_PROVIDER is a normal capture-only state. Do not hammer the
             # same job repeatedly while credentials are intentionally absent.
             if status == "WAITING_PROVIDER":

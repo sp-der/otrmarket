@@ -119,6 +119,30 @@ class VibeResearchSidecarTests(unittest.TestCase):
         self.assertEqual(self.connection.execute("SELECT * FROM strategy_setups").fetchall(), before_setup)
         self.assertEqual(self.connection.execute("SELECT * FROM paper_trades").fetchall(), before_trade)
 
+    def test_waiting_historical_packet_is_not_auto_backfilled(self):
+        self.add_closed_trade()
+        first = process_one_vibe_job(self.connection, config=self.config())
+        self.assertEqual(first["status"], "WAITING_PROVIDER")
+
+        with patch.dict(
+            os.environ,
+            {
+                "OPENAI_API_KEY": "provider-secret",
+                "OTR_VIBE_BACKFILL_WAITING": "0",
+            },
+            clear=False,
+        ):
+            second = process_one_vibe_job(
+                self.connection,
+                config=self.config(provider="openai", model="research-model"),
+            )
+
+        self.assertIsNone(second)
+        status = self.connection.execute(
+            "SELECT status FROM vibe_research_jobs_v02 WHERE setup_id='gc-vibe-01'"
+        ).fetchone()[0]
+        self.assertEqual(status, "WAITING_PROVIDER")
+
     def test_vibe_process_environment_does_not_receive_otr_secrets(self):
         config = self.config(provider="openai", model="research-model")
         with patch.dict(
@@ -127,12 +151,16 @@ class VibeResearchSidecarTests(unittest.TestCase):
                 "OPENAI_API_KEY": "provider-secret",
                 "OTR_BRIDGE_KEY": "never-pass-this",
                 "DASHBOARD_PASSWORD": "never-pass-this-either",
+                "LANGCHAIN_USE_RESPONSES_API": "true",
+                "LANGCHAIN_REASONING_EFFORT": "medium",
             },
             clear=False,
         ):
             env = safe_vibe_environment(config)
 
         self.assertEqual(env["OPENAI_API_KEY"], "provider-secret")
+        self.assertEqual(env["LANGCHAIN_USE_RESPONSES_API"], "true")
+        self.assertEqual(env["LANGCHAIN_REASONING_EFFORT"], "medium")
         self.assertNotIn("OTR_BRIDGE_KEY", env)
         self.assertNotIn("DASHBOARD_PASSWORD", env)
         self.assertEqual(env["VIBE_TRADING_ENABLE_SHELL_TOOLS"], "0")
