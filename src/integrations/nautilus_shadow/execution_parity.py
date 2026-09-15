@@ -163,7 +163,6 @@ def simulate_gold_bracket(
     instrument_id = InstrumentId.from_str(f"{token}.OTR")
 
     first_ns = int(_aware_utc(items[0].timestamp).timestamp() * 1_000_000_000)
-    last_ns = int(_aware_utc(items[-1].timestamp).timestamp() * 1_000_000_000)
     activation_ns = int((_aware_utc(items[0].timestamp) - timedelta(days=366)).timestamp() * 1_000_000_000)
     expiration_ns = int((_aware_utc(items[-1].timestamp) + timedelta(days=366)).timestamp() * 1_000_000_000)
 

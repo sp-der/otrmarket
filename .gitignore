@@ -3,16 +3,23 @@
 .env.*
 !.env.example
 
-# Python virtual environment
+# Python virtual environments
 .venv/
 venv/
 
-# Python cache
+# Python/cache/test artifacts
 __pycache__/
 *.pyc
 *.pyo
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
-# Market data
+# Runtime logs
+*.log
+
+# Market/research data
 data/*.db
 data/*.sqlite
 data/*.sqlite3

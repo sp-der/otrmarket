@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, time, timezone
+from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
 NY = ZoneInfo("America/New_York")

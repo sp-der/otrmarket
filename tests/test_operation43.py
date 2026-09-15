@@ -15,7 +15,7 @@ class Operation43PermanentHostingTests(unittest.TestCase):
         text = (ROOT / "run_all.sh").read_text()
         self.assertIn('if [ -f ".venv/bin/activate" ]', text)
         self.assertIn('export DASHBOARD_PORT="$PORT"', text)
-        self.assertIn('exec "$PYTHON_BIN" -m src.dashboard.server', text)
+        self.assertIn('exec "$PYTHON_BIN" -m src.dashboard.server_81', text)
 
     def test_railway_config_has_healthcheck_and_restart_policy(self):
         config = json.loads((ROOT / "railway.json").read_text())
@@ -26,7 +26,7 @@ class Operation43PermanentHostingTests(unittest.TestCase):
     def test_deploy_guide_requires_persistent_volume(self):
         text = (ROOT / "DEPLOY-RAILWAY.md").read_text()
         self.assertIn("/app/data", text)
-        self.assertIn("market.otrservices.com", text)
+        self.assertIn("market.otrservicesie.com", text)
         self.assertIn("OTR_BRIDGE_KEY", text)
 
 

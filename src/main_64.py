@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import timezone
 
 from src import main_63 as op63
 from src.execution import paper as paper_module

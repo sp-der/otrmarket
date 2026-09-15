@@ -13,7 +13,7 @@ class Operation451SupervisorTests(unittest.TestCase):
         self.assertIn('return "src.main_72"', current_supervisor)
         self.assertIn('"src.main_71"', current_supervisor)
         self.assertIn('"src.main_70"', current_supervisor)
-        self.assertIn('src.dashboard.server_72', run_all)
+        self.assertIn('src.dashboard.server_81', run_all)
         self.assertIn('[sys.executable, "-u", "-m", engine_module]', text)
         self.assertIn("otr-engine-watchdog", text)
         self.assertIn("ENGINE_PID_FILE", text)
@@ -21,7 +21,7 @@ class Operation451SupervisorTests(unittest.TestCase):
 
     def test_run_all_uses_single_supervisor(self):
         text = (ROOT / "run_all.sh").read_text()
-        self.assertIn('exec "$PYTHON_BIN" -m src.dashboard.server', text)
+        self.assertIn('exec "$PYTHON_BIN" -m src.dashboard.server_81', text)
         self.assertNotIn('src.main > data/engine.log', text)
 
     def test_health_reports_engine_state(self):

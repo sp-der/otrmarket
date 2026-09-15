@@ -285,7 +285,7 @@ def _start_engine() -> None:
     watcher.start()
 
 
-def _handle_shutdown(signum, frame) -> None:  # noqa: ARG001
+def _handle_shutdown(_signum, _frame) -> None:
     _stop_engine()
     raise KeyboardInterrupt
 
