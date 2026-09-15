@@ -1,5 +1,4 @@
 import hashlib
-import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -43,7 +42,7 @@ class Phase3FillTests(unittest.TestCase):
     def simulator(self,model="IDEAL_TOUCH",**kw): return FuturesExecutionSimulator("run",execution=ExecutionConfig(fill_model=model,**kw))
 
     def close_trade(self,sim,setup=None):
-        trade=sim.submit(setup or intent()); sim.on_candle(BASE+timedelta(minutes=1),101,101,99,100,"NQ"); sim.on_candle(BASE+timedelta(minutes=2),109,111,108,110,"NQ"); return sim.records[-1]
+        sim.submit(setup or intent()); sim.on_candle(BASE+timedelta(minutes=1),101,101,99,100,"NQ"); sim.on_candle(BASE+timedelta(minutes=2),109,111,108,110,"NQ"); return sim.records[-1]
 
     def test_commission_and_fee_deductions(self):
         record=self.close_trade(self.simulator()); self.assertEqual(record["net_pnl"],record["gross_pnl"]-record["commission"]-record["fees"]); self.assertGreater(record["commission"],0)
@@ -64,10 +63,10 @@ class Phase3FillTests(unittest.TestCase):
         sim=self.simulator(ambiguity_policy="AMBIGUOUS_SKIP"); sim.submit(intent()); sim.on_candle(BASE+timedelta(minutes=1),100,111,94,100,"NQ"); self.assertEqual(len(sim.open),1)
 
     def test_gap_through_stop(self):
-        sim=self.simulator(); trade=sim.submit(intent()); sim.on_candle(BASE+timedelta(minutes=1),100,101,99,100,"NQ"); sim.on_candle(BASE+timedelta(minutes=2),93,94,92,93,"NQ"); self.assertEqual(sim.records[-1]["exit_fill"],93); self.assertGreater(sim.records[-1]["gap_slippage"],0)
+        sim=self.simulator(); sim.submit(intent()); sim.on_candle(BASE+timedelta(minutes=1),100,101,99,100,"NQ"); sim.on_candle(BASE+timedelta(minutes=2),93,94,92,93,"NQ"); self.assertEqual(sim.records[-1]["exit_fill"],93); self.assertGreater(sim.records[-1]["gap_slippage"],0)
 
     def test_mfe_mae_and_realized_r(self):
-        sim=self.simulator(); trade=sim.submit(intent()); sim.on_candle(BASE+timedelta(minutes=1),100,104,98,102,"NQ"); sim.on_candle(BASE+timedelta(minutes=2),109,111,108,110,"NQ"); record=sim.records[-1]
+        sim=self.simulator(); sim.submit(intent()); sim.on_candle(BASE+timedelta(minutes=1),100,104,98,102,"NQ"); sim.on_candle(BASE+timedelta(minutes=2),109,111,108,110,"NQ"); record=sim.records[-1]
         self.assertEqual(record["mfe_points"],11); self.assertEqual(record["mae_points"],0); self.assertIsNotNone(record["realized_r"])
         self.assertEqual(record["excursion_quality"],"ENTRY_CANDLE_AMBIGUOUS")
 
