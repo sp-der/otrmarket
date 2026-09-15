@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: feature/vibe-research-sidecar
-      - name: Patch supervisor, Docker and CI
+      - name: Patch supervisor, Docker and env docs
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -30,24 +30,19 @@ jobs:
           anchor_call = '    _install_connection_fallback_81()\n'
           if call not in text:
               text = text.replace(anchor_call, anchor_call + call, 1)
-          old_copy = 'COPY requirements.txt requirements-nautilus.txt ./\n'
           server.write_text(text)
 
           docker = Path('Dockerfile')
           d = docker.read_text()
-          d = d.replace(old_copy, 'COPY requirements.txt requirements-nautilus.txt requirements-vibe.txt ./\n')
+          d = d.replace(
+              'COPY requirements.txt requirements-nautilus.txt ./\n',
+              'COPY requirements.txt requirements-nautilus.txt requirements-vibe.txt ./\n',
+          )
           old_run = 'RUN pip install --no-cache-dir -r requirements.txt \\\n    && pip install --no-cache-dir -r requirements-nautilus.txt\n'
           new_run = old_run + 'RUN python -m venv /opt/vibe \\\n    && /opt/vibe/bin/pip install --no-cache-dir -r requirements-vibe.txt\n'
           if '/opt/vibe/bin/pip install' not in d:
               d = d.replace(old_run, new_run, 1)
           docker.write_text(d)
-
-          workflow = Path('.github/workflows/tests.yml')
-          w = workflow.read_text()
-          job = '''\n  vibe-research-sidecar:\n    runs-on: ubuntu-latest\n    timeout-minutes: 15\n    steps:\n      - name: Checkout\n        uses: actions/checkout@v4\n\n      - name: Set up Python\n        uses: actions/setup-python@v5\n        with:\n          python-version: "3.12"\n          cache: pip\n\n      - name: Install isolated Vibe-Trading\n        run: |\n          python -m venv /tmp/otr-vibe\n          /tmp/otr-vibe/bin/pip install --upgrade pip\n          /tmp/otr-vibe/bin/pip install -r requirements-vibe.txt\n\n      - name: Verify Vibe package and CLI isolation\n        run: |\n          /tmp/otr-vibe/bin/python -c "import importlib.metadata as m; assert m.version('vibe-trading-ai') == '0.1.15'"\n          cd /tmp\n          /tmp/otr-vibe/bin/vibe-trading --help >/dev/null\n'''
-          if 'vibe-research-sidecar:' not in w:
-              w += job
-          workflow.write_text(w)
 
           env_file = Path('.env.example')
           e = env_file.read_text()
@@ -64,6 +59,6 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/dashboard/server_81.py Dockerfile .github/workflows/tests.yml .env.example
+          git add src/dashboard/server_81.py Dockerfile .env.example
           git commit -m "Wire isolated Vibe research sidecar into Operation 8.1"
           git push origin HEAD:feature/vibe-research-sidecar
