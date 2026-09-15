@@ -1,0 +1,6 @@
+# Vibe-Trading is intentionally installed into its own /opt/vibe virtualenv.
+# The upstream package exposes a top-level Python package named `src`, which
+# would collide with OTR's own `src` package if installed into the core runtime.
+# Keep the environments isolated and communicate only through persisted JSON
+# research packets and subprocess output.
+vibe-trading-ai==0.1.15

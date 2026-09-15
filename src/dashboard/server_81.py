@@ -8,6 +8,7 @@ from fastapi.responses import HTMLResponse
 
 from src.dashboard import server_80 as base
 from src.integrations.nautilus_shadow.ledger import ensure_parity_ledger, run_recent_gold_parity
+from src.integrations.vibe_research.routes import install_vibe_research_routes
 from src.research.conversion_funnel81 import conversion_funnel81
 from src.storage.database import get_connection, get_engine_state, set_engine_state
 
@@ -336,6 +337,7 @@ def main() -> None:
     _install_conversion_api_81()
     _install_nautilus_parity_api_81()
     _install_connection_fallback_81()
+    install_vibe_research_routes()
     print(
         "Operation 8.1 supervisor: Operation 8.0 dashboard + Gold Execution Conversion engine; "
         "first-touch zones, registration-time entry life, dynamic R:R, $750/$500 eval sizing, "

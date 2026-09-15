@@ -8,9 +8,11 @@ ENV PYTHONUNBUFFERED=1 \
 
 # NautilusTrader is observational only, but production includes the pinned
 # package so authenticated parity diagnostics can replay the same Gold data.
-COPY requirements.txt requirements-nautilus.txt ./
+COPY requirements.txt requirements-nautilus.txt requirements-vibe.txt ./
 RUN pip install --no-cache-dir -r requirements.txt \
     && pip install --no-cache-dir -r requirements-nautilus.txt
+RUN python -m venv /opt/vibe \
+    && /opt/vibe/bin/pip install --no-cache-dir -r requirements-vibe.txt
 
 COPY . .
 RUN chmod +x run_all.sh run_dashboard.sh

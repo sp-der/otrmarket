@@ -91,3 +91,28 @@ jobs:
 
       - name: Run end-to-end Gold parity ledger smoke
         run: python scripts/smoke_nautilus_parity_ledger.py
+
+  vibe-research-sidecar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install isolated Vibe-Trading
+        run: |
+          python -m venv /tmp/otr-vibe
+          /tmp/otr-vibe/bin/pip install --upgrade pip
+          /tmp/otr-vibe/bin/pip install -r requirements-vibe.txt
+
+      - name: Verify Vibe package and CLI isolation
+        run: |
+          /tmp/otr-vibe/bin/python -c "import importlib.metadata as m; assert m.version('vibe-trading-ai') == '0.1.15'"
+          cd /tmp
+          /tmp/otr-vibe/bin/vibe-trading --help >/dev/null
