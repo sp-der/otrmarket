@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import Request
 from fastapi.responses import HTMLResponse
 
+from src.integrations.vibe_research.presentation import normalize_vibe_snapshot
 from src.integrations.vibe_research.worker import (
     start_vibe_research_worker,
     vibe_research_snapshot,
@@ -49,7 +50,8 @@ def install_vibe_research_routes() -> None:
         dashboard.require_http_auth(request)
         connection = get_connection()
         try:
-            return vibe_research_snapshot(connection, recent_limit=max(1, min(int(limit), 50)))
+            raw = vibe_research_snapshot(connection, recent_limit=max(1, min(int(limit), 50)))
+            return normalize_vibe_snapshot(raw)
         finally:
             connection.close()
 
