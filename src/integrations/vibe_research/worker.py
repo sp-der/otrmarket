@@ -93,9 +93,8 @@ def _claim_next(connection: sqlite3.Connection, config: VibeResearchConfig) -> s
     ensure_vibe_research_schema(connection)
     active_since = str(os.getenv("OTR_VIBE_ACTIVE_SINCE") or "").strip()
     # Wait until Nautilus has either certified the trade or reached a terminal
-    # diagnostic state. This ensures Vibe's packet includes the independent
-    # execution verdict whenever it is available. When ACTIVE_SINCE is set,
-    # historical replay packets remain preserved but are not silently billed.
+    # diagnostic state. ACTIVE_SINCE is a replay-market timestamp, not a wall-
+    # clock queue timestamp, so every eligibility check joins back to the trade.
     row = connection.execute(
         f"""
         SELECT p.setup_id
@@ -115,33 +114,49 @@ def _claim_next(connection: sqlite3.Connection, config: VibeResearchConfig) -> s
         """,
         (active_since, active_since),
     ).fetchone()
+
     if row is None and config.provider_ready and config.package_installed:
-        # RETRY means an analysis for the active replay already failed or was
-        # interrupted. Prefer the newest replay packet by original queue time.
+        # RETRY jobs are eligible by the replay trade timestamp. Using queued_at
+        # here would mix historical packets with a fresh replay because both are
+        # queued by the current wall clock.
         row = connection.execute(
             """
-            SELECT setup_id FROM vibe_research_jobs_v02
-            WHERE status='RETRY'
-              AND (?='' OR queued_at >= ?)
-            ORDER BY queued_at DESC
+            SELECT v.setup_id
+            FROM vibe_research_jobs_v02 v
+            JOIN paper_trades p ON p.setup_id=v.setup_id
+            WHERE v.status='RETRY'
+              AND (?='' OR COALESCE(p.closed_at,p.updated_at) >= ?)
+            ORDER BY COALESCE(p.closed_at,p.updated_at) DESC
             LIMIT 1
             """,
             (active_since, active_since),
         ).fetchone()
 
-        # Old capture-only packets are valuable evidence, but backfilling them
-        # can consume API credit before the current replay is analyzed. Keep
-        # them dormant unless the operator explicitly enables backfill.
+        # Provider/package-waiting jobs from the ACTIVE replay should resume
+        # automatically once the provider is ready. Historical waiting packets
+        # remain dormant unless the operator explicitly enables backfill.
+        if row is None and active_since:
+            row = connection.execute(
+                """
+                SELECT v.setup_id
+                FROM vibe_research_jobs_v02 v
+                JOIN paper_trades p ON p.setup_id=v.setup_id
+                WHERE v.status IN ('WAITING_PROVIDER','PACKAGE_UNAVAILABLE')
+                  AND COALESCE(p.closed_at,p.updated_at) >= ?
+                ORDER BY COALESCE(p.closed_at,p.updated_at) DESC
+                LIMIT 1
+                """,
+                (active_since,),
+            ).fetchone()
+
         if row is None and _truthy(os.getenv("OTR_VIBE_BACKFILL_WAITING")):
             row = connection.execute(
                 """
                 SELECT setup_id FROM vibe_research_jobs_v02
                 WHERE status IN ('WAITING_PROVIDER','PACKAGE_UNAVAILABLE')
-                  AND (?='' OR queued_at >= ?)
                 ORDER BY queued_at ASC
                 LIMIT 1
-                """,
-                (active_since, active_since),
+                """
             ).fetchone()
     if row is None:
         return None
