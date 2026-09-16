@@ -77,7 +77,7 @@ def recover_interrupted_vibe_jobs(connection: sqlite3.Connection) -> int:
         UPDATE vibe_research_jobs_v02
         SET status='RETRY', updated_at=?, completed_at=NULL,
             last_error='Previous Vibe research attempt was interrupted by process restart.'
-        WHERE status='RUNNING'
+        WHERE status IN ('CLAIMED','RUNNING')
         """,
         (now,),
     )
