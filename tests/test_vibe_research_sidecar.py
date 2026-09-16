@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -128,6 +129,7 @@ class VibeResearchSidecarTests(unittest.TestCase):
             os.environ,
             {
                 "OPENAI_API_KEY": "provider-secret",
+                "OTR_VIBE_ACTIVE_SINCE": "2026-09-09T00:00:00+00:00",
                 "OTR_VIBE_BACKFILL_WAITING": "0",
             },
             clear=False,
@@ -142,6 +144,42 @@ class VibeResearchSidecarTests(unittest.TestCase):
             "SELECT status FROM vibe_research_jobs_v02 WHERE setup_id='gc-vibe-01'"
         ).fetchone()[0]
         self.assertEqual(status, "WAITING_PROVIDER")
+
+    def test_waiting_active_replay_packet_resumes_by_trade_timestamp(self):
+        self.add_closed_trade()
+        first = process_one_vibe_job(self.connection, config=self.config())
+        self.assertEqual(first["status"], "WAITING_PROVIDER")
+
+        completed = subprocess.CompletedProcess(
+            args=["vibe-trading"],
+            returncode=0,
+            stdout='{"classification":"TEST","promotion_recommendation":"HOLD"}',
+            stderr="",
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "OPENAI_API_KEY": "provider-secret",
+                "OTR_VIBE_ACTIVE_SINCE": "2026-09-08T00:00:00+00:00",
+                "OTR_VIBE_BACKFILL_WAITING": "0",
+            },
+            clear=False,
+        ):
+            second = process_one_vibe_job(
+                self.connection,
+                config=self.config(provider="openai", model="research-model"),
+                runner=lambda *_args: completed,
+            )
+
+        self.assertEqual(second["status"], "COMPLETE")
+        status = self.connection.execute(
+            "SELECT status FROM vibe_research_jobs_v02 WHERE setup_id='gc-vibe-01'"
+        ).fetchone()[0]
+        self.assertEqual(status, "COMPLETE")
+        self.assertEqual(
+            self.connection.execute("SELECT COUNT(*) FROM vibe_research_findings_v02").fetchone()[0],
+            1,
+        )
 
     def test_vibe_process_environment_does_not_receive_otr_secrets(self):
         config = self.config(provider="openai", model="research-model")
