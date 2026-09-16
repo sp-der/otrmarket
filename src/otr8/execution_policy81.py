@@ -388,6 +388,11 @@ def eval_risk81(decision, setup) -> tuple[float, float]:
 
     strategy = str(metadata.get("strategy", "") or "").upper()
     explicit_caps = []
+    # The Gold momentum lane is explicitly a reduced-risk first-pullback lane.
+    # Context can still grade its quality A+ for R:R/selection purposes, but it
+    # must not silently promote the lane from the approved $500 budget to $750.
+    if strategy == "GOLD_MOMENTUM_PULLBACK_72R":
+        explicit_caps.append(REDUCED_RISK_DOLLARS)
     if str(setup.timeframe) == "1m" and strategy == "MSS_REVERSAL":
         explicit_caps.append(REDUCED_RISK_DOLLARS)
     zone = metadata.get("execution_zone_81", {}) or {}
