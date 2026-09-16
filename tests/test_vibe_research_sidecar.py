@@ -13,6 +13,7 @@ from src.integrations.vibe_research.config import VibeResearchConfig, safe_vibe_
 from src.integrations.vibe_research.worker import (
     ensure_vibe_research_schema,
     process_one_vibe_job,
+    recover_interrupted_vibe_jobs,
     vibe_research_snapshot,
 )
 
@@ -180,6 +181,30 @@ class VibeResearchSidecarTests(unittest.TestCase):
             self.connection.execute("SELECT COUNT(*) FROM vibe_research_findings_v02").fetchone()[0],
             1,
         )
+
+    def test_claimed_and_running_jobs_recover_to_retry(self):
+        ensure_vibe_research_schema(self.connection)
+        now = "2026-09-15T23:00:00+00:00"
+        for setup_id, status in (("claimed-job", "CLAIMED"), ("running-job", "RUNNING")):
+            self.connection.execute(
+                """
+                INSERT INTO vibe_research_jobs_v02(
+                    setup_id,status,attempts,queued_at,updated_at,provider,model
+                ) VALUES (?,?,?,?,?,?,?)
+                """,
+                (setup_id, status, 1, now, now, "openai", "research-model"),
+            )
+        self.connection.commit()
+
+        recovered = recover_interrupted_vibe_jobs(self.connection)
+
+        self.assertEqual(recovered, 2)
+        statuses = dict(
+            self.connection.execute(
+                "SELECT setup_id,status FROM vibe_research_jobs_v02 ORDER BY setup_id"
+            ).fetchall()
+        )
+        self.assertEqual(statuses, {"claimed-job": "RETRY", "running-job": "RETRY"})
 
     def test_vibe_process_environment_does_not_receive_otr_secrets(self):
         config = self.config(provider="openai", model="research-model")
