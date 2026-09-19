@@ -12,6 +12,14 @@ DEFAULT_TIMEOUT_SECONDS = 180
 DEFAULT_WORKDIR = Path("/app/data/vibe-research")
 DEFAULT_EXECUTABLE = Path("/opt/vibe/bin/vibe-trading")
 
+# A RETRY job is claimable while attempts < max_attempts. Once exhausted it
+# becomes a terminal ERROR instead of retrying forever against the provider.
+DEFAULT_MAX_ATTEMPTS = 3
+# Base delay before a RETRY job is claimed again. Doubles per attempt up to
+# MAX_RETRY_BACKOFF_SECONDS so a flaky provider is not hammered.
+DEFAULT_RETRY_BACKOFF_SECONDS = 30.0
+MAX_RETRY_BACKOFF_SECONDS = 900.0
+
 _PROVIDER_KEYS = {
     "openai": ("OPENAI_API_KEY",),
     "openrouter": ("OPENROUTER_API_KEY",),
@@ -36,6 +44,13 @@ def _number(name: str, default: float, minimum: float) -> float:
         return default
 
 
+def _int(name: str, default: int, minimum: int) -> int:
+    try:
+        return max(minimum, int(float(os.getenv(name, str(default)))))
+    except (TypeError, ValueError):
+        return default
+
+
 @dataclass(frozen=True)
 class VibeResearchConfig:
     enabled: bool
@@ -46,6 +61,8 @@ class VibeResearchConfig:
     poll_seconds: float
     max_iter: int
     timeout_seconds: int
+    max_attempts: int
+    retry_backoff_seconds: float
 
     @property
     def package_installed(self) -> bool:
@@ -91,6 +108,10 @@ def load_vibe_research_config() -> VibeResearchConfig:
     executable = Path(os.getenv("OTR_VIBE_EXECUTABLE", str(DEFAULT_EXECUTABLE))).expanduser()
     max_iter = max(1, int(_number("OTR_VIBE_MAX_ITER", DEFAULT_MAX_ITER, 1)))
     timeout_seconds = max(30, int(_number("OTR_VIBE_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS, 30)))
+    max_attempts = _int("OTR_VIBE_MAX_ATTEMPTS", DEFAULT_MAX_ATTEMPTS, 1)
+    retry_backoff_seconds = _number(
+        "OTR_VIBE_RETRY_BACKOFF_SECONDS", DEFAULT_RETRY_BACKOFF_SECONDS, 1.0
+    )
     return VibeResearchConfig(
         enabled=enabled,
         provider=provider,
@@ -100,6 +121,8 @@ def load_vibe_research_config() -> VibeResearchConfig:
         poll_seconds=_number("OTR_VIBE_POLL_SECONDS", DEFAULT_POLL_SECONDS, 0.5),
         max_iter=max_iter,
         timeout_seconds=timeout_seconds,
+        max_attempts=max_attempts,
+        retry_backoff_seconds=retry_backoff_seconds,
     )
 
 

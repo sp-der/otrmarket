@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from fastapi import Request
@@ -9,12 +10,19 @@ from fastapi.responses import HTMLResponse
 from src.dashboard import server_80 as base
 from src.integrations.nautilus_shadow.ledger import ensure_parity_ledger, run_recent_gold_parity
 from src.integrations.vibe_research.routes import install_vibe_research_routes
+from src.otr8.execution_policy81 import FULL_RISK_DOLLARS, REDUCED_RISK_DOLLARS
 from src.research.conversion_funnel81 import conversion_funnel81
+from src.risk.evaluation import EvaluationConfig
 from src.storage.database import get_connection, get_engine_state, set_engine_state
 
 
 RUN_RESET_STATE_KEY_81 = "operation81_run_reset_generation"
-RUN_RESET_GENERATION_81 = "overnight-2026-09-05-c"
+# Explicit-intent reset: a destructive reset only ever runs when an operator
+# sets this env var to a new, non-empty value for this deploy. Missing/empty
+# means "preserve all data" (the safe default). This replaces the old design
+# where bumping a hardcoded generation string in a code commit was enough to
+# silently DELETE active trading tables on the next boot.
+RUN_RESET_TOKEN_ENV_81 = "OTR_OPERATION81_RESET_TOKEN"
 RUN_RESET_TABLES_81 = (
     "paper_trades",
     "strategy_setups",
@@ -36,23 +44,54 @@ def _promote_engine_81() -> str:
 
 
 def _reset_active_replay_progress_81() -> dict[str, int]:
-    """One-time clean scorecard reset for the user-approved overnight 8.1 replay.
+    """Explicit-intent overnight scorecard reset for Operation 8.1.
 
-    Trading/run state is cleared so Overview, EVAL accounting, conversion telemetry,
-    scanner state and the trade list begin at zero. Long-lived learning evidence is
-    deliberately preserved: market_quotes, candles, counterfactual_setups,
-    market_lessons, learning_feature_stats, trade_intelligence and shadow history.
-    The generation marker makes this idempotent across Railway restarts.
+    This performs a destructive reset ONLY when the operator sets
+    OTR_OPERATION81_RESET_TOKEN to a new, non-empty value on this deploy.
+    A missing/empty token preserves all data (the safe default). Applying the
+    same token twice is a no-op: the applied token is recorded in
+    engine_state so restarts never repeat the reset. The reset also refuses
+    to run while a PENDING or OPEN paper position exists, since deleting
+    paper_trades out from under a live position would corrupt tracking.
+
+    Trading/run state is cleared so Overview, EVAL accounting, conversion
+    telemetry, scanner state and the trade list begin at zero. Long-lived
+    learning evidence is deliberately preserved: market_quotes, candles,
+    counterfactual_setups, market_lessons, learning_feature_stats,
+    trade_intelligence and shadow history.
     """
+    token = (os.getenv(RUN_RESET_TOKEN_ENV_81) or "").strip()
+    if not token:
+        print(
+            f"Operation 8.1 overnight replay reset: {RUN_RESET_TOKEN_ENV_81} not set; preserving all data.",
+            flush=True,
+        )
+        return {}
+
     connection = get_connection()
     try:
         previous = get_engine_state(connection, RUN_RESET_STATE_KEY_81, "") or ""
-        if previous == RUN_RESET_GENERATION_81:
+        if previous == token:
             print(
-                "Operation 8.1 overnight replay reset already applied; preserving the current fresh run.",
+                "Operation 8.1 overnight replay reset: token already applied; preserving the current run.",
                 flush=True,
             )
             return {}
+
+        if base.legacy._table_exists_72t(connection, "paper_trades"):
+            open_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM paper_trades WHERE status IN ('PENDING','OPEN')"
+                ).fetchone()[0]
+            )
+            if open_count:
+                print(
+                    "Operation 8.1 overnight replay reset REFUSED: "
+                    f"{open_count} PENDING/OPEN paper position(s) exist; resolve them before "
+                    "applying a new reset token. No data was changed.",
+                    flush=True,
+                )
+                return {}
 
         counts: dict[str, int] = {}
         for table in RUN_RESET_TABLES_81:
@@ -69,12 +108,12 @@ def _reset_active_replay_progress_81() -> dict[str, int]:
         ):
             connection.execute("DELETE FROM engine_state WHERE key=?", (key,))
         set_engine_state(connection, "eval_reset_excluded_setup_ids_72", "[]")
-        set_engine_state(connection, RUN_RESET_STATE_KEY_81, RUN_RESET_GENERATION_81)
+        set_engine_state(connection, RUN_RESET_STATE_KEY_81, token)
         connection.commit()
 
         summary = ", ".join(f"{table}={count}" for table, count in counts.items()) or "no prior run rows"
         print(
-            "Operation 8.1 FRESH OVERNIGHT REPLAY RESET complete: "
+            "Operation 8.1 EXPLICIT OVERNIGHT REPLAY RESET applied: "
             + summary
             + "; preserved candles, market quotes, counterfactual learning, market lessons, feature stats, intelligence and shadow history.",
             flush=True,
@@ -325,10 +364,69 @@ def _install_connection_fallback_81() -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def _startup_risk_envelope_81() -> dict:
+    """Print the resolved Operation 8.1 risk envelope once at boot.
+
+    Read-only: reports already-resolved configuration, never mutates it, and
+    never prints secrets (broker/provider credentials are never read here).
+    A misconfigured envelope is surfaced as a WARN log line, never a crash.
+    """
+    config = EvaluationConfig.from_env()
+    execution_mode = os.getenv("OTR_EXECUTION_MODE", "PAPER").strip().upper()
+    broker_armed = base.core72._env_truthy_72(os.getenv("OTR_EXECUTION_ARMED"))
+
+    envelope = {
+        "EVAL_GUARD_ENABLED": config.enabled,
+        "EVAL_RISK_PER_TRADE": config.risk_per_trade,
+        "EVAL_MIN_RISK_PER_TRADE": config.min_risk_per_trade,
+        "EVAL_INTERNAL_DAILY_STOP": config.internal_daily_stop,
+        "EVAL_FIRM_DAILY_LOSS": config.firm_daily_loss_limit,
+        "EVAL_MAX_CONSECUTIVE_LOSSES": config.max_consecutive_losses,
+        "EVAL_MAX_CONCURRENT": config.max_concurrent_positions,
+        "EVAL_SESSION_PROFIT_CAP": config.session_profit_cap,
+        "EVAL_CONTINUE_AFTER_TARGET": config.continue_after_target,
+        "OTR_EXECUTION_MODE": execution_mode,
+    }
+    policy_targets = {
+        "a_plus_target_dollars": FULL_RISK_DOLLARS,
+        "a_target_dollars": REDUCED_RISK_DOLLARS,
+        "gold_momentum_pullback_72r_max_dollars": REDUCED_RISK_DOLLARS,
+    }
+
+    print(
+        "Operation 8.1 STARTUP RISK ENVELOPE: "
+        + ", ".join(f"{key}={value}" for key, value in envelope.items())
+        + f", broker_armed={broker_armed}"
+        + f", a_plus_target=${policy_targets['a_plus_target_dollars']:.2f}"
+        + f", a_target=${policy_targets['a_target_dollars']:.2f}"
+        + f", gold_momentum_pullback_72r_max=${policy_targets['gold_momentum_pullback_72r_max_dollars']:.2f}",
+        flush=True,
+    )
+
+    warnings: list[str] = []
+    if config.risk_per_trade < FULL_RISK_DOLLARS:
+        warning = (
+            f"EVAL_RISK_PER_TRADE=${config.risk_per_trade:.2f} caps the A+ setup below its "
+            f"Operation 8.1 target of ${FULL_RISK_DOLLARS:.2f}."
+        )
+        warnings.append(warning)
+        print(f"Operation 8.1 RISK ENVELOPE WARN: {warning}", flush=True)
+
+    return {"envelope": envelope, "broker_armed": broker_armed, "policy_targets": policy_targets, "warnings": warnings}
+
+
 def main() -> None:
     # Apply the user-requested clean overnight scorecard before the inherited
     # supervisor creates the next run and starts the 8.1 strategy engine.
     reset_counts = _reset_active_replay_progress_81()
+
+    try:
+        _startup_risk_envelope_81()
+    except Exception as exc:  # Diagnostics must never block startup.
+        print(
+            f"Operation 8.1 startup risk envelope diagnostic failed non-fatally: {type(exc).__name__}: {exc}",
+            flush=True,
+        )
 
     # server_80 still owns the proven dashboard/API/UI setup. Replace only its
     # engine promotion hook so the same supervisor launches Operation 8.1, then
