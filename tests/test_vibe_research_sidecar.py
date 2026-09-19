@@ -93,6 +93,8 @@ class VibeResearchSidecarTests(unittest.TestCase):
             poll_seconds=3.0,
             max_iter=12,
             timeout_seconds=60,
+            max_attempts=3,
+            retry_backoff_seconds=30.0,
         )
 
     def test_schema_is_additive_and_never_mutates_trade_rows(self):

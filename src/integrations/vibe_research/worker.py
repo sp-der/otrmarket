@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from src.integrations.vibe_research.config import (
+    MAX_RETRY_BACKOFF_SECONDS,
     VIBE_VERSION,
     VibeResearchConfig,
     load_vibe_research_config,
@@ -29,8 +30,31 @@ def _utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _parse_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def _truthy(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _vibe_backoff_seconds(attempts: int, config: VibeResearchConfig) -> float:
+    """Bounded exponential backoff before a RETRY job is claimed again."""
+    exponent = max(0, int(attempts) - 1)
+    return min(config.retry_backoff_seconds * (2 ** exponent), MAX_RETRY_BACKOFF_SECONDS)
+
+
+def _retry_status_for_attempts(attempts: int, config: VibeResearchConfig) -> str:
+    """RETRY while attempts remain; otherwise a terminal ERROR."""
+    return "RETRY" if int(attempts) < config.max_attempts else "ERROR"
 
 
 def ensure_vibe_research_schema(connection: sqlite3.Connection) -> None:
@@ -69,17 +93,37 @@ def ensure_vibe_research_schema(connection: sqlite3.Connection) -> None:
     connection.commit()
 
 
-def recover_interrupted_vibe_jobs(connection: sqlite3.Connection) -> int:
+def recover_interrupted_vibe_jobs(
+    connection: sqlite3.Connection, config: VibeResearchConfig | None = None
+) -> int:
+    """Requeue jobs an interrupted process left CLAIMED/RUNNING.
+
+    A job that had already exhausted its retry budget before the restart must
+    not be resurrected as another RETRY attempt; it becomes a terminal ERROR
+    instead, same as if it had exhausted attempts mid-run.
+    """
+    config = config or load_vibe_research_config()
     ensure_vibe_research_schema(connection)
     now = _utc_iso()
+    exhausted_message = (
+        f"Vibe retry attempts exhausted after restart recovery (max={config.max_attempts})."
+    )
+    connection.execute(
+        """
+        UPDATE vibe_research_jobs_v02
+        SET status='ERROR', updated_at=?, completed_at=?, last_error=?
+        WHERE status IN ('CLAIMED','RUNNING') AND attempts >= ?
+        """,
+        (now, now, exhausted_message, config.max_attempts),
+    )
     cursor = connection.execute(
         """
         UPDATE vibe_research_jobs_v02
         SET status='RETRY', updated_at=?, completed_at=NULL,
             last_error='Previous Vibe research attempt was interrupted by process restart.'
-        WHERE status IN ('CLAIMED','RUNNING')
+        WHERE status IN ('CLAIMED','RUNNING') AND attempts < ?
         """,
-        (now,),
+        (now, config.max_attempts),
     )
     connection.commit()
     return max(0, int(cursor.rowcount or 0))
@@ -118,19 +162,29 @@ def _claim_next(connection: sqlite3.Connection, config: VibeResearchConfig) -> s
     if row is None and config.provider_ready and config.package_installed:
         # RETRY jobs are eligible by the replay trade timestamp. Using queued_at
         # here would mix historical packets with a fresh replay because both are
-        # queued by the current wall clock.
-        row = connection.execute(
+        # queued by the current wall clock. Exhausted jobs (attempts >= max) are
+        # terminal and never claimable here; eligible candidates additionally
+        # respect a bounded exponential backoff since their last attempt.
+        retry_candidates = connection.execute(
             """
-            SELECT v.setup_id
+            SELECT v.setup_id, v.attempts, v.updated_at
             FROM vibe_research_jobs_v02 v
             JOIN paper_trades p ON p.setup_id=v.setup_id
             WHERE v.status='RETRY'
+              AND v.attempts < ?
               AND (?='' OR COALESCE(p.closed_at,p.updated_at) >= ?)
             ORDER BY COALESCE(p.closed_at,p.updated_at) DESC
-            LIMIT 1
             """,
-            (active_since, active_since),
-        ).fetchone()
+            (config.max_attempts, active_since, active_since),
+        ).fetchall()
+        now = datetime.now(timezone.utc)
+        row = None
+        for candidate_setup_id, attempts, updated_at in retry_candidates:
+            backoff = _vibe_backoff_seconds(int(attempts or 0), config)
+            last_attempt = _parse_iso(updated_at)
+            if last_attempt is None or (now - last_attempt).total_seconds() >= backoff:
+                row = (candidate_setup_id,)
+                break
 
         # Provider/package-waiting jobs from the ACTIVE replay should resume
         # automatically once the provider is ready. Historical waiting packets
@@ -279,6 +333,11 @@ def process_one_vibe_job(
     if setup_id is None:
         return None
 
+    attempts_row = connection.execute(
+        "SELECT attempts FROM vibe_research_jobs_v02 WHERE setup_id=?", (setup_id,)
+    ).fetchone()
+    attempts = int(attempts_row[0] or 1) if attempts_row else 1
+
     try:
         packet = build_vibe_packet(connection, setup_id)
         prompt_path, output_path = _write_packet(config, setup_id, packet)
@@ -313,21 +372,30 @@ def process_one_vibe_job(
     try:
         result = execute(config, prompt_path)
     except subprocess.TimeoutExpired as exc:
+        status = _retry_status_for_attempts(attempts, config)
         message = f"Vibe research timed out after {config.timeout_seconds}s: {exc}"
-        _mark_job(connection, setup_id, "RETRY", packet_path=packet_path, error=message)
-        return {"setup_id": setup_id, "status": "RETRY", "error": message}
+        if status == "ERROR":
+            message = f"{message} (retry attempts exhausted, max={config.max_attempts})"
+        _mark_job(connection, setup_id, status, packet_path=packet_path, error=message, completed=(status == "ERROR"))
+        return {"setup_id": setup_id, "status": status, "error": message}
     except Exception as exc:
+        status = _retry_status_for_attempts(attempts, config)
         message = f"{type(exc).__name__}: {exc}"
-        _mark_job(connection, setup_id, "RETRY", packet_path=packet_path, error=message)
-        return {"setup_id": setup_id, "status": "RETRY", "error": message}
+        if status == "ERROR":
+            message = f"{message} (retry attempts exhausted, max={config.max_attempts})"
+        _mark_job(connection, setup_id, status, packet_path=packet_path, error=message, completed=(status == "ERROR"))
+        return {"setup_id": setup_id, "status": status, "error": message}
 
     stdout = str(getattr(result, "stdout", "") or "")
     stderr = str(getattr(result, "stderr", "") or "")
     returncode = int(getattr(result, "returncode", 1))
     if returncode != 0:
+        status = _retry_status_for_attempts(attempts, config)
         message = (stderr or stdout or f"Vibe exited with code {returncode}")[-2000:]
-        _mark_job(connection, setup_id, "RETRY", packet_path=packet_path, error=message)
-        return {"setup_id": setup_id, "status": "RETRY", "error": message}
+        if status == "ERROR":
+            message = f"{message} (retry attempts exhausted, max={config.max_attempts})"
+        _mark_job(connection, setup_id, status, packet_path=packet_path, error=message, completed=(status == "ERROR"))
+        return {"setup_id": setup_id, "status": status, "error": message}
 
     parsed = _parse_vibe_output(stdout)
     output_path.write_text(json.dumps(parsed, indent=2, sort_keys=True, default=str), encoding="utf-8")

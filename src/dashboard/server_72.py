@@ -49,6 +49,24 @@ def _env_number_72(name: str) -> float | None:
         return None
 
 
+# Fields the legacy 7.2M million-value repair must never rewrite: Operation
+# 8.1 configures these directly and a silent rewrite here would fight it.
+_PROTECTED_FROM_72M_REPAIR = (
+    "EVAL_RISK_PER_TRADE",
+    "EVAL_SESSION_PROFIT_CAP",
+    "EVAL_CONTINUE_AFTER_TARGET",
+)
+
+# Fields that may still carry a genuine legacy million-value sentinel, but
+# whose *current* configured value is honored as-is instead of being
+# overwritten, since forcing them could conflict with Operation 8.1 policy.
+_PRESERVE_IF_SET_IN_72M_REPAIR = (
+    "EVAL_INTERNAL_DAILY_STOP",
+    "EVAL_MAX_CONSECUTIVE_LOSSES",
+    "EVAL_MIN_RISK_PER_TRADE",
+)
+
+
 def _repair_paper_eval_config_72m() -> None:
     """Repair the legacy million-value bypass only for PAPER EVAL runs.
 
@@ -60,6 +78,13 @@ def _repair_paper_eval_config_72m() -> None:
     This repair is deliberately scoped to PAPER execution plus EVAL mode. It
     never rewrites funded/live broker configuration, and it only activates when
     the old bypass is actually detected or the evaluation guard was disabled.
+
+    Operation 8.1 now owns EVAL_RISK_PER_TRADE, EVAL_SESSION_PROFIT_CAP and
+    EVAL_CONTINUE_AFTER_TARGET directly, so this legacy repair must never
+    rewrite them. A few other fields (internal daily stop, max consecutive
+    losses, min risk per trade) may still carry a genuine legacy sentinel, but
+    if the operator has already configured a value for them, that configured
+    value is preserved instead of being forced back to the 7.2M defaults.
     """
     execution_mode = os.getenv("OTR_EXECUTION_MODE", "PAPER").strip().upper()
     trading_mode = os.getenv("OTR_TRADING_MODE", "").strip().upper()
@@ -109,10 +134,19 @@ def _repair_paper_eval_config_72m() -> None:
         "OTR_CALIBRATION_MAX_TRADES_DAY": "0",
         "OTR_BASE_WIN_LOCK_DOLLARS": "0",
     }
+    for name in _PROTECTED_FROM_72M_REPAIR:
+        restored.pop(name, None)
+    for name in _PRESERVE_IF_SET_IN_72M_REPAIR:
+        if os.getenv(name) is not None:
+            restored.pop(name, None)
+
     os.environ.update(restored)
     print(
-        "Operation 7.2M paper-eval repair: restored 50K evaluation risk rails; "
-        "trade count remains unlimited via zero-valued caps.",
+        "Operation 7.2M paper-eval repair: restored 50K evaluation risk rails "
+        f"({', '.join(sorted(restored)) or 'none'}); trade count remains unlimited via "
+        "zero-valued caps; Operation 8.1 risk policy fields "
+        f"({', '.join(_PROTECTED_FROM_72M_REPAIR)}) and any already-configured "
+        f"({', '.join(_PRESERVE_IF_SET_IN_72M_REPAIR)}) were left untouched.",
         flush=True,
     )
 

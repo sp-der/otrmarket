@@ -199,7 +199,7 @@ class EvaluationRiskGuard:
         trades_by_day: dict[object, int] = {}
         committed_risk = 0.0
         active_positions = 0
-        closed_sequence = []
+        closed_today_sequence = []
         session_pnl = 0.0
         session_trades = 0
         session_wins = 0
@@ -229,7 +229,8 @@ class EvaluationRiskGuard:
                     day = closed_at.astimezone(NY).date()
                     daily_results[day] = daily_results.get(day, 0.0) + result_dollars
                 marker = str(row["result"] or "")
-                closed_sequence.append(marker)
+                if closed_at and closed_at.astimezone(NY).date() == current_day:
+                    closed_today_sequence.append(marker)
                 if belongs_to_current_session:
                     session_pnl += result_dollars
                     session_wins += int(marker == "WIN")
@@ -259,8 +260,11 @@ class EvaluationRiskGuard:
         day_pnl = daily_results.get(current_day, 0.0)
         trades_today = trades_by_day.get(current_day, 0)
 
+        # The circuit breaker only ever looks at trades closed on the current
+        # trading day. A prior day's loss streak must not carry over and lock
+        # a fresh trading day before it has even started.
         consecutive_losses = 0
-        for result in reversed(closed_sequence):
+        for result in reversed(closed_today_sequence):
             if result == "LOSS":
                 consecutive_losses += 1
             else:
@@ -287,7 +291,7 @@ class EvaluationRiskGuard:
             status, reason = "DAILY_LOCK", "OTR internal daily stop reached."
         elif c.max_trades_per_day > 0 and trades_today >= c.max_trades_per_day:
             status, reason = "DAILY_LOCK", "OTR maximum trades for this trading day reached."
-        elif consecutive_losses >= c.max_consecutive_losses:
+        elif c.max_consecutive_losses > 0 and consecutive_losses >= c.max_consecutive_losses:
             status, reason = "DAILY_LOCK", "OTR consecutive-loss circuit breaker reached."
         elif active_positions >= c.max_concurrent_positions:
             status, reason = "POSITION_LOCK", "OTR already has the maximum allowed active paper position."
