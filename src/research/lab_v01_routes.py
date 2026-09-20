@@ -52,7 +52,7 @@ h1{font-size:clamp(28px,5vw,48px);letter-spacing:-.045em;margin:0 0 4px}.sub{col
 <h1>OTR Research Lab <span class="muted">v0.1</span></h1>
 <div class="sub">Evidence layer for the current Gold replay. It inspects trades, scores samples, stores research snapshots, prepares counterfactual geometry, and now automatically sends newly closed Gold trades to Nautilus while their raw tick window is still fresh. It cannot alter Operation 8.1, place broker orders, or change risk.</div>
 <div><span class="badge">GC ONLY</span><span class="badge">NON-AUTHORITATIVE</span><span class="badge">20 SAMPLE EVIDENCE GATE</span><span class="badge">NAUTILUS CERTIFICATION</span><span class="badge">AUTO CERTIFY ON CLOSE</span></div>
-<div class="controls"><button id="capture">Capture Evidence</button><button class="secondary" id="refresh">Refresh</button><a href="/market/nautilus-parity"><button class="secondary" type="button">Nautilus Parity</button></a></div>
+<div class="controls"><button id="capture">Capture Evidence</button><button class="secondary" id="refresh">Refresh</button><a href="/market/nautilus-parity"><button class="secondary" type="button">Nautilus Parity</button></a><a href="/market/confluence-intelligence"><button class="secondary" type="button">Confluence Intelligence (8.2)</button></a></div>
 <div id="status"></div>
 <div class="grid">
 <div class="card"><div class="label">Resolved Samples</div><div class="value" id="samples">0</div><div class="small" id="progress">0 / 20</div></div>

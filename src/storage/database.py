@@ -180,6 +180,10 @@ def get_connection():
         ("run_id", "TEXT"),
         ("engine_version", "TEXT"),
         ("operation_version", "TEXT"),
+        # Operation 8.2 fix: paper sizing must respect the same configured
+        # OTR_EXECUTION_MAX_MICROS ceiling the live path already enforces.
+        ("max_micros_cap", "INTEGER"),
+        ("unused_risk_dollars", "REAL"),
     ):
         if not _column_exists(connection, "paper_trades", column):
             connection.execute(f"ALTER TABLE paper_trades ADD COLUMN {column} {ddl}")
@@ -429,6 +433,19 @@ def save_setup(connection, setup: StrategySetup):
         )
         connection.commit()
 
+    # Operation 8.2: SHADOW-ONLY research snapshot, captured for every GC
+    # setup OTR ever saves (blocked, rejected, or chosen). Never touches
+    # strategy_setups/paper_trades and never raises -- capture_snapshot()
+    # swallows its own errors so shadow research can never break setup
+    # persistence.
+    if str(setup.symbol).upper() == "GC":
+        try:
+            from src.otr8.confluence_intelligence.service import capture_snapshot
+
+            capture_snapshot(connection, setup, run_id=run_id)
+        except Exception:
+            pass
+
 
 def save_diagnostic(connection, diagnostic: dict | None):
     if not diagnostic:
@@ -505,8 +522,9 @@ def upsert_paper_trade(connection, position, updated_at):
                 requested_risk_dollars, actual_risk_dollars, quantity,
                 per_contract_risk, contract_multiplier, execution_contract,
                 accounting_version, mfe_r, mae_r,
-                run_id, engine_version, operation_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                run_id, engine_version, operation_version,
+                max_micros_cap, unused_risk_dollars
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(setup_id) DO UPDATE SET
                 status=excluded.status,
                 opened_at=excluded.opened_at,
@@ -529,7 +547,9 @@ def upsert_paper_trade(connection, position, updated_at):
                 mae_r=excluded.mae_r,
                 run_id=COALESCE(paper_trades.run_id, excluded.run_id),
                 engine_version=COALESCE(paper_trades.engine_version, excluded.engine_version),
-                operation_version=COALESCE(paper_trades.operation_version, excluded.operation_version)
+                operation_version=COALESCE(paper_trades.operation_version, excluded.operation_version),
+                max_micros_cap=COALESCE(paper_trades.max_micros_cap, excluded.max_micros_cap),
+                unused_risk_dollars=COALESCE(paper_trades.unused_risk_dollars, excluded.unused_risk_dollars)
             """,
             (
                 setup.setup_id,
@@ -561,9 +581,22 @@ def upsert_paper_trade(connection, position, updated_at):
                 run_id,
                 ENGINE_VERSION,
                 OPERATION_VERSION,
+                position.max_micros_cap,
+                position.unused_risk_dollars,
             ),
         )
         connection.commit()
+
+    # Operation 8.2: SHADOW-ONLY post-trade research enrichment. Only ever
+    # updates the separate outcome columns on an existing snapshot; never
+    # touches the immutable pre-trade feature record, and never raises.
+    if str(setup.symbol).upper() == "GC":
+        try:
+            from src.otr8.confluence_intelligence.service import update_outcome
+
+            update_outcome(connection, position)
+        except Exception:
+            pass
 
 
 def save_quotes_batch(connection, rows):

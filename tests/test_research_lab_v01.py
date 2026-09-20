@@ -66,7 +66,9 @@ class ResearchLabV01Tests(unittest.TestCase):
                 mae_r REAL,
                 run_id TEXT,
                 engine_version TEXT,
-                operation_version TEXT
+                operation_version TEXT,
+                max_micros_cap INTEGER,
+                unused_risk_dollars REAL
             );
             CREATE TABLE nautilus_shadow_parity (
                 setup_id TEXT NOT NULL,

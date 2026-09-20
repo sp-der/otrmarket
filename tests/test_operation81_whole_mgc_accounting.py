@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 import unittest
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 from src.execution.paper import (
     CANNOT_SIZE_RESULT,
@@ -34,9 +36,15 @@ def _nq_setup(setup_id: str = "nq-1"):
 
 
 class WholeContractSizingTests(unittest.TestCase):
+    """All tests pass an explicit max_micros_cap so results are independent
+    of whatever OTR_EXECUTION_MAX_MICROS happens to be set to in the
+    environment running the suite. Cap-specific behavior has its own class
+    below.
+    """
+
     def test_750_requested_risk_produces_correct_quantity_and_actual_risk(self):
         setup = _gc_setup(entry=3500.0, stop=3496.7, target=3520.0)  # 3.3pt stop -> $33/contract
-        sizing = size_whole_contract(setup, 750.0)
+        sizing = size_whole_contract(setup, 750.0, max_micros_cap=100)
 
         self.assertTrue(sizing.sizeable)
         self.assertEqual(sizing.quantity, 22)
@@ -45,10 +53,11 @@ class WholeContractSizingTests(unittest.TestCase):
         self.assertLessEqual(sizing.actual_risk_dollars, 750.0)
         self.assertEqual(sizing.contract_multiplier, 10.0)
         self.assertEqual(sizing.execution_contract, "MGC")
+        self.assertAlmostEqual(sizing.unused_risk_dollars, 24.0, places=6)
 
     def test_500_requested_risk_produces_correct_floor_quantity(self):
         setup = _gc_setup(entry=3500.0, stop=3496.7, target=3520.0)
-        sizing = size_whole_contract(setup, 500.0)
+        sizing = size_whole_contract(setup, 500.0, max_micros_cap=100)
 
         self.assertTrue(sizing.sizeable)
         self.assertEqual(sizing.quantity, 15)
@@ -58,14 +67,14 @@ class WholeContractSizingTests(unittest.TestCase):
     def test_actual_risk_never_exceeds_requested_risk(self):
         for requested in (50.0, 123.0, 499.99, 750.0, 10_000.0):
             setup = _gc_setup(entry=3500.0, stop=3496.7, target=3520.0)
-            sizing = size_whole_contract(setup, requested)
+            sizing = size_whole_contract(setup, requested, max_micros_cap=1000)
             if sizing.sizeable:
                 self.assertLessEqual(sizing.actual_risk_dollars, requested)
 
     def test_insufficient_budget_for_one_mgc_yields_cannot_size(self):
         # 1000pt stop distance -> $10,000/contract; $750 cannot fund even 1.
         setup = _gc_setup(entry=3500.0, stop=2500.0, target=4500.0)
-        sizing = size_whole_contract(setup, 750.0)
+        sizing = size_whole_contract(setup, 750.0, max_micros_cap=100)
 
         self.assertFalse(sizing.sizeable)
         self.assertEqual(sizing.quantity, 0)
@@ -75,7 +84,7 @@ class WholeContractSizingTests(unittest.TestCase):
         setup = _gc_setup(entry=3500.0, stop=2500.0, target=4500.0)
         executor = PaperExecutor()
 
-        position = executor.register_setup(setup, risk_dollars=750.0)
+        position = executor.register_setup(setup, risk_dollars=750.0, max_micros_cap=100)
 
         self.assertEqual(position.quantity, 0)
         self.assertNotEqual(position.quantity, 1)
@@ -86,11 +95,63 @@ class WholeContractSizingTests(unittest.TestCase):
         self.assertIn(position, executor.closed)
 
 
+class MaxMicrosCapTests(unittest.TestCase):
+    """Regression coverage for the paper-sizing / live-sizing cap mismatch:
+    an A+ GC 1m setup (entry 4322.5, stop 4321.6, requested $750) produced 83
+    uncapped MGC contracts in paper while live sizing would have obeyed
+    OTR_EXECUTION_MAX_MICROS. Paper sizing must respect the same cap.
+    """
+
+    def test_cap_below_uncapped_quantity_reduces_quantity_without_forcing_zero(self):
+        # 0.9pt stop -> $9/contract; $750 uncapped would floor to 83 contracts.
+        setup = _gc_setup(entry=4322.5, stop=4321.6, target=4326.7)
+        sizing = size_whole_contract(setup, 750.0, max_micros_cap=10)
+
+        self.assertTrue(sizing.sizeable)
+        self.assertEqual(sizing.quantity, 10)
+        self.assertEqual(sizing.max_micros_cap, 10)
+        self.assertLessEqual(sizing.actual_risk_dollars, 750.0)
+
+    def test_uncapped_sizing_reproduces_the_83_contract_bug_without_a_cap(self):
+        setup = _gc_setup(entry=4322.5, stop=4321.6, target=4326.7)
+        sizing = size_whole_contract(setup, 750.0, max_micros_cap=1_000_000)
+
+        self.assertEqual(sizing.quantity, 83)
+
+    def test_cap_never_forces_cannot_size_when_one_contract_would_fit(self):
+        setup = _gc_setup(entry=3500.0, stop=3496.7, target=3520.0)  # $33/contract
+        sizing = size_whole_contract(setup, 750.0, max_micros_cap=1)
+
+        self.assertTrue(sizing.sizeable)
+        self.assertEqual(sizing.quantity, 1)
+
+    def test_register_setup_reads_configured_execution_max_micros_by_default(self):
+        setup = _gc_setup(entry=4322.5, stop=4321.6, target=4326.7)
+        executor = PaperExecutor()
+
+        with patch.dict(os.environ, {"OTR_EXECUTION_MAX_MICROS": "5"}, clear=False):
+            position = executor.register_setup(setup, risk_dollars=750.0)
+
+        self.assertEqual(position.quantity, 5)
+        self.assertEqual(position.max_micros_cap, 5)
+        self.assertLessEqual(position.actual_risk_dollars, position.requested_risk_dollars)
+
+    def test_explicit_cap_argument_overrides_environment(self):
+        setup = _gc_setup(entry=4322.5, stop=4321.6, target=4326.7)
+        executor = PaperExecutor()
+
+        with patch.dict(os.environ, {"OTR_EXECUTION_MAX_MICROS": "5"}, clear=False):
+            position = executor.register_setup(setup, risk_dollars=750.0, max_micros_cap=20)
+
+        self.assertEqual(position.quantity, 20)
+        self.assertEqual(position.max_micros_cap, 20)
+
+
 class WholeContractPnlTests(unittest.TestCase):
     def _register(self, *, entry=3500.0, stop=3495.0, target=3510.0, risk_dollars=500.0):
         setup = _gc_setup(entry=entry, stop=stop, target=target)
         executor = PaperExecutor()
-        position = executor.register_setup(setup, risk_dollars=risk_dollars)
+        position = executor.register_setup(setup, risk_dollars=risk_dollars, max_micros_cap=100)
         self.assertIn(setup.setup_id, executor.positions)
         self.assertEqual(position.quantity, 10)  # $500 / ($5 * $10/pt) = 10 contracts
         self.assertEqual(position.accounting_version, PAPER_ACCOUNTING_VERSION_MGC_WHOLE_CONTRACT_V1)

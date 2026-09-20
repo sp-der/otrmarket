@@ -1,0 +1,6 @@
+# Operation 8.2 Confluence Intelligence meta-model (research/shadow only).
+# Kept in its own file like requirements-nautilus.txt/requirements-vibe.txt so
+# this optional research dependency stays explicit and separable. Code that
+# imports lightgbm always does so lazily and degrades to
+# model_status="DEPENDENCY_UNAVAILABLE" if this file was not installed.
+lightgbm==4.7.0

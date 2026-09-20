@@ -193,6 +193,9 @@ def _initialize_database(database_module) -> None:
                 ("run_id", "TEXT"),
                 ("engine_version", "TEXT"),
                 ("operation_version", "TEXT"),
+                # Operation 8.2 fix: paper sizing max-micros cap (see database.py).
+                ("max_micros_cap", "INTEGER"),
+                ("unused_risk_dollars", "REAL"),
             ):
                 if not _column_exists(connection, "paper_trades", column):
                     connection.execute(f"ALTER TABLE paper_trades ADD COLUMN {column} {ddl}")
