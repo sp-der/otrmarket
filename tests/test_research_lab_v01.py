@@ -32,7 +32,10 @@ class ResearchLabV01Tests(unittest.TestCase):
                 target_price REAL NOT NULL,
                 risk_reward REAL NOT NULL,
                 status TEXT NOT NULL,
-                payload_json TEXT NOT NULL
+                payload_json TEXT NOT NULL,
+                run_id TEXT,
+                engine_version TEXT,
+                operation_version TEXT
             );
             CREATE TABLE paper_trades (
                 setup_id TEXT PRIMARY KEY,
@@ -51,7 +54,19 @@ class ResearchLabV01Tests(unittest.TestCase):
                 risk_dollars REAL,
                 result_dollars REAL,
                 guard_reason TEXT,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                requested_risk_dollars REAL,
+                actual_risk_dollars REAL,
+                quantity INTEGER,
+                per_contract_risk REAL,
+                contract_multiplier REAL,
+                execution_contract TEXT,
+                accounting_version TEXT,
+                mfe_r REAL,
+                mae_r REAL,
+                run_id TEXT,
+                engine_version TEXT,
+                operation_version TEXT
             );
             CREATE TABLE nautilus_shadow_parity (
                 setup_id TEXT NOT NULL,
@@ -60,6 +75,11 @@ class ResearchLabV01Tests(unittest.TestCase):
                 matched_full INTEGER NOT NULL,
                 difference_categories_json TEXT NOT NULL,
                 note TEXT
+            );
+            CREATE TABLE engine_state (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
             );
             """
         )
@@ -168,7 +188,7 @@ class ResearchLabV01Tests(unittest.TestCase):
     def test_evidence_remains_insufficient_before_twenty_resolved_samples(self):
         self.add_trade(1, result="WIN", result_r=1.5, result_dollars=750.0)
         self.add_trade(2, result="LOSS", result_r=-1.0, result_dollars=-500.0)
-        trades = closed_gold_trades(self.connection, limit=10)
+        trades = closed_gold_trades(self.connection, limit=10, run_id=None)
         metrics = evidence_metrics(trades)
 
         self.assertEqual(metrics["samples"], 2)
@@ -185,7 +205,7 @@ class ResearchLabV01Tests(unittest.TestCase):
                 self.add_trade(number, result="LOSS", result_r=-1.0, result_dollars=-500.0)
             else:
                 self.add_trade(number, result="WIN", result_r=1.5, result_dollars=750.0)
-        snapshot = research_lab_snapshot81(self.connection)
+        snapshot = research_lab_snapshot81(self.connection, run_id=None)
         baseline = snapshot["baseline"]
 
         self.assertEqual(baseline["samples"], 20)
@@ -198,7 +218,7 @@ class ResearchLabV01Tests(unittest.TestCase):
 
     def test_trade_projection_exposes_nautilus_and_setup_dimensions(self):
         setup_id = self.add_trade(1, grade="A+", entry_type="EARLY_OTE_79")
-        trade = closed_gold_trades(self.connection, limit=1)[0]
+        trade = closed_gold_trades(self.connection, limit=1, run_id=None)[0]
 
         self.assertEqual(trade["setup_id"], setup_id)
         self.assertEqual(trade["grade"], "A+")
@@ -208,7 +228,7 @@ class ResearchLabV01Tests(unittest.TestCase):
 
     def test_counterfactuals_are_geometry_only_and_never_invent_outcomes(self):
         self.add_trade(1)
-        trade = closed_gold_trades(self.connection, limit=1)[0]
+        trade = closed_gold_trades(self.connection, limit=1, run_id=None)[0]
         candidates = counterfactual_candidates(trade)
         by_variant = {item["variant"]: item for item in candidates}
 
@@ -225,7 +245,7 @@ class ResearchLabV01Tests(unittest.TestCase):
         before_setup = self.connection.execute("SELECT * FROM strategy_setups").fetchall()
         before_trade = self.connection.execute("SELECT * FROM paper_trades").fetchall()
 
-        result = refresh_research_lab81(self.connection)
+        result = refresh_research_lab81(self.connection, run_id=None)
 
         self.assertEqual(result["strategy_mutations"], 0)
         self.assertEqual(result["broker_actions"], 0)

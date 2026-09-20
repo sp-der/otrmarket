@@ -8,12 +8,24 @@ from src.integrations.nautilus_shadow.auto_certify import (
     start_auto_certifier,
 )
 from src.research.lab_v01 import (
+    CURRENT_RUN,
     closed_gold_trades,
     ensure_research_lab81,
     refresh_research_lab81,
     research_lab_snapshot81,
 )
 from src.storage.database import get_connection
+
+
+def _resolve_route_run_id(run_id: str | None):
+    """?run_id= omitted -> the active run (default). ?run_id=ALL -> every run,
+    pooled, an explicit opt-in. ?run_id=<id> -> that one historical run.
+    """
+    if run_id is None:
+        return CURRENT_RUN
+    if run_id.strip().upper() == "ALL":
+        return None
+    return run_id
 
 
 def _page_html() -> str:
@@ -99,24 +111,32 @@ def install_research_lab_routes() -> None:
     page_path = f"{dashboard.BASE_PATH}/research-lab"
     existing = {getattr(route, "path", None) for route in dashboard.app.routes}
 
-    async def snapshot(request: Request, limit: int = 25):
+    async def snapshot(request: Request, limit: int = 25, run_id: str | None = None):
         dashboard.require_http_auth(request)
         connection = get_connection()
         try:
-            payload = research_lab_snapshot81(connection, recent_limit=max(1, min(int(limit), 100)))
+            payload = research_lab_snapshot81(
+                connection,
+                recent_limit=max(1, min(int(limit), 100)),
+                run_id=_resolve_route_run_id(run_id),
+            )
             payload["auto_certification"] = auto_certifier_snapshot(connection)
             return payload
         finally:
             connection.close()
 
-    async def trades(request: Request, limit: int = 10):
+    async def trades(request: Request, limit: int = 10, run_id: str | None = None):
         dashboard.require_http_auth(request)
         connection = get_connection()
         try:
             return {
                 "authoritative": False,
                 "strategy_mutation_allowed": False,
-                "recent": closed_gold_trades(connection, limit=max(1, min(int(limit), 100))),
+                "recent": closed_gold_trades(
+                    connection,
+                    limit=max(1, min(int(limit), 100)),
+                    run_id=_resolve_route_run_id(run_id),
+                ),
             }
         finally:
             connection.close()

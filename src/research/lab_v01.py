@@ -6,8 +6,23 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
 
+from src.execution.paper import CANNOT_SIZE_RESULT, PAPER_ACCOUNTING_VERSION_MGC_WHOLE_CONTRACT_V1
+from src.research.run_scope import ENGINE_VERSION, OPERATION_VERSION, current_run_id
+
 MIN_EVIDENCE_SAMPLES = 20
 LAB_VERSION = "0.1"
+
+# Sentinel default for the `run_id` parameter on trade-scoped queries: "use
+# whatever the active run is right now". Pass run_id=None explicitly to pool
+# every run (opt-in only -- Research Lab never pools runs implicitly), or a
+# specific run_id string to inspect one historical run.
+CURRENT_RUN = object()
+
+# Paper order-lifecycle terminal reasons that never reached a fill. See
+# src/execution/paper.py for where each one is set.
+EXPIRED_BEFORE_ENTRY = "EXPIRED_BEFORE_ENTRY"
+STALE_MOVE_BEFORE_ENTRY = "STALE_MOVE_BEFORE_ENTRY"
+INVALIDATED_BEFORE_ENTRY = "INVALIDATED_BEFORE_ENTRY"
 
 DEFAULT_HYPOTHESES = (
     (
@@ -203,68 +218,149 @@ def _latest_parity(connection) -> dict[str, dict[str, Any]]:
     return output
 
 
-def closed_gold_trades(connection, *, limit: int = 25) -> list[dict[str, Any]]:
+def _resolve_run_id(connection, run_id):
+    """CURRENT_RUN -> the active run id; anything else passes through as-is.
+
+    Passing None explicitly means "no run filter" (pool every run) and is
+    only ever the caller's deliberate choice -- callers that omit run_id get
+    CURRENT_RUN and are therefore always scoped to the active run.
+    """
+    if run_id is CURRENT_RUN:
+        return current_run_id(connection)
+    return run_id
+
+
+_TRADE_ROW_COLUMNS = (
+    "p.setup_id,p.symbol,p.timeframe,p.direction,p.status,"
+    "p.entry_price,p.stop_price,p.target_price,p.opened_at,p.closed_at,"
+    "p.exit_price,p.result,p.result_r,p.risk_dollars,p.result_dollars,p.guard_reason,"
+    "s.created_at,s.trigger_type,s.risk_reward,s.payload_json,"
+    "p.requested_risk_dollars,p.actual_risk_dollars,p.quantity,p.per_contract_risk,"
+    "p.contract_multiplier,p.execution_contract,p.accounting_version,p.mfe_r,p.mae_r,"
+    "COALESCE(s.run_id,p.run_id) AS run_id,COALESCE(s.engine_version,p.engine_version) AS engine_version,"
+    "COALESCE(s.operation_version,p.operation_version) AS operation_version"
+)
+
+
+def _hold_seconds(opened_at: str | None, closed_at: str | None) -> float | None:
+    if not opened_at or not closed_at:
+        return None
+    try:
+        opened = datetime.fromisoformat(str(opened_at).replace("Z", "+00:00"))
+        closed = datetime.fromisoformat(str(closed_at).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return max(0.0, (closed - opened).total_seconds())
+
+
+def _shape_trade_row(row, parity: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    payload = _safe_json(row[19], {})
+    meta = _metadata(payload)
+    parity_row = parity.get(str(row[0]))
+    certification = "UNTESTED"
+    if parity_row is not None:
+        certification = "MATCH" if parity_row["matched_trade_path"] else "DIFF"
+    return {
+        "setup_id": str(row[0]),
+        "symbol": str(row[1]),
+        "timeframe": str(row[2]),
+        "direction": str(row[3]),
+        "status": str(row[4]),
+        "entry_price": _number(row[5]),
+        "stop_price": _number(row[6]),
+        "target_price": _number(row[7]),
+        "opened_at": row[8],
+        "closed_at": row[9],
+        "exit_price": _number(row[10]),
+        "result": str(row[11] or ""),
+        "result_r": _number(row[12]),
+        "risk_dollars": _number(row[13]),
+        "result_dollars": _number(row[14]),
+        "guard_reason": str(row[15] or ""),
+        "created_at": row[16],
+        "trigger_type": str(row[17] or ""),
+        "planned_rr": _number(row[18]),
+        "grade": _quality_grade(meta),
+        "regime": _regime(meta),
+        "strategy": str(meta.get("strategy") or "ICT_CONFLUENCE"),
+        "entry_type": str(meta.get("entry_type") or ""),
+        "setup_family": _setup_family(meta, str(row[17] or "")),
+        "checklist_score": int(meta.get("checklist_score", 0) or 0),
+        "checklist_total": int(meta.get("checklist_total", 0) or 0),
+        "execution_certification": certification,
+        "nautilus": parity_row,
+        "payload": payload,
+        "requested_risk_dollars": _number(row[20]),
+        "actual_risk_dollars": _number(row[21]),
+        "quantity": int(row[22]) if row[22] is not None else None,
+        "per_contract_risk": _number(row[23]),
+        "contract_multiplier": _number(row[24]),
+        "execution_contract": row[25],
+        "accounting_version": row[26],
+        "mfe_r": _number(row[27]),
+        "mae_r": _number(row[28]),
+        "run_id": row[29],
+        "engine_version": row[30],
+        "operation_version": row[31],
+        "hold_seconds": _hold_seconds(row[8], row[9]),
+    }
+
+
+def closed_gold_trades(connection, *, limit: int = 25, run_id=CURRENT_RUN) -> list[dict[str, Any]]:
     bounded = max(1, min(int(limit), 500))
     if not _table_exists(connection, "paper_trades") or not _table_exists(connection, "strategy_setups"):
         return []
+    resolved_run_id = _resolve_run_id(connection, run_id)
+    where = "p.symbol='GC' AND p.status='CLOSED'"
+    params: list[Any] = []
+    if resolved_run_id is not None:
+        where += " AND COALESCE(s.run_id,p.run_id) = ?"
+        params.append(resolved_run_id)
+    params.append(bounded)
     rows = connection.execute(
-        """
-        SELECT
-            p.setup_id,p.symbol,p.timeframe,p.direction,p.status,
-            p.entry_price,p.stop_price,p.target_price,p.opened_at,p.closed_at,
-            p.exit_price,p.result,p.result_r,p.risk_dollars,p.result_dollars,p.guard_reason,
-            s.created_at,s.trigger_type,s.risk_reward,s.payload_json
+        f"""
+        SELECT {_TRADE_ROW_COLUMNS}
         FROM paper_trades p
         JOIN strategy_setups s ON s.setup_id=p.setup_id
-        WHERE p.symbol='GC' AND p.status='CLOSED'
+        WHERE {where}
         ORDER BY COALESCE(p.closed_at,p.updated_at) DESC
         LIMIT ?
         """,
-        (bounded,),
+        params,
     ).fetchall()
     parity = _latest_parity(connection)
-    output: list[dict[str, Any]] = []
-    for row in rows:
-        payload = _safe_json(row[19], {})
-        meta = _metadata(payload)
-        parity_row = parity.get(str(row[0]))
-        certification = "UNTESTED"
-        if parity_row is not None:
-            certification = "MATCH" if parity_row["matched_trade_path"] else "DIFF"
-        output.append(
-            {
-                "setup_id": str(row[0]),
-                "symbol": str(row[1]),
-                "timeframe": str(row[2]),
-                "direction": str(row[3]),
-                "status": str(row[4]),
-                "entry_price": _number(row[5]),
-                "stop_price": _number(row[6]),
-                "target_price": _number(row[7]),
-                "opened_at": row[8],
-                "closed_at": row[9],
-                "exit_price": _number(row[10]),
-                "result": str(row[11] or ""),
-                "result_r": _number(row[12]),
-                "risk_dollars": _number(row[13]),
-                "result_dollars": _number(row[14]),
-                "guard_reason": str(row[15] or ""),
-                "created_at": row[16],
-                "trigger_type": str(row[17] or ""),
-                "planned_rr": _number(row[18]),
-                "grade": _quality_grade(meta),
-                "regime": _regime(meta),
-                "strategy": str(meta.get("strategy") or "ICT_CONFLUENCE"),
-                "entry_type": str(meta.get("entry_type") or ""),
-                "setup_family": _setup_family(meta, str(row[17] or "")),
-                "checklist_score": int(meta.get("checklist_score", 0) or 0),
-                "checklist_total": int(meta.get("checklist_total", 0) or 0),
-                "execution_certification": certification,
-                "nautilus": parity_row,
-                "payload": payload,
-            }
-        )
-    return output
+    return [_shape_trade_row(row, parity) for row in rows]
+
+
+def all_gc_paper_trades(connection, *, limit: int = 2000, run_id=CURRENT_RUN) -> list[dict[str, Any]]:
+    """Every GC paper_trades row regardless of status (PENDING/OPEN/CLOSED/INVALIDATED).
+
+    This is the source for fill-rate and invalidated-order research; unlike
+    closed_gold_trades it is not limited to status='CLOSED'.
+    """
+    bounded = max(1, min(int(limit), 5000))
+    if not _table_exists(connection, "paper_trades") or not _table_exists(connection, "strategy_setups"):
+        return []
+    resolved_run_id = _resolve_run_id(connection, run_id)
+    where = "p.symbol='GC'"
+    params: list[Any] = []
+    if resolved_run_id is not None:
+        where += " AND COALESCE(s.run_id,p.run_id) = ?"
+        params.append(resolved_run_id)
+    params.append(bounded)
+    rows = connection.execute(
+        f"""
+        SELECT {_TRADE_ROW_COLUMNS}
+        FROM paper_trades p
+        JOIN strategy_setups s ON s.setup_id=p.setup_id
+        WHERE {where}
+        ORDER BY COALESCE(p.closed_at,p.opened_at,p.updated_at) DESC
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()
+    parity = _latest_parity(connection)
+    return [_shape_trade_row(row, parity) for row in rows]
 
 
 def _trade_outcome(trade: dict[str, Any]) -> int:
@@ -347,6 +443,116 @@ def _segment_metrics(trades: list[dict[str, Any]], field: str) -> list[dict[str,
         item[field] = key
         output.append(item)
     return sorted(output, key=lambda item: (-int(item["samples"]), str(item[field])))
+
+
+def fill_rate_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Entry-quality funnel metrics over ALL registered GC paper orders.
+
+    Unlike evidence_metrics (CLOSED trades only), this covers every terminal
+    and in-flight state a registered order can reach: filled and closed,
+    filled and still open, or never filled (expired/stale/invalidated/
+    cannot-size). Non-authoritative research only; never mutates trading
+    state. Always division-guarded so an empty or all-pending sample never
+    raises.
+    """
+    registered = len(rows)
+    filled = sum(1 for row in rows if row.get("opened_at"))
+    expired = sum(1 for row in rows if row.get("result") == EXPIRED_BEFORE_ENTRY)
+    stale = sum(1 for row in rows if row.get("result") == STALE_MOVE_BEFORE_ENTRY)
+    invalidated = sum(1 for row in rows if row.get("result") == INVALIDATED_BEFORE_ENTRY)
+    cannot_size = sum(1 for row in rows if row.get("result") == CANNOT_SIZE_RESULT)
+    wins = sum(1 for row in rows if row.get("status") == "CLOSED" and row.get("result") == "WIN")
+    losses = sum(1 for row in rows if row.get("status") == "CLOSED" and row.get("result") == "LOSS")
+    closed = wins + losses
+    pending = sum(1 for row in rows if row.get("status") == "PENDING")
+    open_now = sum(1 for row in rows if row.get("status") == "OPEN")
+
+    mfe_values = [row["mfe_r"] for row in rows if row.get("mfe_r") is not None and row.get("opened_at")]
+    mae_values = [row["mae_r"] for row in rows if row.get("mae_r") is not None and row.get("opened_at")]
+    hold_values = [row["hold_seconds"] for row in rows if row.get("hold_seconds") is not None]
+
+    return {
+        "registered": registered,
+        "filled": filled,
+        "fill_rate": round(filled / registered, 4) if registered else None,
+        "expired_before_entry": expired,
+        "stale_move_before_entry": stale,
+        "invalidated_before_entry": invalidated,
+        "cannot_size_mgc": cannot_size,
+        "wins": wins,
+        "losses": losses,
+        "closed": closed,
+        "pending": pending,
+        "open": open_now,
+        "avg_mfe_r": round(sum(mfe_values) / len(mfe_values), 4) if mfe_values else None,
+        "avg_mae_r": round(sum(mae_values) / len(mae_values), 4) if mae_values else None,
+        "avg_hold_seconds": round(sum(hold_values) / len(hold_values), 1) if hold_values else None,
+        "mfe_mae_samples": len(mfe_values),
+        "hold_time_samples": len(hold_values),
+    }
+
+
+def fill_rate_segments(rows: list[dict[str, Any]], field: str) -> list[dict[str, Any]]:
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        groups[str(row.get(field) or "UNKNOWN")].append(row)
+    output = []
+    for key, segment_rows in groups.items():
+        item = fill_rate_metrics(segment_rows)
+        item[field] = key
+        output.append(item)
+    return sorted(output, key=lambda item: (-int(item["registered"]), str(item[field])))
+
+
+def run_scope_summary(connection) -> dict[str, Any]:
+    """Run/version composition so Research Lab never silently pools runs.
+
+    Legacy rows written before this patch have no run_id and are grouped
+    under UNTAGGED_LEGACY; they remain queryable as history but are never
+    counted as part of the current run.
+    """
+    active_run = current_run_id(connection)
+    if not _table_exists(connection, "strategy_setups"):
+        return {
+            "current_run_id": active_run,
+            "current_run_sample_count": 0,
+            "available_runs": [],
+            "engine_version": ENGINE_VERSION,
+            "operation_version": OPERATION_VERSION,
+        }
+
+    rows = connection.execute(
+        """
+        SELECT COALESCE(run_id,'UNTAGGED_LEGACY') AS run_id,
+               COALESCE(engine_version,'UNKNOWN') AS engine_version,
+               COALESCE(operation_version,'UNKNOWN') AS operation_version,
+               COUNT(*), MIN(created_at), MAX(created_at)
+        FROM strategy_setups
+        WHERE symbol='GC'
+        GROUP BY run_id, engine_version, operation_version
+        ORDER BY MAX(created_at) DESC
+        """
+    ).fetchall()
+    available = [
+        {
+            "run_id": row[0],
+            "engine_version": row[1],
+            "operation_version": row[2],
+            "setup_count": int(row[3] or 0),
+            "first_seen": row[4],
+            "last_seen": row[5],
+            "is_current": row[0] == active_run,
+        }
+        for row in rows
+    ]
+    current_count = next((item["setup_count"] for item in available if item["is_current"]), 0)
+    return {
+        "current_run_id": active_run,
+        "current_run_sample_count": current_count,
+        "available_runs": available,
+        "engine_version": ENGINE_VERSION,
+        "operation_version": OPERATION_VERSION,
+    }
 
 
 def _retracement_price(payload: dict[str, Any], direction: str, fraction: float) -> float | None:
@@ -482,11 +688,15 @@ def _latest_evidence(connection, *, limit: int = 12) -> list[dict[str, Any]]:
     ]
 
 
-def research_lab_snapshot81(connection, *, recent_limit: int = 25) -> dict[str, Any]:
+def research_lab_snapshot81(connection, *, recent_limit: int = 25, run_id=CURRENT_RUN) -> dict[str, Any]:
     ensure_research_lab81(connection)
-    trades = closed_gold_trades(connection, limit=500)
+    trades = closed_gold_trades(connection, limit=500, run_id=run_id)
     baseline = evidence_metrics(trades)
     recent = trades[: max(1, min(int(recent_limit), 100))]
+
+    all_rows = all_gc_paper_trades(connection, limit=2000, run_id=run_id)
+    fill_rate = fill_rate_metrics(all_rows)
+
     return {
         "lab": "OTR Research Lab",
         "version": LAB_VERSION,
@@ -494,12 +704,21 @@ def research_lab_snapshot81(connection, *, recent_limit: int = 25) -> dict[str, 
         "strategy_mutation_allowed": False,
         "broker_actions_allowed": False,
         "scope": "GC_ONLY_OPERATION_8_1_BASELINE",
+        "run_scope": run_scope_summary(connection),
+        "paper_accounting_version": PAPER_ACCOUNTING_VERSION_MGC_WHOLE_CONTRACT_V1,
         "baseline": baseline,
+        "fill_rate": fill_rate,
         "segments": {
             "setup_family": _segment_metrics(trades, "setup_family"),
             "grade": _segment_metrics(trades, "grade"),
             "timeframe": _segment_metrics(trades, "timeframe"),
             "regime": _segment_metrics(trades, "regime"),
+        },
+        "fill_rate_segments": {
+            "setup_family": fill_rate_segments(all_rows, "setup_family"),
+            "grade": fill_rate_segments(all_rows, "grade"),
+            "timeframe": fill_rate_segments(all_rows, "timeframe"),
+            "entry_type": fill_rate_segments(all_rows, "entry_type"),
         },
         "hypotheses": hypotheses(connection),
         "recent_trades": recent,
@@ -540,10 +759,10 @@ def _store_evidence(connection, scope_key: str, metrics: dict[str, Any], payload
     )
 
 
-def refresh_research_lab81(connection) -> dict[str, Any]:
+def refresh_research_lab81(connection, *, run_id=CURRENT_RUN) -> dict[str, Any]:
     """Capture evidence into Lab-owned tables without touching OTR trading state."""
     ensure_research_lab81(connection)
-    trades = closed_gold_trades(connection, limit=500)
+    trades = closed_gold_trades(connection, limit=500, run_id=run_id)
     baseline = evidence_metrics(trades)
     _store_evidence(connection, "GC:ALL", baseline, {"dimension": "all"})
 

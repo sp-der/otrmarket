@@ -10,8 +10,10 @@ from fastapi.responses import HTMLResponse
 from src.dashboard import server_80 as base
 from src.integrations.nautilus_shadow.ledger import ensure_parity_ledger, run_recent_gold_parity
 from src.integrations.vibe_research.routes import install_vibe_research_routes
+from src.execution.paper import PAPER_ACCOUNTING_VERSION_MGC_WHOLE_CONTRACT_V1
 from src.otr8.execution_policy81 import FULL_RISK_DOLLARS, REDUCED_RISK_DOLLARS
 from src.research.conversion_funnel81 import conversion_funnel81
+from src.research.run_scope import ENGINE_VERSION, OPERATION_VERSION, current_run_id, rotate_run_id
 from src.risk.evaluation import EvaluationConfig
 from src.storage.database import get_connection, get_engine_state, set_engine_state
 
@@ -109,12 +111,17 @@ def _reset_active_replay_progress_81() -> dict[str, int]:
             connection.execute("DELETE FROM engine_state WHERE key=?", (key,))
         set_engine_state(connection, "eval_reset_excluded_setup_ids_72", "[]")
         set_engine_state(connection, RUN_RESET_STATE_KEY_81, token)
+        # A wiped scorecard is genuinely a new research run; give Research Lab
+        # a fresh run_id so it never pools the cleared generation with the
+        # trades that come after it.
+        new_run_id = rotate_run_id(connection)
         connection.commit()
 
         summary = ", ".join(f"{table}={count}" for table, count in counts.items()) or "no prior run rows"
         print(
             "Operation 8.1 EXPLICIT OVERNIGHT REPLAY RESET applied: "
             + summary
+            + f"; new research run_id={new_run_id}"
             + "; preserved candles, market quotes, counterfactual learning, market lessons, feature stats, intelligence and shadow history.",
             flush=True,
         )
@@ -415,6 +422,34 @@ def _startup_risk_envelope_81() -> dict:
     return {"envelope": envelope, "broker_armed": broker_armed, "policy_targets": policy_targets, "warnings": warnings}
 
 
+def _startup_research_integrity_81() -> dict:
+    """Print the active research run identity and paper-accounting cutover.
+
+    Read-only. Lets a deploy be verified from logs alone: which run new
+    trades are being tagged into, and whether whole-contract MGC accounting
+    (vs. the legacy theoretical risk_dollars model) is active for this build.
+    """
+    connection = get_connection()
+    try:
+        run_id = current_run_id(connection)
+    finally:
+        connection.close()
+
+    print(
+        "Operation 8.1 RESEARCH INTEGRITY: "
+        f"run_id={run_id}, engine_version={ENGINE_VERSION}, operation_version={OPERATION_VERSION}, "
+        f"paper_accounting_version={PAPER_ACCOUNTING_VERSION_MGC_WHOLE_CONTRACT_V1} (GC only; "
+        "pre-migration rows keep their original theoretical accounting and are never rewritten).",
+        flush=True,
+    )
+    return {
+        "run_id": run_id,
+        "engine_version": ENGINE_VERSION,
+        "operation_version": OPERATION_VERSION,
+        "paper_accounting_version": PAPER_ACCOUNTING_VERSION_MGC_WHOLE_CONTRACT_V1,
+    }
+
+
 def main() -> None:
     # Apply the user-requested clean overnight scorecard before the inherited
     # supervisor creates the next run and starts the 8.1 strategy engine.
@@ -425,6 +460,14 @@ def main() -> None:
     except Exception as exc:  # Diagnostics must never block startup.
         print(
             f"Operation 8.1 startup risk envelope diagnostic failed non-fatally: {type(exc).__name__}: {exc}",
+            flush=True,
+        )
+
+    try:
+        _startup_research_integrity_81()
+    except Exception as exc:  # Diagnostics must never block startup.
+        print(
+            f"Operation 8.1 startup research integrity diagnostic failed non-fatally: {type(exc).__name__}: {exc}",
             flush=True,
         )
 

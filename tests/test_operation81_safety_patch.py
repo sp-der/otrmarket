@@ -128,14 +128,19 @@ def _vibe_db():
             setup_id TEXT PRIMARY KEY,symbol TEXT NOT NULL,timeframe TEXT NOT NULL,
             direction TEXT NOT NULL,created_at TEXT NOT NULL,trigger_type TEXT NOT NULL,
             entry_price REAL NOT NULL,stop_price REAL NOT NULL,target_price REAL NOT NULL,
-            risk_reward REAL NOT NULL,status TEXT NOT NULL,payload_json TEXT NOT NULL
+            risk_reward REAL NOT NULL,status TEXT NOT NULL,payload_json TEXT NOT NULL,
+            run_id TEXT,engine_version TEXT,operation_version TEXT
         );
         CREATE TABLE paper_trades (
             setup_id TEXT PRIMARY KEY,symbol TEXT NOT NULL,timeframe TEXT NOT NULL,
             direction TEXT NOT NULL,status TEXT NOT NULL,entry_price REAL NOT NULL,
             stop_price REAL NOT NULL,target_price REAL NOT NULL,opened_at TEXT,closed_at TEXT,
             exit_price REAL,result TEXT,result_r REAL,risk_dollars REAL,result_dollars REAL,
-            guard_reason TEXT,updated_at TEXT NOT NULL
+            guard_reason TEXT,updated_at TEXT NOT NULL,
+            requested_risk_dollars REAL,actual_risk_dollars REAL,quantity INTEGER,
+            per_contract_risk REAL,contract_multiplier REAL,execution_contract TEXT,
+            accounting_version TEXT,mfe_r REAL,mae_r REAL,
+            run_id TEXT,engine_version TEXT,operation_version TEXT
         );
         CREATE TABLE nautilus_shadow_parity (
             setup_id TEXT NOT NULL,observed_at TEXT NOT NULL,matched_trade_path INTEGER NOT NULL,
@@ -189,11 +194,22 @@ class VibeRetrySafetyTests(unittest.TestCase):
             },
         }
         self.connection.execute(
-            "INSERT INTO strategy_setups VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            """
+            INSERT INTO strategy_setups(
+                setup_id,symbol,timeframe,direction,created_at,trigger_type,
+                entry_price,stop_price,target_price,risk_reward,status,payload_json
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
             ("gc-1", "GC", "5m", "bullish", created, "liquidity_sweep", 3500, 3495, 3507.5, 1.5, "ACCEPTED", json.dumps(payload)),
         )
         self.connection.execute(
-            "INSERT INTO paper_trades VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            """
+            INSERT INTO paper_trades(
+                setup_id,symbol,timeframe,direction,status,entry_price,stop_price,target_price,
+                opened_at,closed_at,exit_price,result,result_r,risk_dollars,result_dollars,
+                guard_reason,updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
             ("gc-1", "GC", "5m", "bullish", "CLOSED", 3500, 3495, 3507.5, created, closed, 3507.5, "WIN", 1.5, 500, 750, "", closed),
         )
         self.connection.execute(
@@ -375,7 +391,12 @@ class ExplicitResetTokenTests(unittest.TestCase):
     def test_missing_token_preserves_all_data(self):
         connection = database.get_connection()
         connection.execute(
-            "INSERT INTO paper_trades VALUES ('a','GC','5m','bullish','CLOSED',1,2,3,"
+            """
+            INSERT INTO paper_trades(
+                setup_id,symbol,timeframe,direction,status,entry_price,stop_price,target_price,
+                opened_at,closed_at,exit_price,result,result_r,risk_dollars,result_dollars,
+                guard_reason,updated_at
+            ) VALUES ('a','GC','5m','bullish','CLOSED',1,2,3,"""
             "'2026-09-17T13:00:00+00:00','2026-09-17T13:30:00+00:00',3,'WIN',1.0,100,150,'','2026-09-17T13:30:00+00:00')"
         )
         connection.commit()
@@ -393,7 +414,12 @@ class ExplicitResetTokenTests(unittest.TestCase):
     def test_applied_token_deletes_and_is_recorded(self):
         connection = database.get_connection()
         connection.execute(
-            "INSERT INTO paper_trades VALUES ('a','GC','5m','bullish','CLOSED',1,2,3,"
+            """
+            INSERT INTO paper_trades(
+                setup_id,symbol,timeframe,direction,status,entry_price,stop_price,target_price,
+                opened_at,closed_at,exit_price,result,result_r,risk_dollars,result_dollars,
+                guard_reason,updated_at
+            ) VALUES ('a','GC','5m','bullish','CLOSED',1,2,3,"""
             "'2026-09-17T13:00:00+00:00','2026-09-17T13:30:00+00:00',3,'WIN',1.0,100,150,'','2026-09-17T13:30:00+00:00')"
         )
         connection.commit()
@@ -415,7 +441,12 @@ class ExplicitResetTokenTests(unittest.TestCase):
             first = core81._reset_active_replay_progress_81()
             connection = database.get_connection()
             connection.execute(
-                "INSERT INTO paper_trades VALUES ('b','GC','5m','bullish','CLOSED',1,2,3,"
+                """
+                INSERT INTO paper_trades(
+                    setup_id,symbol,timeframe,direction,status,entry_price,stop_price,target_price,
+                    opened_at,closed_at,exit_price,result,result_r,risk_dollars,result_dollars,
+                    guard_reason,updated_at
+                ) VALUES ('b','GC','5m','bullish','CLOSED',1,2,3,"""
                 "'2026-09-17T13:00:00+00:00','2026-09-17T13:30:00+00:00',3,'WIN',1.0,100,150,'','2026-09-17T13:30:00+00:00')"
             )
             connection.commit()
@@ -433,7 +464,12 @@ class ExplicitResetTokenTests(unittest.TestCase):
     def test_refuses_when_open_position_exists(self):
         connection = database.get_connection()
         connection.execute(
-            "INSERT INTO paper_trades VALUES ('open-1','GC','5m','bullish','PENDING',1,2,3,"
+            """
+            INSERT INTO paper_trades(
+                setup_id,symbol,timeframe,direction,status,entry_price,stop_price,target_price,
+                opened_at,closed_at,exit_price,result,result_r,risk_dollars,result_dollars,
+                guard_reason,updated_at
+            ) VALUES ('open-1','GC','5m','bullish','PENDING',1,2,3,"""
             "'2026-09-17T13:00:00+00:00',NULL,NULL,NULL,NULL,100,NULL,'','2026-09-17T13:00:00+00:00')"
         )
         connection.commit()
