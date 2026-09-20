@@ -238,7 +238,8 @@ _TRADE_ROW_COLUMNS = (
     "p.requested_risk_dollars,p.actual_risk_dollars,p.quantity,p.per_contract_risk,"
     "p.contract_multiplier,p.execution_contract,p.accounting_version,p.mfe_r,p.mae_r,"
     "COALESCE(s.run_id,p.run_id) AS run_id,COALESCE(s.engine_version,p.engine_version) AS engine_version,"
-    "COALESCE(s.operation_version,p.operation_version) AS operation_version"
+    "COALESCE(s.operation_version,p.operation_version) AS operation_version,"
+    "p.max_micros_cap,p.unused_risk_dollars"
 )
 
 
@@ -302,6 +303,8 @@ def _shape_trade_row(row, parity: dict[str, dict[str, Any]]) -> dict[str, Any]:
         "run_id": row[29],
         "engine_version": row[30],
         "operation_version": row[31],
+        "max_micros_cap": int(row[32]) if row[32] is not None else None,
+        "unused_risk_dollars": _number(row[33]),
         "hold_seconds": _hold_seconds(row[8], row[9]),
     }
 

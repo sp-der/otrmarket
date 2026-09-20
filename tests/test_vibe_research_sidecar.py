@@ -39,7 +39,8 @@ class VibeResearchSidecarTests(unittest.TestCase):
                 requested_risk_dollars REAL,actual_risk_dollars REAL,quantity INTEGER,
                 per_contract_risk REAL,contract_multiplier REAL,execution_contract TEXT,
                 accounting_version TEXT,mfe_r REAL,mae_r REAL,
-                run_id TEXT,engine_version TEXT,operation_version TEXT
+                run_id TEXT,engine_version TEXT,operation_version TEXT,
+                max_micros_cap INTEGER,unused_risk_dollars REAL
             );
             CREATE TABLE nautilus_shadow_parity (
                 setup_id TEXT NOT NULL,observed_at TEXT NOT NULL,matched_trade_path INTEGER NOT NULL,

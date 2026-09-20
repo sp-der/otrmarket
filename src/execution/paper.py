@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import math
 
+from src.execution.live.config import ExecutionConfig
 from src.research.execution.contracts import execution_contract, micro_spec
 from src.risk.geometry import validate_trade_geometry
 from src.strategies.models import StrategySetup
@@ -29,31 +30,58 @@ class ContractSizing:
     per_contract_risk: float
     contract_multiplier: float
     execution_contract: str
+    max_micros_cap: int
+    unused_risk_dollars: float
 
 
-def size_whole_contract(setup: StrategySetup, requested_risk_dollars: float) -> ContractSizing:
+def _default_max_micros_cap() -> int:
+    """The same configured execution cap the live/Nautilus sizing path uses.
+
+    Reused, not reinvented: src.execution.live.sizing.build_execution_intent
+    applies this identical `min(config.max_micros, floor(...))` cap to live
+    orders. Paper sizing must obey the same operator-configured ceiling.
+    """
+    return ExecutionConfig.from_env().max_micros
+
+
+def size_whole_contract(
+    setup: StrategySetup,
+    requested_risk_dollars: float,
+    *,
+    max_micros_cap: int | None = None,
+) -> ContractSizing:
     """Floor-size a paper trade to whole contracts using the same contract
-    assumptions (tick size, point value) as the live/Nautilus execution path.
+    assumptions (tick size, point value) as the live/Nautilus execution path,
+    then cap it at the same configured OTR_EXECUTION_MAX_MICROS ceiling live
+    execution already enforces.
 
     Never forces a minimum of 1 contract: if the requested risk cannot fund
-    even one contract, sizing is rejected (sizeable=False) rather than
-    silently over-risking the account.
+    even one contract -- before the cap is even considered -- sizing is
+    rejected (sizeable=False) rather than silently over-risking the account.
+    The cap can only ever reduce an already-sizeable quantity (it is always
+    >= 1), so it never itself causes a CANNOT_SIZE_MGC rejection.
     """
     spec = micro_spec(setup.symbol)
     contract = execution_contract(setup.symbol)
     multiplier = float(spec.point_value)
     per_contract_risk = abs(float(setup.entry_price) - float(setup.stop_price)) * multiplier
     requested = max(0.0, float(requested_risk_dollars or 0.0))
+    cap = int(max_micros_cap) if max_micros_cap is not None else _default_max_micros_cap()
+    cap = max(1, cap)
 
     if per_contract_risk <= 0:
-        return ContractSizing(False, 0, 0.0, per_contract_risk, multiplier, contract)
+        return ContractSizing(False, 0, 0.0, per_contract_risk, multiplier, contract, cap, 0.0)
 
-    quantity = math.floor(requested / per_contract_risk)
-    if quantity < 1:
-        return ContractSizing(False, 0, 0.0, per_contract_risk, multiplier, contract)
+    uncapped_quantity = math.floor(requested / per_contract_risk)
+    if uncapped_quantity < 1:
+        return ContractSizing(False, 0, 0.0, per_contract_risk, multiplier, contract, cap, 0.0)
 
+    quantity = min(uncapped_quantity, cap)
     actual_risk = quantity * per_contract_risk
-    return ContractSizing(True, int(quantity), float(actual_risk), per_contract_risk, multiplier, contract)
+    unused_risk = max(0.0, requested - actual_risk)
+    return ContractSizing(
+        True, int(quantity), float(actual_risk), per_contract_risk, multiplier, contract, cap, float(unused_risk)
+    )
 
 
 _PENDING_BARS = {
@@ -99,6 +127,8 @@ class PaperPosition:
     contract_multiplier: float | None = None
     execution_contract: str | None = None
     accounting_version: str | None = None
+    max_micros_cap: int | None = None
+    unused_risk_dollars: float | None = None
 
 
 def _aware_utc(value: datetime) -> datetime:
@@ -184,6 +214,7 @@ class PaperExecutor:
         *,
         risk_dollars: float | None = None,
         guard_reason: str | None = None,
+        max_micros_cap: int | None = None,
     ) -> PaperPosition:
         # Defense in depth: even if upstream setup construction regresses, an
         # inverted stop/target is never allowed into the paper order book.
@@ -203,12 +234,13 @@ class PaperExecutor:
         )
 
         if setup.symbol.upper() in WHOLE_CONTRACT_SYMBOLS and risk_dollars is not None:
-            sizing = size_whole_contract(setup, risk_dollars)
+            sizing = size_whole_contract(setup, risk_dollars, max_micros_cap=max_micros_cap)
             position.requested_risk_dollars = max(0.0, float(risk_dollars))
             position.per_contract_risk = sizing.per_contract_risk
             position.contract_multiplier = sizing.contract_multiplier
             position.execution_contract = sizing.execution_contract
             position.accounting_version = PAPER_ACCOUNTING_VERSION_MGC_WHOLE_CONTRACT_V1
+            position.max_micros_cap = sizing.max_micros_cap
             if not sizing.sizeable:
                 # Do not force a minimum of 1 contract. Reject with a clear,
                 # queryable reason instead of silently over-risking, and never
@@ -220,10 +252,12 @@ class PaperExecutor:
                 position.result_dollars = 0.0
                 position.quantity = 0
                 position.actual_risk_dollars = 0.0
+                position.unused_risk_dollars = position.requested_risk_dollars
                 self.closed.append(position)
                 return position
             position.quantity = sizing.quantity
             position.actual_risk_dollars = sizing.actual_risk_dollars
+            position.unused_risk_dollars = sizing.unused_risk_dollars
 
         self.positions[setup.setup_id] = position
         return position
