@@ -175,6 +175,36 @@ def _initialize_database(database_module) -> None:
                 if not _column_exists(connection, "paper_trades", column):
                     connection.execute(f"ALTER TABLE paper_trades ADD COLUMN {column} {ddl}")
 
+            # OTR-81 research-integrity patch: this module keeps its own copy
+            # of database.py's schema/migration for WAL concurrency, so new
+            # columns must be added in both places -- otherwise every write
+            # through this (production) get_connection would fail with "no
+            # such column" as soon as it hit one of them.
+            for column, ddl in (
+                ("requested_risk_dollars", "REAL"),
+                ("actual_risk_dollars", "REAL"),
+                ("quantity", "INTEGER"),
+                ("per_contract_risk", "REAL"),
+                ("contract_multiplier", "REAL"),
+                ("execution_contract", "TEXT"),
+                ("accounting_version", "TEXT"),
+                ("mfe_r", "REAL"),
+                ("mae_r", "REAL"),
+                ("run_id", "TEXT"),
+                ("engine_version", "TEXT"),
+                ("operation_version", "TEXT"),
+            ):
+                if not _column_exists(connection, "paper_trades", column):
+                    connection.execute(f"ALTER TABLE paper_trades ADD COLUMN {column} {ddl}")
+
+            for column, ddl in (
+                ("run_id", "TEXT"),
+                ("engine_version", "TEXT"),
+                ("operation_version", "TEXT"),
+            ):
+                if not _column_exists(connection, "strategy_setups", column):
+                    connection.execute(f"ALTER TABLE strategy_setups ADD COLUMN {column} {ddl}")
+
             existing_counter_rows = connection.execute(
                 "SELECT COUNT(*) FROM quote_counters"
             ).fetchone()[0]

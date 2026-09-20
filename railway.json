@@ -8,6 +8,7 @@
     "healthcheckPath": "/market/api/health",
     "healthcheckTimeout": 120,
     "restartPolicyType": "ALWAYS",
-    "restartPolicyMaxRetries": 10
+    "restartPolicyMaxRetries": 10,
+    "preDeployCommand": "python -m compileall -q src && python -m unittest discover -s tests"
   }
 }

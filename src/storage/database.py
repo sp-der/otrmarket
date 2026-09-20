@@ -164,6 +164,34 @@ def get_connection():
         if not _column_exists(connection, "paper_trades", column):
             connection.execute(f"ALTER TABLE paper_trades ADD COLUMN {column} {ddl}")
 
+    # OTR-81 research-integrity patch: whole-MGC paper accounting (additive,
+    # NULL on every pre-existing row -- no historical row is rewritten) plus
+    # run/version scoping so Research Lab never silently pools generations.
+    for column, ddl in (
+        ("requested_risk_dollars", "REAL"),
+        ("actual_risk_dollars", "REAL"),
+        ("quantity", "INTEGER"),
+        ("per_contract_risk", "REAL"),
+        ("contract_multiplier", "REAL"),
+        ("execution_contract", "TEXT"),
+        ("accounting_version", "TEXT"),
+        ("mfe_r", "REAL"),
+        ("mae_r", "REAL"),
+        ("run_id", "TEXT"),
+        ("engine_version", "TEXT"),
+        ("operation_version", "TEXT"),
+    ):
+        if not _column_exists(connection, "paper_trades", column):
+            connection.execute(f"ALTER TABLE paper_trades ADD COLUMN {column} {ddl}")
+
+    for column, ddl in (
+        ("run_id", "TEXT"),
+        ("engine_version", "TEXT"),
+        ("operation_version", "TEXT"),
+    ):
+        if not _column_exists(connection, "strategy_setups", column):
+            connection.execute(f"ALTER TABLE strategy_setups ADD COLUMN {column} {ddl}")
+
     # Operation 4.5.2: initialize lifetime quote counters before raw-tick
     # retention begins pruning market_quotes.
     existing_counter_rows = connection.execute("SELECT COUNT(*) FROM quote_counters").fetchone()[0]
@@ -363,14 +391,23 @@ def load_recent_candles(connection, symbols, timeframes, limit_per_series: int =
 
 
 def save_setup(connection, setup: StrategySetup):
+    # Deferred import: research/run_scope.py depends on this module for
+    # engine_state helpers, so the import stays local to avoid a cycle.
+    from src.research.run_scope import ENGINE_VERSION, OPERATION_VERSION, current_run_id
+
+    # Resolved before acquiring _db_lock: current_run_id() may itself need to
+    # mint and persist a new id via set_engine_state(), which also takes
+    # _db_lock (non-reentrant) -- calling it from inside this block deadlocks.
+    run_id = current_run_id(connection)
     with _db_lock:
         connection.execute(
             """
             INSERT OR REPLACE INTO strategy_setups (
                 setup_id, symbol, timeframe, direction, created_at,
                 trigger_type, entry_price, stop_price, target_price,
-                risk_reward, status, payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                risk_reward, status, payload_json,
+                run_id, engine_version, operation_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 setup.setup_id,
@@ -385,6 +422,9 @@ def save_setup(connection, setup: StrategySetup):
                 setup.risk_reward,
                 setup.status,
                 json.dumps(setup.to_dict(), sort_keys=True),
+                run_id,
+                ENGINE_VERSION,
+                OPERATION_VERSION,
             ),
         )
         connection.commit()
@@ -448,7 +488,12 @@ def delete_diagnostics_for_symbol(connection, symbol: str) -> None:
 
 
 def upsert_paper_trade(connection, position, updated_at):
+    # Deferred import: see save_setup() for why this stays local.
+    from src.research.run_scope import ENGINE_VERSION, OPERATION_VERSION, current_run_id
+
     setup = position.setup
+    # Resolved before acquiring _db_lock: see save_setup() for why.
+    run_id = current_run_id(connection)
     with _db_lock:
         connection.execute(
             """
@@ -456,8 +501,12 @@ def upsert_paper_trade(connection, position, updated_at):
                 setup_id, symbol, timeframe, direction, status,
                 entry_price, stop_price, target_price,
                 opened_at, closed_at, exit_price, result, result_r,
-                risk_dollars, result_dollars, guard_reason, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                risk_dollars, result_dollars, guard_reason, updated_at,
+                requested_risk_dollars, actual_risk_dollars, quantity,
+                per_contract_risk, contract_multiplier, execution_contract,
+                accounting_version, mfe_r, mae_r,
+                run_id, engine_version, operation_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(setup_id) DO UPDATE SET
                 status=excluded.status,
                 opened_at=excluded.opened_at,
@@ -468,7 +517,19 @@ def upsert_paper_trade(connection, position, updated_at):
                 risk_dollars=COALESCE(excluded.risk_dollars, paper_trades.risk_dollars),
                 result_dollars=excluded.result_dollars,
                 guard_reason=COALESCE(excluded.guard_reason, paper_trades.guard_reason),
-                updated_at=excluded.updated_at
+                updated_at=excluded.updated_at,
+                requested_risk_dollars=COALESCE(paper_trades.requested_risk_dollars, excluded.requested_risk_dollars),
+                actual_risk_dollars=COALESCE(paper_trades.actual_risk_dollars, excluded.actual_risk_dollars),
+                quantity=COALESCE(paper_trades.quantity, excluded.quantity),
+                per_contract_risk=COALESCE(paper_trades.per_contract_risk, excluded.per_contract_risk),
+                contract_multiplier=COALESCE(paper_trades.contract_multiplier, excluded.contract_multiplier),
+                execution_contract=COALESCE(paper_trades.execution_contract, excluded.execution_contract),
+                accounting_version=COALESCE(paper_trades.accounting_version, excluded.accounting_version),
+                mfe_r=excluded.mfe_r,
+                mae_r=excluded.mae_r,
+                run_id=COALESCE(paper_trades.run_id, excluded.run_id),
+                engine_version=COALESCE(paper_trades.engine_version, excluded.engine_version),
+                operation_version=COALESCE(paper_trades.operation_version, excluded.operation_version)
             """,
             (
                 setup.setup_id,
@@ -488,6 +549,18 @@ def upsert_paper_trade(connection, position, updated_at):
                 position.result_dollars,
                 position.guard_reason,
                 updated_at,
+                position.requested_risk_dollars,
+                position.actual_risk_dollars,
+                position.quantity,
+                position.per_contract_risk,
+                position.contract_multiplier,
+                position.execution_contract,
+                position.accounting_version,
+                position.mfe_r,
+                position.mae_r,
+                run_id,
+                ENGINE_VERSION,
+                OPERATION_VERSION,
             ),
         )
         connection.commit()

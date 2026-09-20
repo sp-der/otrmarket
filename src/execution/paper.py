@@ -2,9 +2,58 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import math
 
+from src.research.execution.contracts import execution_contract, micro_spec
 from src.risk.geometry import validate_trade_geometry
 from src.strategies.models import StrategySetup
+
+
+# Cutover marker for realistic whole-contract paper accounting. Rows written
+# before this patch have no accounting_version and keep their original
+# theoretical (risk_dollars / risk_dollars * RR) P/L; they are never rewritten.
+PAPER_ACCOUNTING_VERSION_MGC_WHOLE_CONTRACT_V1 = "MGC_WHOLE_CONTRACT_V1"
+
+# Whole-contract sizing currently applies only to Gold (MGC). Other symbols
+# keep the existing theoretical dollar-budget accounting.
+WHOLE_CONTRACT_SYMBOLS = {"GC"}
+
+CANNOT_SIZE_RESULT = "CANNOT_SIZE_MGC"
+
+
+@dataclass(frozen=True)
+class ContractSizing:
+    sizeable: bool
+    quantity: int
+    actual_risk_dollars: float
+    per_contract_risk: float
+    contract_multiplier: float
+    execution_contract: str
+
+
+def size_whole_contract(setup: StrategySetup, requested_risk_dollars: float) -> ContractSizing:
+    """Floor-size a paper trade to whole contracts using the same contract
+    assumptions (tick size, point value) as the live/Nautilus execution path.
+
+    Never forces a minimum of 1 contract: if the requested risk cannot fund
+    even one contract, sizing is rejected (sizeable=False) rather than
+    silently over-risking the account.
+    """
+    spec = micro_spec(setup.symbol)
+    contract = execution_contract(setup.symbol)
+    multiplier = float(spec.point_value)
+    per_contract_risk = abs(float(setup.entry_price) - float(setup.stop_price)) * multiplier
+    requested = max(0.0, float(requested_risk_dollars or 0.0))
+
+    if per_contract_risk <= 0:
+        return ContractSizing(False, 0, 0.0, per_contract_risk, multiplier, contract)
+
+    quantity = math.floor(requested / per_contract_risk)
+    if quantity < 1:
+        return ContractSizing(False, 0, 0.0, per_contract_risk, multiplier, contract)
+
+    actual_risk = quantity * per_contract_risk
+    return ContractSizing(True, int(quantity), float(actual_risk), per_contract_risk, multiplier, contract)
 
 
 _PENDING_BARS = {
@@ -40,6 +89,16 @@ class PaperPosition:
     mae_r: float = 0.0
     max_favorable_price: float | None = None
     max_adverse_price: float | None = None
+    # Whole-contract paper accounting (currently Gold/MGC only). None means
+    # this trade predates the migration or is on a symbol not yet migrated;
+    # such rows keep the legacy risk_dollars / risk_dollars*RR calculation.
+    requested_risk_dollars: float | None = None
+    actual_risk_dollars: float | None = None
+    quantity: int | None = None
+    per_contract_risk: float | None = None
+    contract_multiplier: float | None = None
+    execution_contract: str | None = None
+    accounting_version: str | None = None
 
 
 def _aware_utc(value: datetime) -> datetime:
@@ -142,6 +201,30 @@ class PaperExecutor:
             risk_dollars=risk_dollars,
             guard_reason=guard_reason,
         )
+
+        if setup.symbol.upper() in WHOLE_CONTRACT_SYMBOLS and risk_dollars is not None:
+            sizing = size_whole_contract(setup, risk_dollars)
+            position.requested_risk_dollars = max(0.0, float(risk_dollars))
+            position.per_contract_risk = sizing.per_contract_risk
+            position.contract_multiplier = sizing.contract_multiplier
+            position.execution_contract = sizing.execution_contract
+            position.accounting_version = PAPER_ACCOUNTING_VERSION_MGC_WHOLE_CONTRACT_V1
+            if not sizing.sizeable:
+                # Do not force a minimum of 1 contract. Reject with a clear,
+                # queryable reason instead of silently over-risking, and never
+                # add this to self.positions so on_price never touches it.
+                closed_at = _aware_utc(setup.created_at)
+                position.status = "INVALIDATED"
+                position.closed_at = closed_at
+                position.result = CANNOT_SIZE_RESULT
+                position.result_dollars = 0.0
+                position.quantity = 0
+                position.actual_risk_dollars = 0.0
+                self.closed.append(position)
+                return position
+            position.quantity = sizing.quantity
+            position.actual_risk_dollars = sizing.actual_risk_dollars
+
         self.positions[setup.setup_id] = position
         return position
 
@@ -232,7 +315,17 @@ class PaperExecutor:
                     position.exit_price = setup.stop_price if stop_hit else setup.target_price
                     position.result = "LOSS" if stop_hit else "WIN"
                     position.result_r = -1.0 if stop_hit else setup.risk_reward
-                    if position.risk_dollars is not None:
+                    if position.quantity:
+                        # Realistic whole-contract P/L: quantity x actual
+                        # point movement x contract multiplier, using the
+                        # actual stop/target movement (exit_price is already
+                        # pinned to whichever was touched).
+                        point_move = abs(float(position.exit_price) - float(setup.entry_price))
+                        signed_move = -point_move if stop_hit else point_move
+                        position.result_dollars = (
+                            signed_move * float(position.quantity) * float(position.contract_multiplier)
+                        )
+                    elif position.risk_dollars is not None:
                         position.result_dollars = (
                             -float(position.risk_dollars)
                             if stop_hit

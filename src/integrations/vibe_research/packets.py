@@ -37,7 +37,11 @@ def _hypotheses(connection: sqlite3.Connection) -> list[dict[str, Any]]:
 
 def build_vibe_packet(connection: sqlite3.Connection, setup_id: str) -> dict[str, Any]:
     """Project persisted OTR evidence into a read-only research packet."""
-    trades = closed_gold_trades(connection, limit=500)
+    # This looks up one already-known setup_id rather than aggregating
+    # research statistics, so it deliberately opts out of the default
+    # current-run scoping (run_id=None) instead of silently missing trades
+    # from a prior run/generation.
+    trades = closed_gold_trades(connection, limit=500, run_id=None)
     target = next((trade for trade in trades if trade["setup_id"] == str(setup_id)), None)
     if target is None:
         raise ValueError(f"Closed Gold trade {setup_id} is not available for research projection")
