@@ -1,0 +1,175 @@
+from __future__ import annotations
+
+import unittest
+from datetime import datetime, timezone
+
+from src.execution.paper import (
+    CANNOT_SIZE_RESULT,
+    PAPER_ACCOUNTING_VERSION_MGC_WHOLE_CONTRACT_V1,
+    PaperExecutor,
+    size_whole_contract,
+)
+from src.strategies.models import Displacement, FairValueGap, StrategySetup
+
+
+def _gc_setup(*, entry: float, stop: float, target: float, direction: str = "bullish", setup_id: str = "gc-1"):
+    t = datetime(2026, 9, 19, 14, 0, tzinfo=timezone.utc)
+    fvg = FairValueGap("GC", "5m", direction, entry, entry, t, t, t)
+    displacement = Displacement("GC", "5m", direction, t, entry, entry, 2, 2)
+    risk = abs(target - entry) / abs(entry - stop)
+    return StrategySetup(
+        setup_id, "GC", "5m", direction, t, fvg, "liquidity_sweep", {},
+        displacement, fvg, entry, stop, target, risk,
+    )
+
+
+def _nq_setup(setup_id: str = "nq-1"):
+    t = datetime(2026, 9, 19, 14, 0, tzinfo=timezone.utc)
+    fvg = FairValueGap("NQ", "5m", "bullish", 30000.0, 30000.0, t, t, t)
+    displacement = Displacement("NQ", "5m", "bullish", t, 30000.0, 30000.0, 2, 2)
+    return StrategySetup(
+        setup_id, "NQ", "5m", "bullish", t, fvg, "liquidity_sweep", {},
+        displacement, fvg, 30000.0, 29990.0, 30020.0, 2.0,
+    )
+
+
+class WholeContractSizingTests(unittest.TestCase):
+    def test_750_requested_risk_produces_correct_quantity_and_actual_risk(self):
+        setup = _gc_setup(entry=3500.0, stop=3496.7, target=3520.0)  # 3.3pt stop -> $33/contract
+        sizing = size_whole_contract(setup, 750.0)
+
+        self.assertTrue(sizing.sizeable)
+        self.assertEqual(sizing.quantity, 22)
+        self.assertAlmostEqual(sizing.per_contract_risk, 33.0, places=6)
+        self.assertAlmostEqual(sizing.actual_risk_dollars, 726.0, places=6)
+        self.assertLessEqual(sizing.actual_risk_dollars, 750.0)
+        self.assertEqual(sizing.contract_multiplier, 10.0)
+        self.assertEqual(sizing.execution_contract, "MGC")
+
+    def test_500_requested_risk_produces_correct_floor_quantity(self):
+        setup = _gc_setup(entry=3500.0, stop=3496.7, target=3520.0)
+        sizing = size_whole_contract(setup, 500.0)
+
+        self.assertTrue(sizing.sizeable)
+        self.assertEqual(sizing.quantity, 15)
+        self.assertAlmostEqual(sizing.actual_risk_dollars, 495.0, places=6)
+        self.assertLessEqual(sizing.actual_risk_dollars, 500.0)
+
+    def test_actual_risk_never_exceeds_requested_risk(self):
+        for requested in (50.0, 123.0, 499.99, 750.0, 10_000.0):
+            setup = _gc_setup(entry=3500.0, stop=3496.7, target=3520.0)
+            sizing = size_whole_contract(setup, requested)
+            if sizing.sizeable:
+                self.assertLessEqual(sizing.actual_risk_dollars, requested)
+
+    def test_insufficient_budget_for_one_mgc_yields_cannot_size(self):
+        # 1000pt stop distance -> $10,000/contract; $750 cannot fund even 1.
+        setup = _gc_setup(entry=3500.0, stop=2500.0, target=4500.0)
+        sizing = size_whole_contract(setup, 750.0)
+
+        self.assertFalse(sizing.sizeable)
+        self.assertEqual(sizing.quantity, 0)
+        self.assertEqual(sizing.actual_risk_dollars, 0.0)
+
+    def test_no_forced_minimum_of_one_contract(self):
+        setup = _gc_setup(entry=3500.0, stop=2500.0, target=4500.0)
+        executor = PaperExecutor()
+
+        position = executor.register_setup(setup, risk_dollars=750.0)
+
+        self.assertEqual(position.quantity, 0)
+        self.assertNotEqual(position.quantity, 1)
+        self.assertEqual(position.status, "INVALIDATED")
+        self.assertEqual(position.result, CANNOT_SIZE_RESULT)
+        self.assertEqual(position.result_dollars, 0.0)
+        self.assertNotIn(setup.setup_id, executor.positions)
+        self.assertIn(position, executor.closed)
+
+
+class WholeContractPnlTests(unittest.TestCase):
+    def _register(self, *, entry=3500.0, stop=3495.0, target=3510.0, risk_dollars=500.0):
+        setup = _gc_setup(entry=entry, stop=stop, target=target)
+        executor = PaperExecutor()
+        position = executor.register_setup(setup, risk_dollars=risk_dollars)
+        self.assertIn(setup.setup_id, executor.positions)
+        self.assertEqual(position.quantity, 10)  # $500 / ($5 * $10/pt) = 10 contracts
+        self.assertEqual(position.accounting_version, PAPER_ACCOUNTING_VERSION_MGC_WHOLE_CONTRACT_V1)
+        return executor, setup
+
+    def test_win_pnl_is_quantity_times_point_move_times_multiplier(self):
+        executor, setup = self._register()
+        t = setup.created_at
+        executor.on_price("GC", setup.entry_price, t)  # fill
+        changed = executor.on_price("GC", setup.target_price, t)  # touch target -> WIN
+
+        position = changed[-1]
+        self.assertEqual(position.status, "CLOSED")
+        self.assertEqual(position.result, "WIN")
+        # quantity(10) x point_move(10) x multiplier(10) = 1000.0
+        self.assertAlmostEqual(position.result_dollars, 1000.0, places=6)
+
+    def test_loss_pnl_is_quantity_times_point_move_times_multiplier(self):
+        executor, setup = self._register()
+        t = setup.created_at
+        executor.on_price("GC", setup.entry_price, t)  # fill
+        changed = executor.on_price("GC", setup.stop_price, t)  # touch stop -> LOSS
+
+        position = changed[-1]
+        self.assertEqual(position.status, "CLOSED")
+        self.assertEqual(position.result, "LOSS")
+        # quantity(10) x point_move(5) x multiplier(10) = -500.0
+        self.assertAlmostEqual(position.result_dollars, -500.0, places=6)
+        self.assertEqual(position.result_dollars, -position.actual_risk_dollars)
+
+
+class ExistingLifecycleUnaffectedTests(unittest.TestCase):
+    def test_non_gc_symbol_keeps_legacy_theoretical_accounting(self):
+        setup = _nq_setup()
+        executor = PaperExecutor()
+        position = executor.register_setup(setup, risk_dollars=250.0)
+
+        self.assertIsNone(position.quantity)
+        self.assertIsNone(position.accounting_version)
+        self.assertIn(setup.setup_id, executor.positions)
+
+        t = setup.created_at
+        executor.on_price("NQ", setup.entry_price, t)
+        changed = executor.on_price("NQ", setup.target_price, t)
+        position = changed[-1]
+
+        self.assertEqual(position.result, "WIN")
+        # Legacy theoretical calc: risk_dollars * risk_reward
+        self.assertAlmostEqual(position.result_dollars, 250.0 * setup.risk_reward, places=6)
+
+    def test_gc_trade_without_risk_dollars_keeps_legacy_path(self):
+        setup = _gc_setup(entry=3500.0, stop=3495.0, target=3510.0)
+        executor = PaperExecutor()
+        position = executor.register_setup(setup, risk_dollars=None)
+
+        self.assertIsNone(position.quantity)
+        self.assertIsNone(position.accounting_version)
+        self.assertIn(setup.setup_id, executor.positions)
+
+    def test_full_pending_to_closed_lifecycle_still_works(self):
+        setup = _gc_setup(entry=3500.0, stop=3495.0, target=3510.0)
+        executor = PaperExecutor()
+        position = executor.register_setup(setup, risk_dollars=500.0)
+        self.assertEqual(position.status, "PENDING")
+
+        t = setup.created_at
+        executor.on_price("GC", 3502.0, t)  # not yet touched entry
+        self.assertEqual(position.status, "PENDING")
+
+        executor.on_price("GC", setup.entry_price, t)
+        self.assertEqual(position.status, "OPEN")
+        self.assertIsNotNone(position.opened_at)
+
+        executor.on_price("GC", setup.target_price, t)
+        self.assertEqual(position.status, "CLOSED")
+        self.assertIsNotNone(position.closed_at)
+        self.assertNotIn(setup.setup_id, executor.positions)
+        self.assertIn(position, executor.closed)
+
+
+if __name__ == "__main__":
+    unittest.main()
