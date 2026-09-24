@@ -779,7 +779,7 @@ def training_snapshot_72t(live_db_path: Path, research_db_path: Path) -> dict[st
         setup_decisions_current = _count(
             connection,
             "SELECT COUNT(*) FROM training_decisions_72t WHERE symbol='GC' AND run_id=?",
-            (run_id, build),
+            (run_id,),
         ) if run_id else 0
         evaluation_total = 0
         evaluation_current = 0
