@@ -15,6 +15,7 @@ from src.storage.learning import ensure_learning_schema
 
 TRAINING_BUILD_72T = "7.2T"
 ACTIVE_RUN_TABLE_72T = "verify_active_run_72s"
+TRAINING_ACTIVE_RUN_TABLE_72T = "training_active_run_72t"
 
 
 def _table_exists(connection: sqlite3.Connection, name: str) -> bool:
@@ -56,6 +57,13 @@ def _ensure_training_schema(connection: sqlite3.Connection) -> None:
     _ensure_counterfactual_schema(connection)
     connection.executescript(
         """
+        CREATE TABLE IF NOT EXISTS training_active_run_72t (
+            slot INTEGER PRIMARY KEY CHECK(slot = 1),
+            run_id TEXT NOT NULL,
+            build TEXT NOT NULL,
+            activated_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS training_decisions_72t (
             run_id TEXT NOT NULL,
             setup_id TEXT NOT NULL,
@@ -178,6 +186,16 @@ def _active_run(connection: sqlite3.Connection) -> tuple[str, str]:
         if row:
             run_id = str(row[0] or run_id)
             build = str(row[1] or build)
+
+    # Operation 8.1 no longer requires the legacy VERIFY run environment. Its
+    # own durable research run id is authoritative and survives redeploys.
+    engine_module = os.getenv("OTR_ENGINE_MODULE", "").strip()
+    mode = os.getenv("OTR_TRADING_MODE", "").strip().upper()
+    if not run_id and (engine_module.endswith("main_81") or mode in {"EVAL", "EVALUATION"}):
+        from src.research.run_scope import current_run_id
+
+        run_id = current_run_id(connection)
+        build = "8.1"
     return run_id, build
 
 
@@ -196,6 +214,17 @@ def install_training_capture_72t() -> dict[str, int | str]:
         run_id, build = _active_run(connection)
         if not run_id:
             return {"run_id": "", "decisions": 0, "trades": 0}
+
+        connection.execute(
+            """
+            INSERT INTO training_active_run_72t(slot,run_id,build,activated_at)
+            VALUES (1,?,?,?)
+            ON CONFLICT(slot) DO UPDATE SET
+              run_id=excluded.run_id,build=excluded.build,activated_at=excluded.activated_at
+            """,
+            (run_id, build, datetime.now(timezone.utc).isoformat()),
+        )
+        connection.commit()
 
         # SQLite triggers are deliberately database-side so inherited execution
         # paths cannot bypass training capture the way old VERIFY tagging did.
@@ -224,7 +253,7 @@ def install_training_capture_72t() -> dict[str, int | str]:
                 NEW.created_at,NEW.trigger_type,NEW.entry_price,NEW.stop_price,
                 NEW.target_price,NEW.risk_reward,NEW.status,NEW.payload_json,
                 datetime('now')
-              FROM verify_active_run_72s WHERE slot=1;
+              FROM training_active_run_72t WHERE slot=1;
             END;
 
             CREATE TRIGGER training_decision_update_72t
@@ -239,7 +268,7 @@ def install_training_capture_72t() -> dict[str, int | str]:
                 NEW.created_at,NEW.trigger_type,NEW.entry_price,NEW.stop_price,
                 NEW.target_price,NEW.risk_reward,NEW.status,NEW.payload_json,
                 datetime('now')
-              FROM verify_active_run_72s WHERE slot=1;
+              FROM training_active_run_72t WHERE slot=1;
             END;
 
             CREATE TRIGGER training_trade_insert_72t
@@ -252,7 +281,7 @@ def install_training_capture_72t() -> dict[str, int | str]:
               SELECT run_id,NEW.setup_id,'7.2T',NEW.symbol,NEW.timeframe,NEW.direction,
                 NEW.status,NEW.opened_at,NEW.closed_at,NEW.result,NEW.result_r,
                 NEW.risk_dollars,NEW.result_dollars,NEW.updated_at
-              FROM verify_active_run_72s WHERE slot=1;
+              FROM training_active_run_72t WHERE slot=1;
             END;
 
             CREATE TRIGGER training_trade_update_72t
@@ -265,7 +294,7 @@ def install_training_capture_72t() -> dict[str, int | str]:
               SELECT run_id,NEW.setup_id,'7.2T',NEW.symbol,NEW.timeframe,NEW.direction,
                 NEW.status,NEW.opened_at,NEW.closed_at,NEW.result,NEW.result_r,
                 NEW.risk_dollars,NEW.result_dollars,NEW.updated_at
-              FROM verify_active_run_72s WHERE slot=1;
+              FROM training_active_run_72t WHERE slot=1;
             END;
 
             CREATE TRIGGER training_intelligence_insert_72t
@@ -283,7 +312,7 @@ def install_training_capture_72t() -> dict[str, int | str]:
                 NEW.fvg_age_bars,NEW.htf_timeframe,NEW.htf_bias,NEW.mfe_r,NEW.mae_r,
                 NEW.duration_seconds,NEW.outcome_class,NEW.fingerprint_json,
                 NEW.closed_at,NEW.updated_at
-              FROM verify_active_run_72s WHERE slot=1;
+              FROM training_active_run_72t WHERE slot=1;
             END;
 
             CREATE TRIGGER training_intelligence_update_72t
@@ -301,7 +330,7 @@ def install_training_capture_72t() -> dict[str, int | str]:
                 NEW.fvg_age_bars,NEW.htf_timeframe,NEW.htf_bias,NEW.mfe_r,NEW.mae_r,
                 NEW.duration_seconds,NEW.outcome_class,NEW.fingerprint_json,
                 NEW.closed_at,NEW.updated_at
-              FROM verify_active_run_72s WHERE slot=1;
+              FROM training_active_run_72t WHERE slot=1;
             END;
 
             CREATE TRIGGER training_counterfactual_insert_72t
@@ -315,7 +344,7 @@ def install_training_capture_72t() -> dict[str, int | str]:
               SELECT run_id,NEW.setup_id,'7.2T',NEW.symbol,NEW.timeframe,NEW.direction,
                 NEW.created_at,NEW.blocked_status,NEW.blocked_reason,NEW.outcome,
                 NEW.resolved_at,NEW.max_favorable_r,NEW.max_adverse_r,NEW.last_checked
-              FROM verify_active_run_72s WHERE slot=1;
+              FROM training_active_run_72t WHERE slot=1;
             END;
 
             CREATE TRIGGER training_counterfactual_update_72t
@@ -329,7 +358,7 @@ def install_training_capture_72t() -> dict[str, int | str]:
               SELECT run_id,NEW.setup_id,'7.2T',NEW.symbol,NEW.timeframe,NEW.direction,
                 NEW.created_at,NEW.blocked_status,NEW.blocked_reason,NEW.outcome,
                 NEW.resolved_at,NEW.max_favorable_r,NEW.max_adverse_r,NEW.last_checked
-              FROM verify_active_run_72s WHERE slot=1;
+              FROM training_active_run_72t WHERE slot=1;
             END;
 
             CREATE TRIGGER training_shadow_insert_72t
@@ -342,7 +371,7 @@ def install_training_capture_72t() -> dict[str, int | str]:
               SELECT run_id,NEW.setup_id,'7.2T',NEW.source_setup_id,NEW.profile,
                 NEW.symbol,NEW.timeframe,NEW.direction,NEW.strategy,NEW.status,
                 NEW.result,NEW.result_r,NEW.mfe_r,NEW.mae_r,NEW.closed_at,NEW.updated_at
-              FROM verify_active_run_72s WHERE slot=1;
+              FROM training_active_run_72t WHERE slot=1;
             END;
 
             CREATE TRIGGER training_shadow_update_72t
@@ -355,7 +384,7 @@ def install_training_capture_72t() -> dict[str, int | str]:
               SELECT run_id,NEW.setup_id,'7.2T',NEW.source_setup_id,NEW.profile,
                 NEW.symbol,NEW.timeframe,NEW.direction,NEW.strategy,NEW.status,
                 NEW.result,NEW.result_r,NEW.mfe_r,NEW.mae_r,NEW.closed_at,NEW.updated_at
-              FROM verify_active_run_72s WHERE slot=1;
+              FROM training_active_run_72t WHERE slot=1;
             END;
             """
         )
