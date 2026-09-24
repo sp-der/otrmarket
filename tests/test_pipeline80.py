@@ -134,5 +134,171 @@ class Pipeline80Tests(unittest.TestCase):
         self.assertEqual(len(handled), 2)
 
 
+    def test_operation81_promotes_runner_up_after_top_candidate_geometry_preflight_fails(self):
+        class _FailTopPaper(_Paper):
+            def __init__(self):
+                super().__init__()
+                self.attempts = []
+
+            def register_setup(self, setup, *, risk_dollars=None, guard_reason=None):
+                self.attempts.append(setup.setup_id)
+                if setup.setup_id == "second":
+                    raise ValueError("invalid trade geometry")
+                return super().register_setup(
+                    setup,
+                    risk_dollars=risk_dollars,
+                    guard_reason=guard_reason,
+                )
+
+        paper = _FailTopPaper()
+        saved = []
+        runtime = SimpleNamespace(
+            strategy=SimpleNamespace(),
+            paper=paper,
+            evaluation_guard=SimpleNamespace(
+                decide=lambda connection, created: SimpleNamespace(
+                    allowed=True,
+                    status="VERIFY",
+                    risk_dollars=250.0,
+                    reason="approved",
+                    snapshot={"profile": "VERIFY", "phase": "VERIFY"},
+                )
+            ),
+            save_setup=lambda connection, setup: saved.append((setup.setup_id, setup.status)),
+            upsert_paper_trade=lambda connection, position, updated_at: None,
+            console=_Console(),
+        )
+        pipeline = OTRPipeline80(
+            runtime=runtime,
+            session_gate=lambda connection, setup: SimpleNamespace(
+                allowed=True, reason="open", details={}
+            ),
+            quality_gate=lambda connection, setup, histories: (True, "quality passed"),
+            setup_risk=lambda decision, setup: (250.0, 1.0),
+            arbiter=_Arbiter(),
+            regime_engine=_Regime(),
+        )
+        pipeline.promote_runner_up = True
+        first, second = self._setup("first"), self._setup("second")
+        connection = sqlite3.connect(":memory:")
+        try:
+            handled = pipeline.process_candidates(connection, [first, second], {})
+        finally:
+            connection.close()
+
+        self.assertEqual(paper.attempts, ["second", "first"])
+        self.assertEqual(paper.registered, ["first"])
+        self.assertEqual(second.status, "RISK_REJECTED")
+        self.assertEqual(first.metadata["trade_plan_80"]["metadata"]["promoted_rank"], 2)
+        self.assertEqual([item.setup_id for item in handled], ["second", "first"])
+
+    def test_operation81_promotes_runner_up_when_top_candidate_cannot_size_whole_mgc(self):
+        class _CannotSizeTopPaper(_Paper):
+            def __init__(self):
+                super().__init__()
+                self.attempts = []
+
+            def register_setup(self, setup, *, risk_dollars=None, guard_reason=None):
+                self.attempts.append(setup.setup_id)
+                if setup.setup_id == "second":
+                    return SimpleNamespace(
+                        setup=setup,
+                        status="INVALIDATED",
+                        result="CANNOT_SIZE_MGC",
+                    )
+                return super().register_setup(
+                    setup,
+                    risk_dollars=risk_dollars,
+                    guard_reason=guard_reason,
+                )
+
+        paper = _CannotSizeTopPaper()
+        persisted = []
+        runtime = SimpleNamespace(
+            strategy=SimpleNamespace(),
+            paper=paper,
+            evaluation_guard=SimpleNamespace(
+                decide=lambda connection, created: SimpleNamespace(
+                    allowed=True,
+                    status="VERIFY",
+                    risk_dollars=250.0,
+                    reason="approved",
+                    snapshot={"profile": "VERIFY", "phase": "VERIFY"},
+                )
+            ),
+            save_setup=lambda connection, setup: None,
+            upsert_paper_trade=lambda connection, position, updated_at: persisted.append(
+                (position.setup.setup_id, position.status, position.result)
+            ),
+            console=_Console(),
+        )
+        pipeline = OTRPipeline80(
+            runtime=runtime,
+            session_gate=lambda connection, setup: SimpleNamespace(
+                allowed=True, reason="open", details={}
+            ),
+            quality_gate=lambda connection, setup, histories: (True, "quality passed"),
+            setup_risk=lambda decision, setup: (250.0, 1.0),
+            arbiter=_Arbiter(),
+            regime_engine=_Regime(),
+        )
+        pipeline.promote_runner_up = True
+        first, second = self._setup("first"), self._setup("second")
+        connection = sqlite3.connect(":memory:")
+        try:
+            pipeline.process_candidates(connection, [first, second], {})
+        finally:
+            connection.close()
+
+        self.assertEqual(paper.attempts, ["second", "first"])
+        self.assertEqual(paper.registered, ["first"])
+        self.assertEqual(second.status, "RISK_REJECTED")
+        self.assertEqual(persisted[0], ("second", "INVALIDATED", "CANNOT_SIZE_MGC"))
+
+    def test_operation81_does_not_promote_around_account_guard_block(self):
+        paper = _Paper()
+        calls = {"guard": 0}
+
+        def guard(_connection, _created):
+            calls["guard"] += 1
+            return SimpleNamespace(
+                allowed=False,
+                status="BLOCKED",
+                risk_dollars=0.0,
+                reason="daily account guard",
+                snapshot={"profile": "VERIFY", "phase": "LOCKED"},
+            )
+
+        runtime = SimpleNamespace(
+            strategy=SimpleNamespace(),
+            paper=paper,
+            evaluation_guard=SimpleNamespace(decide=guard),
+            save_setup=lambda connection, setup: None,
+            upsert_paper_trade=lambda connection, position, updated_at: None,
+            console=_Console(),
+        )
+        pipeline = OTRPipeline80(
+            runtime=runtime,
+            session_gate=lambda connection, setup: SimpleNamespace(
+                allowed=True, reason="open", details={}
+            ),
+            quality_gate=lambda connection, setup, histories: (True, "quality passed"),
+            setup_risk=lambda decision, setup: (0.0, 0.0),
+            arbiter=_Arbiter(),
+            regime_engine=_Regime(),
+        )
+        pipeline.promote_runner_up = True
+        first, second = self._setup("first"), self._setup("second")
+        connection = sqlite3.connect(":memory:")
+        try:
+            pipeline.process_candidates(connection, [first, second], {})
+        finally:
+            connection.close()
+
+        self.assertEqual(calls["guard"], 1)
+        self.assertEqual(paper.registered, [])
+        self.assertEqual(second.status, "GUARD_BLOCKED")
+        self.assertEqual(first.status, "ARBITER_BLOCKED")
+
 if __name__ == "__main__":
     unittest.main()
