@@ -47,7 +47,7 @@ def _event_time(histories, symbol: str, timeframe: str) -> str:
                     value = value.replace(tzinfo=timezone.utc)
                 return value.astimezone(timezone.utc).isoformat()
             return str(value)
-    return datetime.now(timezone.utc).isoformat()
+    raise ValueError("Decision recording requires an observed market event timestamp")
 
 
 def _candidate_payload(setup) -> dict[str, Any]:
@@ -86,7 +86,12 @@ def record_pipeline_evaluation81(
     if str(symbol).upper() != "GC":
         return
     ensure_pipeline_recorder81(connection)
+    from src.research.outcomes81 import update_outcomes81
+    event_stamp = _event_time(histories, symbol, timeframe)
+    update_outcomes81(connection, symbol, timeframe, histories, datetime.fromisoformat(event_stamp))
     run_id = current_run_id(connection)
+    from src.research.developing81 import observe_developing81
+    observe_developing81(connection, candidates or [], symbol, timeframe, histories, datetime.fromisoformat(event_stamp))
     candidate_rows = [_candidate_payload(setup) for setup in (candidates or [])]
     handled_rows = list(handled or [])
 
@@ -108,19 +113,17 @@ def record_pipeline_evaluation81(
     if not direction and isinstance(diagnostic, dict):
         direction = str(diagnostic.get("direction") or diagnostic.get("bias") or "")
 
+    if isinstance(diagnostic, dict):
+        diagnostic = dict(diagnostic)
+        diagnostic["collection"] = getattr(runtime.strategy, "candidate_collection81", {})
+
     connection.execute(
         """
         INSERT INTO training_evaluations_81(
             run_id,symbol,timeframe,evaluated_at,source,build,candidate_count,
             handled_count,final_status,direction,candidate_json,diagnostic_json
         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(run_id,symbol,timeframe,evaluated_at,source) DO UPDATE SET
-            candidate_count=excluded.candidate_count,
-            handled_count=excluded.handled_count,
-            final_status=excluded.final_status,
-            direction=excluded.direction,
-            candidate_json=excluded.candidate_json,
-            diagnostic_json=excluded.diagnostic_json
+        ON CONFLICT(run_id,symbol,timeframe,evaluated_at,source) DO NOTHING
         """,
         (
             run_id,

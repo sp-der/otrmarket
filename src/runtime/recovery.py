@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from src.research.run_scope import active_table
+
 import json
 from datetime import datetime, timezone
 
@@ -67,12 +69,12 @@ def setup_from_payload(payload: str | dict) -> StrategySetup:
 def restore_active_paper_positions(connection, executor) -> tuple[int, list[str]]:
     """Rehydrate persisted PENDING/OPEN paper positions after a process restart."""
     rows = connection.execute(
-        """
+        f"""
         SELECT p.setup_id, p.status, p.opened_at, p.closed_at, p.exit_price,
                p.result, p.result_r, p.risk_dollars, p.result_dollars,
                p.guard_reason, s.payload_json
-        FROM paper_trades p
-        JOIN strategy_setups s ON s.setup_id = p.setup_id
+        FROM {active_table(connection, 'paper_trades')} p
+        JOIN {active_table(connection, 'strategy_setups')} s ON s.setup_id = p.setup_id
         WHERE p.status IN ('PENDING', 'OPEN')
         ORDER BY p.updated_at ASC
         """
@@ -109,10 +111,10 @@ def restore_active_paper_positions(connection, executor) -> tuple[int, list[str]
 def restore_recent_stale_watches(connection, continuation_engine) -> int:
     """Restore recent stale-entry thesis watches without reopening invalid orders."""
     rows = connection.execute(
-        """
+        f"""
         SELECT p.updated_at, s.payload_json
-        FROM paper_trades p
-        JOIN strategy_setups s ON s.setup_id = p.setup_id
+        FROM {active_table(connection, 'paper_trades')} p
+        JOIN {active_table(connection, 'strategy_setups')} s ON s.setup_id = p.setup_id
         WHERE p.result = 'STALE_MOVE_BEFORE_ENTRY'
         ORDER BY p.updated_at DESC
         LIMIT 24

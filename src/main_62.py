@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from src.research.run_scope import active_table
+
 import asyncio
 import json
 from types import MethodType
@@ -91,10 +93,10 @@ runtime.upsert_paper_trade = _upsert_paper_trade_62
 def _continuation_trades_today(connection, setup) -> int:
     candidate_day = op61.op59.op58.base._trading_day(setup.created_at)
     rows = connection.execute(
-        """
+        f"""
         SELECT p.status, s.created_at, s.payload_json
-        FROM paper_trades p
-        JOIN strategy_setups s ON s.setup_id = p.setup_id
+        FROM {active_table(connection, 'paper_trades')} p
+        JOIN {active_table(connection, 'strategy_setups')} s ON s.setup_id = p.setup_id
         WHERE p.status IN ('PENDING', 'OPEN', 'CLOSED')
         """
     ).fetchall()

@@ -194,6 +194,15 @@ class OTRPipeline80:
                     except Exception as exc:
                         trace.add("SHADOW", "WARNING", str(exc))
 
+            if self.promote_runner_up and setup.metadata.get("preview_only_80"):
+                setup.status = "PRE_ARMED"
+                self.runtime.save_setup(connection, setup)
+                trace.add("DEVELOPING", "PRE_ARMED", "Waiting for qualifying pullback / fresh entry geometry; observation only.")
+                trace.finish("PRE_ARMED")
+                self._persist_trace(connection, trace)
+                handled.append(setup)
+                continue
+
             session = self.session_gate(connection, setup)
             setup.metadata["session_consistency"] = session.details
             if not session.allowed:
@@ -271,6 +280,27 @@ class OTRPipeline80:
             setup = setup_by_id[setup_id]
             trace = traces[setup_id]
             attempted.add(setup_id)
+            decision_time = setup.created_at
+            if rank > 1:
+                from .runner_up81 import check_runner_up81, session_probe
+                status, reason, decision_time, causal = check_runner_up81(setup, histories, self.runtime)
+                if status is None:
+                    session = self.session_gate(connection, session_probe(setup, decision_time))
+                    if not session.allowed:
+                        status, reason = "RUNNER_UP_SESSION_BLOCKED", session.reason
+                if status is None:
+                    allowed, reason = self.quality_gate(connection, setup, causal)
+                    if not allowed:
+                        status = "RUNNER_UP_QUALITY_NO_LONGER_VALID"
+                if status is None:
+                    # Quality can adjust entry geometry; check the final executable plan again.
+                    status, reason, decision_time, causal = check_runner_up81(setup, causal, self.runtime)
+                if status:
+                    handled.append(self._save_block(connection, setup, trace, status,
+                                                    "RUNNER_UP_VALIDATION", reason))
+                    continue
+                trace.add("RUNNER_UP_VALIDATION", "PASSED", reason,
+                          {"event_time": decision_time.isoformat()})
             setup.metadata["setup_arbiter_80"] = {
                 "selected": True,
                 "score": assessment.score,
@@ -284,7 +314,7 @@ class OTRPipeline80:
             }
             trace.add(
                 "ARBITER",
-                "SELECTED" if rank == 1 else "PROMOTED",
+                "SELECTED" if rank == 1 else "ARBITER_PROMOTED_RUNNER_UP",
                 (
                     f"Candidate score {assessment.score:.2f}/100"
                     if rank == 1
@@ -293,7 +323,7 @@ class OTRPipeline80:
                 assessment.to_dict(),
             )
 
-            decision = self.runtime.evaluation_guard.decide(connection, setup.created_at)
+            decision = self.runtime.evaluation_guard.decide(connection, decision_time)
             applied_risk, risk_multiplier = self.setup_risk(decision, setup)
             setup.metadata["evaluation_guard"] = {
                 "status": decision.status,
@@ -377,7 +407,10 @@ class OTRPipeline80:
                 handled.append(setup)
                 # Existing exposure is account state, not candidate geometry.
                 # Never use runner-up promotion to route around that invariant.
-                if "ACTIVE_SYMBOL_CONFLICT" in message.upper():
+                recoverable = any(token in message.lower() for token in (
+                    "geometry", "tick size", "risk distance", "reward distance", "cannot_size_mgc"
+                ))
+                if "ACTIVE_SYMBOL_CONFLICT" in message.upper() or not recoverable:
                     break
                 continue
 
@@ -611,6 +644,18 @@ class OTRPipeline80:
             return None
 
         histories = self.runtime.histories_snapshot()
+        if self.promote_runner_up:
+            from .runner_up81 import utc
+            try:
+                cutoff = self.runtime.clock.event_time(symbol)
+            except AttributeError:
+                cutoff = None
+            bars = histories.get((symbol, timeframe), [])
+            if cutoff is None and bars:
+                cutoff = bars[-1].close_time
+            if cutoff is not None:
+                histories = {key: [bar for bar in values if utc(bar.close_time) <= utc(cutoff)]
+                             for key, values in histories.items()}
         if self.counterfactual_module is not None:
             try:
                 self.counterfactual_module._ensure_counterfactual_table(connection)

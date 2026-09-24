@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from src.research.run_scope import active_table
+
 from contextvars import ContextVar
 from datetime import datetime, timezone
 import json
@@ -63,7 +65,7 @@ def _current_trade_ids(connection: sqlite3.Connection) -> set[str]:
         return set()
     return {
         str(row[0])
-        for row in connection.execute("SELECT setup_id FROM paper_trades").fetchall()
+        for row in connection.execute(f"SELECT setup_id FROM {active_table(connection, 'paper_trades')}").fetchall()
         if row[0]
     }
 
@@ -97,7 +99,7 @@ def apply_nondestructive_eval_reset() -> bool:
 
         active_count = int(
             connection.execute(
-                "SELECT COUNT(*) FROM paper_trades WHERE status IN ('PENDING','OPEN')"
+                f"SELECT COUNT(*) FROM {active_table(connection, 'paper_trades')} WHERE status IN ('PENDING','OPEN')"
             ).fetchone()[0]
         )
         if active_count:
@@ -146,7 +148,7 @@ def _operating_trade_rows_72(connection: sqlite3.Connection):
     rows = connection.execute(
         f"""
         SELECT setup_id, status, opened_at, closed_at, {result_dollars}
-        FROM paper_trades
+        FROM {active_table(connection, 'paper_trades')}
         ORDER BY COALESCE(opened_at, closed_at) ASC
         """
     ).fetchall()
@@ -183,10 +185,10 @@ def _evaluation_rows_72(self, connection: sqlite3.Connection):  # noqa: ARG001
     reference = _REFERENCE_TIME_72.get()
     connection.row_factory = sqlite3.Row
     rows = connection.execute(
-        """
+        f"""
         SELECT setup_id, status, opened_at, closed_at, result,
                result_r, risk_dollars, result_dollars, updated_at
-        FROM paper_trades
+        FROM {active_table(connection, 'paper_trades')}
         WHERE risk_dollars IS NOT NULL AND risk_dollars > 0
         ORDER BY COALESCE(closed_at, opened_at, updated_at) ASC
         """
@@ -234,7 +236,7 @@ def _session_day_stats_72(connection: sqlite3.Connection, reference_time: dateti
     rows = connection.execute(
         f"""
         SELECT setup_id, status, result, opened_at, closed_at, {result_dollars_expr}
-        FROM paper_trades
+        FROM {active_table(connection, 'paper_trades')}
         ORDER BY COALESCE(closed_at, opened_at) ASC
         """
     ).fetchall()

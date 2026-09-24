@@ -412,7 +412,7 @@ class ExplicitResetTokenTests(unittest.TestCase):
         connection.close()
         self.assertEqual(remaining, 1)
 
-    def test_applied_token_deletes_and_is_recorded(self):
+    def test_applied_token_scopes_without_deleting_and_is_recorded(self):
         connection = database.get_connection()
         connection.execute(
             """
@@ -429,12 +429,12 @@ class ExplicitResetTokenTests(unittest.TestCase):
         with patch.dict(os.environ, {"OTR_OPERATION81_RESET_TOKEN": "overnight-token-1"}, clear=False):
             counts = core81._reset_active_replay_progress_81()
 
-        self.assertEqual(counts.get("paper_trades"), 1)
+        self.assertEqual(counts, {})
         connection = database.get_connection()
         remaining = connection.execute("SELECT COUNT(*) FROM paper_trades").fetchone()[0]
         applied = database.get_engine_state(connection, core81.RUN_RESET_STATE_KEY_81, "")
         connection.close()
-        self.assertEqual(remaining, 0)
+        self.assertEqual(remaining, 1)
         self.assertEqual(applied, "overnight-token-1")
 
     def test_same_token_twice_is_a_no_op(self):

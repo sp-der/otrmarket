@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from src.research.run_scope import active_table
+
 import json
 from collections import Counter
 from datetime import datetime, timezone
@@ -56,7 +58,7 @@ def _reference_time(connection) -> datetime:
             values.append(parsed)
     if _table_exists(connection, "paper_trades"):
         row = connection.execute(
-            "SELECT COALESCE(closed_at,opened_at,updated_at) FROM paper_trades WHERE symbol='GC' "
+            f"SELECT COALESCE(closed_at,opened_at,updated_at) FROM {active_table(connection, 'paper_trades')} WHERE symbol='GC' "
             "ORDER BY COALESCE(closed_at,opened_at,updated_at) DESC LIMIT 1"
         ).fetchone()
         parsed = _parse_time(row[0] if row else None)
@@ -199,11 +201,11 @@ def conversion_funnel81(connection, *, symbol: str = "GC", limit: int = 5000) ->
     paper_join = _table_exists(connection, "paper_trades")
     if paper_join:
         rows = connection.execute(
-            """
+            f"""
             SELECT d.setup_id,d.timeframe,d.strategy,d.final_status,d.trace_json,d.created_at,
                    p.status,p.opened_at,p.closed_at,p.result,p.result_r,p.result_dollars,p.risk_dollars
             FROM decision_traces_80 d
-            LEFT JOIN paper_trades p ON p.setup_id=d.setup_id
+            LEFT JOIN {active_table(connection, 'paper_trades')} p ON p.setup_id=d.setup_id
             WHERE d.symbol=?
             ORDER BY d.created_at DESC
             LIMIT ?
@@ -221,6 +223,12 @@ def conversion_funnel81(connection, *, symbol: str = "GC", limit: int = 5000) ->
             """,
             (symbol, int(limit)),
         ).fetchall()]
+
+    if _table_exists(connection, "engine_state") and connection.execute(
+        "SELECT 1 FROM engine_state WHERE key='operation81_scoped_ledger'"
+    ).fetchone():
+        active_ids = {r[0] for r in connection.execute(f"SELECT setup_id FROM {active_table(connection, 'strategy_setups')}")}
+        rows = [row for row in rows if row[0] in active_ids]
 
     funnel = _blank_slice(symbol)
     by_tf: dict[str, dict] = {}

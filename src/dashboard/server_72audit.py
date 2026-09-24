@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from src.research.run_scope import active_table
+
 from src.dashboard import server_72p as base
 from src.storage.database import get_connection
 
@@ -8,10 +10,10 @@ def _audit_recent_closed() -> None:
     connection = get_connection()
     try:
         rows = connection.execute(
-            """
+            f"""
             SELECT setup_id, symbol, timeframe, direction, entry_price, exit_price,
                    result, result_r, result_dollars, opened_at, closed_at, updated_at
-            FROM paper_trades
+            FROM {active_table(connection, 'paper_trades')}
             WHERE status='CLOSED'
             ORDER BY COALESCE(closed_at, updated_at, '') DESC, rowid DESC
             LIMIT 25

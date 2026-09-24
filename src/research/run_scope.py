@@ -43,3 +43,12 @@ def rotate_run_id(connection) -> str:
     minted = _mint_run_id()
     set_engine_state(connection, RUN_ID_STATE_KEY, minted)
     return minted
+
+
+def active_table(connection, table: str) -> str:
+    """Operational read target, with compatibility for pre-migration databases."""
+    if table not in {"paper_trades", "strategy_setups"}:
+        raise ValueError("Unsupported ledger table")
+    view = "active_" + table
+    exists = connection.execute("SELECT 1 FROM sqlite_master WHERE type='view' AND name=?", (view,)).fetchone()
+    return view if exists else table

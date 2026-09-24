@@ -272,3 +272,104 @@ def archived_trades81(
         except (TypeError, json.JSONDecodeError):
             continue
     return output
+
+
+def preserve_scoped_run81(connection, *, label: str) -> dict:
+    """Preserve original ledger rows in place; only a small manifest is written."""
+    ensure_run_archive81(connection)
+    run_id = current_run_id(connection)
+    archive_id = f"scoped-{run_id}"
+    prior = connection.execute('SELECT archive_id FROM otr_run_archives_81 WHERE archive_id=?', (archive_id,)).fetchone()
+    if prior:
+        return next(row for row in list_run_archives81(connection, limit=200) if row['archive_id'] == archive_id)
+    # Old untagged rows belong to the pre-boundary ledger. Tag once, never move or delete.
+    for table in ('paper_trades', 'strategy_setups'):
+        connection.execute(f'UPDATE {table} SET run_id=? WHERE run_id IS NULL OR run_id=\'\'', (run_id,))
+    columns = _columns(connection, 'paper_trades')
+    trades = [dict(zip(columns, row)) for row in connection.execute('SELECT * FROM paper_trades WHERE run_id=?', (run_id,))]
+    closed = [row for row in trades if row['status'] == 'CLOSED']
+    pnl = [float(row.get('result_dollars') or 0) for row in closed]
+    dates = [str(row[key]) for row in trades for key in ('opened_at','closed_at') if row.get(key)]
+    setup_dates = [row[0] for row in connection.execute('SELECT created_at FROM strategy_setups WHERE run_id=?', (run_id,))]
+    dates += setup_dates
+    equity = peak = drawdown = 0.0
+    for trade in sorted(closed, key=lambda row: row.get('closed_at') or ''):
+        equity += float(trade.get('result_dollars') or 0)
+        peak = max(peak, equity)
+        drawdown = max(drawdown, peak-equity)
+    metadata = {
+        'archive_format': 'SCOPED_ROWS_V2', 'operation': '8.1',
+        'replay_start': min(dates) if dates else None,
+        'replay_end': max(dates) if dates else None,
+        'engine_versions': sorted({str(t.get('engine_version') or 'legacy/unknown') for t in trades}),
+        'operation_versions': sorted({str(t.get('operation_version') or 'legacy/unknown') for t in trades}),
+        'accounting_versions': sorted({str(t.get('accounting_version') or 'legacy/theoretical') for t in trades}),
+        'starting_run_pnl': 0, 'balance_convention': 'Run realized P&L; account starting balance is configuration, not inferred',
+        'gross_profit': sum(x for x in pnl if x>0), 'gross_loss': sum(x for x in pnl if x<0),
+        'breakevens': sum(t.get('result') in ('BE','BREAKEVEN') for t in closed),
+        'max_closed_trade_drawdown': drawdown,
+    }
+    if _table_exists(connection, 'market_lessons'):
+        if 'run_id' in _columns(connection, 'market_lessons'):
+            connection.execute('UPDATE market_lessons SET run_id=? WHERE run_id IS NULL', (run_id,))
+            metadata['missed_moves'] = connection.execute("SELECT COUNT(*) FROM market_lessons WHERE symbol='GC' AND setup_found=0 AND run_id=?", (run_id,)).fetchone()[0]
+            metadata['large_move_lessons'] = connection.execute("SELECT COUNT(*) FROM market_lessons WHERE symbol='GC' AND run_id=?", (run_id,)).fetchone()[0]
+            bounds = connection.execute("SELECT MIN(started_at),MAX(ended_at) FROM market_lessons WHERE run_id=?", (run_id,)).fetchone()
+            dates.extend(value for value in bounds if value)
+            metadata['replay_start'] = min(dates) if dates else None
+            metadata['replay_end'] = max(dates) if dates else None
+    metadata['date_basis'] = 'Observed setup, trade and lesson event bounds; not assumed market-open/close dates'
+    setup_count = len(setup_dates)
+    summary = dict(archive_id=archive_id, run_id=run_id, label=label,
+                   archived_at=datetime.now(timezone.utc).isoformat(), trade_count=len(trades),
+                   setup_count=setup_count, closed_count=len(closed),
+                   wins=sum(t.get('result')=='WIN' for t in closed), losses=sum(t.get('result')=='LOSS' for t in closed),
+                   net_pnl=round(sum(pnl),2), metadata=metadata)
+    connection.execute('''INSERT INTO otr_run_archives_81
+        (archive_id,run_id,label,archived_at,trade_count,setup_count,closed_count,wins,losses,net_pnl,metadata_json)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)''', tuple(summary[key] for key in ('archive_id','run_id','label','archived_at','trade_count','setup_count','closed_count','wins','losses','net_pnl')) + (json.dumps(metadata, sort_keys=True),))
+    connection.commit()
+    return summary
+
+
+def scoped_archive_rows81(connection, archive_id, table, *, limit=500, offset=0):
+    if table not in {'paper_trades', 'strategy_setups'}:
+        raise ValueError('Unsupported historical row type')
+    row = connection.execute('SELECT run_id,metadata_json FROM otr_run_archives_81 WHERE archive_id=?', (archive_id,)).fetchone()
+    if not row:
+        return []
+    metadata = json.loads(row[1])
+    if metadata.get('archive_format') != 'SCOPED_ROWS_V2':
+        rows = connection.execute('SELECT row_json FROM otr_run_archive_rows_81 WHERE archive_id=? AND row_type=? LIMIT ? OFFSET ?', (archive_id,table,min(max(limit,1),5000),max(offset,0)))
+        return [json.loads(item[0]) for item in rows]
+    columns = _columns(connection, table)
+    rows = connection.execute(f'SELECT * FROM {table} WHERE run_id=? ORDER BY setup_id LIMIT ? OFFSET ?', (row[0],min(max(limit,1),5000),max(offset,0)))
+    return [dict(zip(columns,item)) for item in rows]
+
+
+def start_fresh_run81(connection, *, baseline_label, new_label, reset_token=None):
+    """Explicit operation: verify manifest counts and P&L before rotating identity."""
+    run_id = current_run_id(connection)
+    if connection.execute("SELECT COUNT(*) FROM paper_trades WHERE status IN ('PENDING','OPEN')").fetchone()[0]:
+        raise ValueError('Cannot start a new run with pending/open paper positions')
+    archive = preserve_scoped_run81(connection, label=baseline_label)
+    totals = connection.execute("SELECT COUNT(*),COALESCE(SUM(CASE WHEN status='CLOSED' THEN result_dollars ELSE 0 END),0) FROM paper_trades WHERE run_id=?", (run_id,)).fetchone()
+    setups = connection.execute('SELECT COUNT(*) FROM strategy_setups WHERE run_id=?', (run_id,)).fetchone()[0]
+    if totals[0] != archive['trade_count'] or round(totals[1],2) != archive['net_pnl'] or setups != archive['setup_count']:
+        raise ValueError('Archived baseline changed; refusing to rotate run')
+    from src.research.run_scope import _mint_run_id
+    new_id = _mint_run_id()
+    stamp = datetime.now(timezone.utc).isoformat()
+    with connection:
+        for key, value in (("operation81_research_run_id", new_id),
+                           ("operation81_scoped_ledger", "1"),
+                           ("operation81_run_label", new_label)):
+            connection.execute("""INSERT INTO engine_state(key,value,updated_at) VALUES (?,?,?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at""", (key,value,stamp))
+        if reset_token:
+            connection.execute("""INSERT INTO engine_state(key,value,updated_at)
+                VALUES ('operation81_run_reset_generation',?,?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at""", (reset_token,stamp))
+        if _table_exists(connection, 'training_active_run_72t'):
+            connection.execute("UPDATE training_active_run_72t SET run_id=?,build='8.1' WHERE slot=1", (new_id,))
+    return {'archive': archive, 'run_id': new_id, 'label': new_label}

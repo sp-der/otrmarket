@@ -157,7 +157,8 @@ def _install_otr8_api() -> None:
 def main() -> None:
     # A deploy/restart should not silently erase an in-progress replay. Full
     # verification wipes are now opt-in via OTR_FULL_VERIFY_WIPE_ON_BOOT.
-    if _truthy_env("OTR_FULL_VERIFY_WIPE_ON_BOOT", False):
+    operation81 = _promote_engine_80() == "src.main_81"
+    if not operation81 and _truthy_env("OTR_FULL_VERIFY_WIPE_ON_BOOT", False):
         reset_counts = legacy._full_verify_wipe_72t()
     else:
         reset_counts = {}
@@ -167,7 +168,8 @@ def main() -> None:
     # This avoids another wrapper silently overwriting the requested 8.0 engine.
     legacy._install_training_api_72t()
     verify72q._normalize_verify_environment_72q()
-    verify72q._wipe_verify_test_state_72q()
+    if not operation81:
+        verify72q._wipe_verify_test_state_72q()
     run_id = verify72s._stable_verify_run_id_72s()
     verify72s._install_verify_calendar_contract_72s()
     _install_overview_chart80_assets()

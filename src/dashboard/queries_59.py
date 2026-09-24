@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from src.research.run_scope import active_table
+
 import json
 from collections import Counter
 
@@ -55,7 +57,7 @@ class DashboardRepository(BaseDashboardRepository):
         rows = connection.execute(
             f"""
             SELECT result, result_r, {result_dollars_expr}, closed_at
-            FROM paper_trades
+            FROM {active_table(connection, 'paper_trades')}
             WHERE status = 'CLOSED'
               AND result IN ('WIN', 'LOSS')
               AND closed_at IS NOT NULL
@@ -114,9 +116,9 @@ class DashboardRepository(BaseDashboardRepository):
             return {"trading_day": None, "markets": []}
 
         rows = connection.execute(
-            """
+            f"""
             SELECT symbol, timeframe, status, created_at, payload_json
-            FROM strategy_setups
+            FROM {active_table(connection, 'strategy_setups')}
             ORDER BY created_at DESC
             LIMIT 1500
             """

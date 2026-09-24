@@ -52,7 +52,15 @@ def _ensure_active_run_alias(connection: sqlite3.Connection) -> None:
         )
         """
     )
-    if _table_exists(connection, "verify_active_run_72s"):
+    operation81 = _table_exists(connection, "engine_state") and connection.execute(
+        "SELECT 1 FROM engine_state WHERE key='operation81_research_run_id'"
+    ).fetchone()
+    if operation81:
+        connection.execute("""INSERT INTO training_active_run_72t(slot,run_id,build,activated_at)
+            SELECT 1,value,'8.1',updated_at FROM engine_state WHERE key='operation81_research_run_id'
+            ON CONFLICT(slot) DO UPDATE SET run_id=excluded.run_id,build=excluded.build
+        """)
+    elif _table_exists(connection, "verify_active_run_72s"):
         connection.execute(
             f"""
             INSERT INTO {TRAINING_ACTIVE_RUN_TABLE}(slot,run_id,build,activated_at)
@@ -122,15 +130,10 @@ def harden_training_trade_triggers_80(connection: sqlite3.Connection) -> dict[st
               )
               SELECT run_id,NEW.setup_id,build,NEW.symbol,NEW.timeframe,NEW.direction,
                 NEW.created_at,NEW.trigger_type,NEW.entry_price,NEW.stop_price,
-                NEW.target_price,NEW.risk_reward,NEW.status,NEW.payload_json,datetime('now')
+                NEW.target_price,NEW.risk_reward,NEW.status,NEW.payload_json,NEW.created_at
               FROM training_active_run_72t WHERE slot=1
               ON CONFLICT(run_id,setup_id) DO UPDATE SET
-                build=excluded.build,symbol=excluded.symbol,timeframe=excluded.timeframe,
-                direction=excluded.direction,created_at=excluded.created_at,
-                trigger_type=excluded.trigger_type,entry_price=excluded.entry_price,
-                stop_price=excluded.stop_price,target_price=excluded.target_price,
-                risk_reward=excluded.risk_reward,status=excluded.status,
-                payload_json=excluded.payload_json,last_seen_at=excluded.last_seen_at;
+                status=excluded.status,last_seen_at=excluded.last_seen_at;
             END;
 
             CREATE TRIGGER training_decision_update_72t
@@ -143,15 +146,10 @@ def harden_training_trade_triggers_80(connection: sqlite3.Connection) -> dict[st
               )
               SELECT run_id,NEW.setup_id,build,NEW.symbol,NEW.timeframe,NEW.direction,
                 NEW.created_at,NEW.trigger_type,NEW.entry_price,NEW.stop_price,
-                NEW.target_price,NEW.risk_reward,NEW.status,NEW.payload_json,datetime('now')
+                NEW.target_price,NEW.risk_reward,NEW.status,NEW.payload_json,NEW.created_at
               FROM training_active_run_72t WHERE slot=1
               ON CONFLICT(run_id,setup_id) DO UPDATE SET
-                build=excluded.build,symbol=excluded.symbol,timeframe=excluded.timeframe,
-                direction=excluded.direction,created_at=excluded.created_at,
-                trigger_type=excluded.trigger_type,entry_price=excluded.entry_price,
-                stop_price=excluded.stop_price,target_price=excluded.target_price,
-                risk_reward=excluded.risk_reward,status=excluded.status,
-                payload_json=excluded.payload_json,last_seen_at=excluded.last_seen_at;
+                status=excluded.status,last_seen_at=excluded.last_seen_at;
             END;
             """
         )
@@ -362,6 +360,20 @@ def harden_training_trade_triggers_80(connection: sqlite3.Connection) -> dict[st
             """
         )
         summary["installed"] += 2
+
+    if _table_exists(connection, "strategy_setups") and "run_id" in {
+        row[1] for row in connection.execute("PRAGMA table_info(strategy_setups)")
+    }:
+        rows = connection.execute("SELECT name,sql FROM sqlite_master WHERE type='trigger'").fetchall()
+        for name, sql in rows:
+            if name not in CANONICAL_TRIGGER_NAMES:
+                continue
+            guarded = sql.replace("WHERE slot=1", """WHERE slot=1 AND NOT EXISTS (
+                SELECT 1 FROM strategy_setups source WHERE source.setup_id=NEW.setup_id
+                AND source.run_id IS NOT NULL AND source.run_id <> training_active_run_72t.run_id
+            )""")
+            connection.execute(f"DROP TRIGGER {_quote_identifier(name)}")
+            connection.execute(guarded)
 
     connection.commit()
     return summary

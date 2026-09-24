@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from src.research.run_scope import current_run_id
 from src.risk.geometry import normalize_trade_prices, validate_trade_geometry
 
 
@@ -101,10 +102,13 @@ def counterfactual_expectancy81(connection, setup, *, limit: int = 160) -> dict[
             LEFT JOIN strategy_setups s ON s.setup_id=c.setup_id
             WHERE c.symbol=? AND c.timeframe=?
               AND c.outcome IN ('WOULD_WIN','WOULD_LOSE')
+              AND julianday(c.resolved_at) < julianday(?)
+              AND s.run_id IS NOT NULL AND s.run_id <> ?
             ORDER BY COALESCE(c.resolved_at,c.created_at) DESC
             LIMIT ?
             """,
-            (str(setup.symbol), str(setup.timeframe), int(limit)),
+            (str(setup.symbol), str(setup.timeframe), setup.created_at.isoformat(),
+             current_run_id(connection), int(limit)),
         ).fetchall()
     except Exception:
         return {"samples": 0, "wins": 0, "losses": 0, "win_rate": None, "expectancy_r": None, "usable": False}

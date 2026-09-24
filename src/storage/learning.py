@@ -6,6 +6,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+from src.research.run_scope import active_table, current_run_id
 from src.strategies.ict import detect_displacement, detect_fvg, detect_liquidity_sweep, detect_smt
 from src.strategies.regime import classify_regime
 from src.strategies.structure import detect_swings
@@ -45,6 +46,8 @@ def ensure_learning_schema(connection: sqlite3.Connection) -> None:
         );
         """
     )
+    if "run_id" not in {row[1] for row in connection.execute("PRAGMA table_info(market_lessons)")}:
+        connection.execute("ALTER TABLE market_lessons ADD COLUMN run_id TEXT")
     connection.commit()
 
 
@@ -94,8 +97,8 @@ def _pair_smt(symbol, timeframe, histories, cutoff, direction):
 
 def _setup_audit(connection, symbol, timeframe, start, end):
     rows = connection.execute(
-        """
-        SELECT status, payload_json FROM strategy_setups
+        f"""
+        SELECT status, payload_json FROM {active_table(connection, 'strategy_setups')}
         WHERE symbol=? AND timeframe=? AND created_at>=? AND created_at<=?
         ORDER BY created_at ASC
         """,
@@ -203,19 +206,20 @@ def observe_market_opportunity(connection, symbol, timeframe, histories):
         f"Early clues: {clue_text}. The engine had {action}."
     )
 
-    raw = f"{symbol}|{timeframe}|{direction}|{started_at.isoformat()}|{ended_at.isoformat()}"
+    run_id = current_run_id(connection) if connection.execute("SELECT 1 FROM sqlite_master WHERE name='engine_state'").fetchone() else "legacy"
+    raw = f"{run_id}|{symbol}|{timeframe}|{direction}|{started_at.isoformat()}|{ended_at.isoformat()}"
     lesson_id = hashlib.sha1(raw.encode()).hexdigest()[:16]
     now = datetime.now(timezone.utc).isoformat()
     cursor = connection.execute(
         """
         INSERT OR IGNORE INTO market_lessons (
             lesson_id,symbol,timeframe,direction,started_at,ended_at,move_points,
-            threshold_points,setup_found,setup_status,block_reason,features_json,summary,created_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            threshold_points,setup_found,setup_status,block_reason,features_json,summary,created_at,run_id
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (lesson_id, symbol, timeframe, direction, started_at.isoformat(), ended_at.isoformat(),
          move_points, threshold, int(setup_found), setup_status, block_reason,
-         json.dumps(features, sort_keys=True), summary, now),
+         json.dumps(features, sort_keys=True), summary, now, run_id),
     )
     if cursor.rowcount == 0:
         return None

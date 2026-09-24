@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from src.research.run_scope import active_table
+
 import json
 import sqlite3
 from dataclasses import dataclass
@@ -220,7 +222,7 @@ class DashboardRepository:
         rows = connection.execute(
             f"""
             SELECT setup_id, status, result, result_r, {risk_expr}, {result_dollars_expr}, opened_at, closed_at, updated_at
-            FROM paper_trades
+            FROM {active_table(connection, 'paper_trades')}
             ORDER BY COALESCE(closed_at, opened_at, updated_at) ASC
             """
         ).fetchall()
@@ -287,7 +289,7 @@ class DashboardRepository:
             SELECT setup_id, symbol, timeframe, direction, status,
                    entry_price, stop_price, target_price, opened_at, closed_at,
                    exit_price, result, result_r, {risk_expr}, {result_dollars_expr}, {guard_expr}, updated_at
-            FROM paper_trades
+            FROM {active_table(connection, 'paper_trades')}
             ORDER BY updated_at DESC
             LIMIT ?
             """,
@@ -305,10 +307,10 @@ class DashboardRepository:
         if not self._table_exists(connection, "strategy_setups"):
             return []
         rows = connection.execute(
-            """
+            f"""
             SELECT setup_id, symbol, timeframe, direction, created_at, trigger_type,
                    entry_price, stop_price, target_price, risk_reward, status, payload_json
-            FROM strategy_setups
+            FROM {active_table(connection, 'strategy_setups')}
             ORDER BY created_at DESC
             LIMIT ?
             """,
@@ -354,9 +356,9 @@ class DashboardRepository:
         if not self._table_exists(connection, "paper_trades"):
             return []
         rows = connection.execute(
-            """
+            f"""
             SELECT setup_id, closed_at, result_r
-            FROM paper_trades
+            FROM {active_table(connection, 'paper_trades')}
             WHERE status = 'CLOSED' AND result_r IS NOT NULL
             ORDER BY closed_at ASC
             LIMIT ?
@@ -525,11 +527,11 @@ class DashboardRepository:
 
                 if self._table_exists(connection, "strategy_setups"):
                     setup_rows = connection.execute(
-                        """
+                        f"""
                         SELECT setup_id, direction, created_at, trigger_type,
                                entry_price, stop_price, target_price, risk_reward,
                                status, payload_json
-                        FROM strategy_setups
+                        FROM {active_table(connection, 'strategy_setups')}
                         WHERE symbol = ? AND timeframe = ?
                           AND created_at >= ? AND created_at <= ?
                         ORDER BY created_at ASC
@@ -562,7 +564,7 @@ class DashboardRepository:
                         SELECT setup_id, direction, status, entry_price, stop_price,
                                target_price, opened_at, closed_at, exit_price,
                                result, result_r, {risk_expr}, {dollars_expr}, updated_at
-                        FROM paper_trades
+                        FROM {active_table(connection, 'paper_trades')}
                         WHERE symbol = ? AND timeframe = ?
                           AND COALESCE(opened_at, updated_at) <= ?
                           AND (closed_at IS NULL OR COALESCE(closed_at, updated_at) >= ?)
@@ -595,7 +597,7 @@ class DashboardRepository:
         if not self._table_exists(connection, "strategy_setups"):
             return {"total": 0}
         rows = connection.execute(
-            "SELECT status, COUNT(*) AS count FROM strategy_setups GROUP BY status"
+            f"SELECT status, COUNT(*) AS count FROM {active_table(connection, 'strategy_setups')} GROUP BY status"
         ).fetchall()
         output = {"total": sum(row["count"] for row in rows)}
         for row in rows:

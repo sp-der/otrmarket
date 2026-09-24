@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from src.research.run_scope import active_table
+
 from dataclasses import asdict, dataclass
 from datetime import datetime, time, timedelta, timezone
 import os
@@ -111,7 +113,7 @@ def _trade_rows(connection: sqlite3.Connection):
     return connection.execute(
         f"""
         SELECT status, opened_at, closed_at, {result_dollars}
-        FROM paper_trades
+        FROM {active_table(connection, 'paper_trades')}
         ORDER BY COALESCE(opened_at, closed_at) ASC
         """
     ).fetchall()

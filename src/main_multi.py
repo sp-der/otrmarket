@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from src.research.run_scope import active_table
+
 import asyncio
 import json
 from copy import deepcopy
@@ -150,9 +152,9 @@ def _parse_time(value: str | None) -> datetime | None:
 def _same_symbol_cooldown(connection, setup) -> tuple[bool, str]:
     """Prevent rapid-fire re-entry on the same market after a completed trade."""
     row = connection.execute(
-        """
+        f"""
         SELECT closed_at, result
-        FROM paper_trades
+        FROM {active_table(connection, 'paper_trades')}
         WHERE symbol = ? AND status = 'CLOSED' AND closed_at IS NOT NULL
         ORDER BY closed_at DESC
         LIMIT 1
@@ -184,9 +186,9 @@ def _same_symbol_cooldown(connection, setup) -> tuple[bool, str]:
 def _global_loss_cooldown(connection, setup) -> tuple[bool, str]:
     """After any futures loss, require a short market-wide reset before new risk."""
     row = connection.execute(
-        """
+        f"""
         SELECT symbol, closed_at
-        FROM paper_trades
+        FROM {active_table(connection, 'paper_trades')}
         WHERE status = 'CLOSED' AND result = 'LOSS' AND closed_at IS NOT NULL
         ORDER BY closed_at DESC
         LIMIT 1
@@ -244,10 +246,10 @@ def _b_plus_execution_gate(connection, setup) -> tuple[bool, str]:
     """Limit reduced-risk B+ attempts and disable them after a daily loss."""
     candidate_day = _trading_day(setup.created_at)
     rows = connection.execute(
-        """
+        f"""
         SELECT p.result, p.closed_at, s.created_at, s.payload_json
-        FROM paper_trades p
-        LEFT JOIN strategy_setups s ON s.setup_id = p.setup_id
+        FROM {active_table(connection, 'paper_trades')} p
+        LEFT JOIN {active_table(connection, 'strategy_setups')} s ON s.setup_id = p.setup_id
         """
     ).fetchall()
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from src.research.run_scope import active_table
+
 import asyncio
 import json
 from datetime import timezone
@@ -24,9 +26,9 @@ def _futures_day_stats(connection, reference_time, tz) -> dict:
     """
     current_day = reference_time.astimezone(tz).date()
     rows = connection.execute(
-        """
+        f"""
         SELECT symbol, status, result, opened_at, closed_at, result_dollars
-        FROM paper_trades
+        FROM {active_table(connection, 'paper_trades')}
         WHERE symbol IN ('NQ', 'ES', 'GC')
         ORDER BY COALESCE(closed_at, opened_at) ASC
         """
@@ -151,9 +153,9 @@ def evaluate_session_consistency_59(connection, setup, config: SessionConsistenc
 
 def _futures_global_loss_cooldown(connection, setup) -> tuple[bool, str]:
     row = connection.execute(
-        """
+        f"""
         SELECT symbol, closed_at
-        FROM paper_trades
+        FROM {active_table(connection, 'paper_trades')}
         WHERE symbol IN ('NQ', 'ES', 'GC')
           AND status = 'CLOSED' AND result = 'LOSS' AND closed_at IS NOT NULL
         ORDER BY closed_at DESC
@@ -184,10 +186,10 @@ def _futures_global_loss_cooldown(connection, setup) -> tuple[bool, str]:
 def _futures_b_plus_execution_gate(connection, setup) -> tuple[bool, str]:
     candidate_day = op58.base._trading_day(setup.created_at)
     rows = connection.execute(
-        """
+        f"""
         SELECT p.symbol, p.result, p.closed_at, s.created_at, s.payload_json
-        FROM paper_trades p
-        LEFT JOIN strategy_setups s ON s.setup_id = p.setup_id
+        FROM {active_table(connection, 'paper_trades')} p
+        LEFT JOIN {active_table(connection, 'strategy_setups')} s ON s.setup_id = p.setup_id
         WHERE p.symbol IN ('NQ', 'ES', 'GC')
         """
     ).fetchall()
@@ -259,10 +261,10 @@ def _futures_evaluation_rows(connection):
         return []
     connection.row_factory = __import__("sqlite3").Row
     return connection.execute(
-        """
+        f"""
         SELECT setup_id, status, opened_at, closed_at, result,
                result_r, risk_dollars, result_dollars, updated_at
-        FROM paper_trades
+        FROM {active_table(connection, 'paper_trades')}
         WHERE symbol IN ('NQ', 'ES', 'GC')
           AND risk_dollars IS NOT NULL AND risk_dollars > 0
         ORDER BY COALESCE(closed_at, opened_at, updated_at) ASC

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from src.research.run_scope import active_table
+
 import json
 
 from src.dashboard import server_72o as base
@@ -31,14 +33,14 @@ def _audit_context(label: str, setup_ids: set[str]) -> None:
     connection = get_connection()
     try:
         rows = connection.execute(
-            """
+            f"""
             SELECT s.setup_id, s.symbol, s.timeframe, s.direction, s.created_at,
                    s.trigger_type, s.risk_reward, s.payload_json,
                    p.result, p.result_r, p.risk_dollars, p.result_dollars,
                    p.opened_at, p.closed_at
-            FROM strategy_setups s
-            LEFT JOIN paper_trades p ON p.setup_id = s.setup_id
-            WHERE s.setup_id IN ({})
+            FROM {active_table(connection, 'strategy_setups')} s
+            LEFT JOIN {active_table(connection, 'paper_trades')} p ON p.setup_id = s.setup_id
+            WHERE s.setup_id IN ({{}})
             ORDER BY s.created_at ASC
             """.format(",".join("?" for _ in setup_ids)),
             tuple(sorted(setup_ids)),

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from src.research.run_scope import active_table
+
 import asyncio
 import json
 from datetime import timezone
@@ -40,9 +42,9 @@ def _symbol_day_losses(connection, setup) -> int:
     if not candidate_day:
         return 0
     rows = connection.execute(
-        """
+        f"""
         SELECT closed_at
-        FROM paper_trades
+        FROM {active_table(connection, 'paper_trades')}
         WHERE symbol = ? AND status = 'CLOSED' AND result = 'LOSS' AND closed_at IS NOT NULL
         ORDER BY closed_at ASC
         """,
@@ -56,9 +58,9 @@ def _futures_consecutive_losses(connection, setup) -> int:
     if not candidate_day:
         return 0
     rows = connection.execute(
-        """
+        f"""
         SELECT result, closed_at
-        FROM paper_trades
+        FROM {active_table(connection, 'paper_trades')}
         WHERE symbol IN ('NQ', 'ES', 'GC')
           AND status = 'CLOSED' AND result IN ('WIN', 'LOSS') AND closed_at IS NOT NULL
         ORDER BY closed_at DESC
@@ -80,9 +82,9 @@ def _no_cross_market_loss_cooldown(connection, setup) -> tuple[bool, str]:  # no
 
 def _same_symbol_cooldown_70(connection, setup) -> tuple[bool, str]:
     row = connection.execute(
-        """
+        f"""
         SELECT closed_at, result
-        FROM paper_trades
+        FROM {active_table(connection, 'paper_trades')}
         WHERE symbol = ? AND status = 'CLOSED' AND closed_at IS NOT NULL
         ORDER BY closed_at DESC
         LIMIT 1
@@ -111,10 +113,10 @@ def _same_symbol_cooldown_70(connection, setup) -> tuple[bool, str]:
 def _b_plus_execution_gate_70(connection, setup) -> tuple[bool, str]:
     candidate_day = _candidate_day(setup)
     rows = connection.execute(
-        """
+        f"""
         SELECT p.symbol, p.result, p.closed_at, s.created_at, s.payload_json
-        FROM paper_trades p
-        LEFT JOIN strategy_setups s ON s.setup_id = p.setup_id
+        FROM {active_table(connection, 'paper_trades')} p
+        LEFT JOIN {active_table(connection, 'strategy_setups')} s ON s.setup_id = p.setup_id
         WHERE p.symbol IN ('NQ', 'ES', 'GC')
         """
     ).fetchall()

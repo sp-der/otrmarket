@@ -55,6 +55,12 @@
     </header>
 
     <section id="overviewView" class="view active">
+      <section class="panel" id="runLedger81" style="padding:20px;margin-bottom:20px">
+        <h2>Replay Runs</h2><p id="activeRun81">Loading current run…</p>
+        <p id="runFunnel81"></p>
+        <details><summary>Candidate quality & research</summary><pre id="runResearch81" style="white-space:pre-wrap"></pre></details>
+        <details><summary>Historical Runs</summary><div id="runHistory81"></div></details>
+      </section>
       <div class="metric-grid">
         <article class="metric-card accent-card">
           <span class="metric-label">Total R</span>
@@ -67,7 +73,7 @@
           <span id="winLossSub" class="metric-sub">--</span>
         </article>
         <article class="metric-card">
-          <span class="metric-label">All-Time P/L</span>
+          <span class="metric-label">Current Run P/L</span>
           <strong id="allTimePnl" class="metric-value">--</strong>
           <span id="allTimePnlSub" class="metric-sub">Paper realized P/L</span>
         </article>
@@ -402,5 +408,6 @@
 <script src="/market/assets/scanner-decision-live.js?v=6.4" defer></script>
 <script src="/market/assets/trading-days.js?v=6.6.2" defer></script>
 <script src="/market/assets/execution-chart.js?v=7.1" defer></script>
+<script src="/market/assets/run-ledger81.js"></script>
 </body>
 </html>

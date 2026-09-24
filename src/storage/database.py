@@ -209,6 +209,16 @@ def get_connection():
                 (symbol, int(count or 0), now),
             )
     connection.commit()
+    # Active views keep original rows durable while legacy dashboard/risk readers
+    # see only the selected evaluation. Before the first explicit run boundary,
+    # untagged historical rows remain visible exactly as before.
+    for table in ("paper_trades", "strategy_setups"):
+        connection.execute(f"""CREATE VIEW IF NOT EXISTS active_{table} AS
+            SELECT rowid AS rowid, * FROM {table}
+            WHERE NOT EXISTS (SELECT 1 FROM engine_state WHERE key='operation81_scoped_ledger')
+               OR run_id=(SELECT value FROM engine_state WHERE key='operation81_research_run_id')
+        """)
+    connection.commit()
     return connection
 
 

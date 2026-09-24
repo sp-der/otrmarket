@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from src.research.run_scope import active_table
+
 import json
 import os
 from pathlib import Path
@@ -144,7 +146,7 @@ def _ensure_verify_run_boundary_72n(self, connection, runtime: dict) -> tuple[in
 
     if _VERIFY_RUN_BASELINE_ROWID_72N is None:
         if self._table_exists(connection, "paper_trades"):
-            row = connection.execute("SELECT COALESCE(MAX(rowid), 0) FROM paper_trades").fetchone()
+            row = connection.execute(f"SELECT COALESCE(MAX(rowid), 0) FROM {active_table(connection, 'paper_trades')}").fetchone()
             _VERIFY_RUN_BASELINE_ROWID_72N = int(row[0] if row else 0)
         else:
             _VERIFY_RUN_BASELINE_ROWID_72N = 0
@@ -208,7 +210,7 @@ def _verify_run_snapshot_72n(self, connection, runtime: dict) -> dict:
     dollars_expr = "p.result_dollars" if self._column_exists(connection, "paper_trades", "result_dollars") else "NULL AS result_dollars"
     guard_expr = "p.guard_reason" if self._column_exists(connection, "paper_trades", "guard_reason") else "NULL AS guard_reason"
     has_setups = self._table_exists(connection, "strategy_setups")
-    setup_join = "LEFT JOIN strategy_setups s ON s.setup_id = p.setup_id" if has_setups else ""
+    setup_join = f"LEFT JOIN {active_table(connection, 'strategy_setups')} s ON s.setup_id = p.setup_id" if has_setups else ""
     payload_expr = "s.payload_json AS payload_json" if has_setups else "NULL AS payload_json"
 
     if tagged_run_id:
@@ -226,7 +228,7 @@ def _verify_run_snapshot_72n(self, connection, runtime: dict) -> dict:
                p.entry_price, p.stop_price, p.target_price, p.opened_at, p.closed_at,
                p.exit_price, p.result, p.result_r, {risk_expr}, {dollars_expr}, {guard_expr},
                p.updated_at, {payload_expr}
-        FROM paper_trades p
+        FROM {active_table(connection, 'paper_trades')} p
         {run_join}
         {setup_join}
         WHERE {where_clause}

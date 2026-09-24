@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from src.research.run_scope import active_table
+
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 import os
@@ -175,10 +177,10 @@ class EvaluationRiskGuard:
             return []
         connection.row_factory = sqlite3.Row
         return connection.execute(
-            """
+            f"""
             SELECT setup_id, status, opened_at, closed_at, result,
                    result_r, risk_dollars, result_dollars, updated_at
-            FROM paper_trades
+            FROM {active_table(connection, 'paper_trades')}
             WHERE risk_dollars IS NOT NULL AND risk_dollars > 0
             ORDER BY COALESCE(closed_at, opened_at, updated_at) ASC
             """

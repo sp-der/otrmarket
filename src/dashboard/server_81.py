@@ -13,8 +13,8 @@ from src.integrations.vibe_research.routes import install_vibe_research_routes
 from src.execution.paper import PAPER_ACCOUNTING_VERSION_MGC_WHOLE_CONTRACT_V1
 from src.otr8.execution_policy81 import FULL_RISK_DOLLARS, REDUCED_RISK_DOLLARS
 from src.research.conversion_funnel81 import conversion_funnel81
-from src.research.run_archive81 import archive_active_run81, archived_trades81, list_run_archives81
-from src.research.run_scope import ENGINE_VERSION, OPERATION_VERSION, current_run_id, rotate_run_id
+from src.research.run_archive81 import list_run_archives81, start_fresh_run81, scoped_archive_rows81
+from src.research.run_scope import ENGINE_VERSION, OPERATION_VERSION, current_run_id
 from src.risk.evaluation import EvaluationConfig
 from src.storage.database import get_connection, get_engine_state, set_engine_state
 
@@ -26,21 +26,7 @@ RUN_RESET_STATE_KEY_81 = "operation81_run_reset_generation"
 # where bumping a hardcoded generation string in a code commit was enough to
 # silently DELETE active trading tables on the next boot.
 RUN_RESET_TOKEN_ENV_81 = "OTR_OPERATION81_RESET_TOKEN"
-RUN_RESET_TABLES_81 = (
-    "paper_trades",
-    "strategy_setups",
-    "strategy_diagnostics",
-    "decision_traces_80",
-    "verify_run_trades",
-    "training_decisions_72t",
-    "training_trades_72t",
-    "training_trade_metrics_72t",
-    "training_counterfactuals_72t",
-    "training_shadow_72t",
-    "training_evaluations_81",
-    "training_active_run_72t",
-    "verify_active_run_72s",
-)
+
 
 
 def _promote_engine_81() -> str:
@@ -49,21 +35,11 @@ def _promote_engine_81() -> str:
 
 
 def _reset_active_replay_progress_81() -> dict[str, int]:
-    """Explicit-intent overnight scorecard reset for Operation 8.1.
+    """Archive and verify the prior run, then atomically select a fresh run.
 
-    This performs a destructive reset ONLY when the operator sets
-    OTR_OPERATION81_RESET_TOKEN to a new, non-empty value on this deploy.
-    A missing/empty token preserves all data (the safe default). Applying the
-    same token twice is a no-op: the applied token is recorded in
-    engine_state so restarts never repeat the reset. The reset also refuses
-    to run while a PENDING or OPEN paper position exists, since deleting
-    paper_trades out from under a live position would corrupt tracking.
-
-    Trading/run state is cleared so Overview, EVAL accounting, conversion
-    telemetry, scanner state and the trade list begin at zero. Long-lived
-    learning evidence is deliberately preserved: market_quotes, candles,
-    counterfactual_setups, market_lessons, learning_feature_stats,
-    trade_intelligence and shadow history.
+    No trade, setup, or research history is deleted. A new explicit token is
+    required, and pending/open paper exposure prevents rotation. Routine
+    redeploys preserve the active run.
     """
     token = (os.getenv(RUN_RESET_TOKEN_ENV_81) or "").strip()
     if not token:
@@ -98,51 +74,20 @@ def _reset_active_replay_progress_81() -> dict[str, int]:
                 )
                 return {}
 
-        try:
-            archive = archive_active_run81(
-                connection,
-                archive_key=token,
-                label=(os.getenv("OTR_RUN_ARCHIVE_LABEL") or "").strip() or None,
-            )
-        except Exception as exc:
-            print(
-                "Operation 8.1 overnight replay reset REFUSED: durable archive failed; "
-                f"{type(exc).__name__}: {exc}. No active ledger rows were deleted.",
-                flush=True,
-            )
-            return {}
-
-        print(
-            "Operation 8.1 RUN ARCHIVE saved before reset: "
-            f"archive_id={archive['archive_id']}, run_id={archive['run_id']}, "
-            f"trades={archive['trade_count']}, closed={archive['closed_count']}, "
-            f"W/L={archive['wins']}/{archive['losses']}, net_pnl=${archive['net_pnl']:.2f}.",
-            flush=True,
+        result = start_fresh_run81(
+            connection,
+            baseline_label=(os.getenv("OTR_RUN_ARCHIVE_LABEL") or "Full Week Baseline - Pre Candidate Funnel V2"),
+            new_label=(os.getenv("OTR_RUN_LABEL") or "Candidate Funnel V2 - Same Week Validation"),
+            reset_token=token,
         )
-
-        counts: dict[str, int] = {}
-        for table in RUN_RESET_TABLES_81:
-            if not base.legacy._table_exists_72t(connection, table):
-                continue
-            counts[table] = int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
-            connection.execute(f"DELETE FROM {table}")
-
-        # A completely fresh active run must not inherit old run-membership IDs.
-        for key in (
-            "verify_test_run_id_72s",
-            "verify_test_wipe_token_72s",
-            "last_verify_wipe_token_72q",
-        ):
-            connection.execute("DELETE FROM engine_state WHERE key=?", (key,))
+        new_run_id = result["run_id"]
+        counts = {}  # Original trades, setups and research rows remain in place.
+        connection.execute("DELETE FROM strategy_diagnostics")
         set_engine_state(connection, "eval_reset_excluded_setup_ids_72", "[]")
         set_engine_state(connection, RUN_RESET_STATE_KEY_81, token)
-        # A wiped scorecard is genuinely a new research run; give Research Lab
-        # a fresh run_id so it never pools the cleared generation with the
-        # trades that come after it.
-        new_run_id = rotate_run_id(connection)
         connection.commit()
 
-        summary = ", ".join(f"{table}={count}" for table, count in counts.items()) or "no prior run rows"
+        summary = ", ".join(f"{table}={count}" for table, count in counts.items()) or "historical rows preserved in place"
         print(
             "Operation 8.1 EXPLICIT OVERNIGHT REPLAY RESET applied: "
             + summary
@@ -382,6 +327,19 @@ def _install_run_archive_api_81() -> None:
     trades_path = f"{root}/{{archive_id}}/trades"
     existing = {getattr(route, "path", None) for route in dashboard.app.routes}
 
+    def current_run(request: Request):
+        dashboard.require_http_auth(request)
+        from src.research.run_dashboard81 import run_dashboard81
+        connection = get_connection()
+        try:
+            return run_dashboard81(connection)
+        finally:
+            connection.close()
+
+    current_path = f"{dashboard.BASE_PATH}/api/otr81/current-run"
+    if current_path not in existing:
+        dashboard.app.add_api_route(current_path, current_run, methods=["GET"])
+
     def archives(request: Request, limit: int = 50):
         dashboard.require_http_auth(request)
         connection = get_connection()
@@ -394,7 +352,7 @@ def _install_run_archive_api_81() -> None:
         finally:
             connection.close()
 
-    def trades(archive_id: str, request: Request, limit: int = 500):
+    def trades(archive_id: str, request: Request, limit: int = 500, offset: int = 0):
         dashboard.require_http_auth(request)
         connection = get_connection()
         try:
@@ -402,10 +360,22 @@ def _install_run_archive_api_81() -> None:
                 "authoritative": False,
                 "read_only": True,
                 "archive_id": archive_id,
-                "trades": archived_trades81(connection, archive_id, limit=limit),
+                "trades": scoped_archive_rows81(connection, archive_id, "paper_trades", limit=limit, offset=offset),
             }
         finally:
             connection.close()
+
+    def setups(archive_id: str, request: Request, limit: int = 500, offset: int = 0):
+        dashboard.require_http_auth(request)
+        connection = get_connection()
+        try:
+            return {"archive_id": archive_id, "setups": scoped_archive_rows81(
+                connection, archive_id, "strategy_setups", limit=limit, offset=offset)}
+        finally:
+            connection.close()
+
+    if f"{root}/{{archive_id}}/setups" not in existing:
+        dashboard.app.add_api_route(f"{root}/{{archive_id}}/setups", setups, methods=["GET"])
 
     if root not in existing:
         dashboard.app.add_api_route(root, archives, methods=["GET"], name="run_archives_81")

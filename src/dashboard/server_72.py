@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from src.research.run_scope import active_table
+
 import importlib
 import json
 import os
@@ -302,9 +304,9 @@ def _audit_latest_eval_limit_block() -> None:
         if not exists:
             return
         rows = connection.execute(
-            """
+            f"""
             SELECT symbol, timeframe, status, created_at, payload_json
-            FROM strategy_setups
+            FROM {active_table(connection, 'strategy_setups')}
             WHERE status = 'QUALITY_BLOCKED'
             ORDER BY created_at DESC
             LIMIT 250

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from src.research.run_scope import active_table
+
 from dataclasses import asdict, dataclass
 from datetime import datetime, time, timezone
 import os
@@ -118,7 +120,7 @@ def _day_stats(connection: sqlite3.Connection, reference_time: datetime, tz: Zon
     rows = connection.execute(
         f"""
         SELECT status, result, opened_at, closed_at, {result_dollars_expr}
-        FROM paper_trades
+        FROM {active_table(connection, 'paper_trades')}
         ORDER BY COALESCE(closed_at, opened_at) ASC
         """
     ).fetchall()

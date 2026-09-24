@@ -248,7 +248,13 @@ class CandidateCollector80:
             self.engine._refresh_events()
         except Exception:
             pass
+        raw_count = len(candidates)
         candidates = self._dedupe_candidates(candidates)
+        self.engine.candidate_collection81 = {
+            "raw_candidates": raw_count,
+            "deduplicated_candidates": len(candidates),
+            "duplicate_suppressed": raw_count-len(candidates),
+        }
         if candidates:
             non_preview = [
                 setup for setup in candidates

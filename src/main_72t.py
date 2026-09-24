@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from src.research.run_scope import active_table
+
 import asyncio
 import os
 from datetime import datetime, timezone
@@ -171,10 +173,10 @@ def _reconcile_active_connection_72t(connection, event_time=None, current_price=
         return summary
 
     rows = connection.execute(
-        """
+        f"""
         SELECT p.setup_id,p.symbol,p.timeframe,p.direction,p.status,s.created_at,p.updated_at
-        FROM paper_trades p
-        JOIN strategy_setups s ON s.setup_id=p.setup_id
+        FROM {active_table(connection, 'paper_trades')} p
+        JOIN {active_table(connection, 'strategy_setups')} s ON s.setup_id=p.setup_id
         WHERE p.status IN ('PENDING','OPEN')
         ORDER BY COALESCE(s.created_at,p.updated_at) ASC
         """
@@ -201,10 +203,10 @@ def _reconcile_active_connection_72t(connection, event_time=None, current_price=
             summary["expired"] += 1
 
     survivors = connection.execute(
-        """
+        f"""
         SELECT p.setup_id,p.symbol,p.timeframe,p.direction,p.status,s.created_at,p.updated_at
-        FROM paper_trades p
-        JOIN strategy_setups s ON s.setup_id=p.setup_id
+        FROM {active_table(connection, 'paper_trades')} p
+        JOIN {active_table(connection, 'strategy_setups')} s ON s.setup_id=p.setup_id
         WHERE p.status IN ('PENDING','OPEN')
         ORDER BY COALESCE(s.created_at,p.updated_at) ASC
         """
@@ -239,7 +241,7 @@ def _reconcile_active_connection_72t(connection, event_time=None, current_price=
 
     connection.commit()
     row = connection.execute(
-        "SELECT COUNT(*) FROM paper_trades WHERE status IN ('PENDING','OPEN')"
+        f"SELECT COUNT(*) FROM {active_table(connection, 'paper_trades')} WHERE status IN ('PENDING','OPEN')"
     ).fetchone()
     summary["surviving"] = int(row[0] if row else 0)
     return summary

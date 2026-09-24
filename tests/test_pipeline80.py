@@ -182,7 +182,10 @@ class Pipeline80Tests(unittest.TestCase):
         first, second = self._setup("first"), self._setup("second")
         connection = sqlite3.connect(":memory:")
         try:
-            handled = pipeline.process_candidates(connection, [first, second], {})
+            handled = pipeline.process_candidates(connection, [first, second], {
+                ("GC", "5m"): [SimpleNamespace(open_time=first.created_at, close_time=first.created_at,
+                                              close=3501.0, high=3501.0, low=3500.0)]
+            })
         finally:
             connection.close()
 
@@ -246,7 +249,10 @@ class Pipeline80Tests(unittest.TestCase):
         first, second = self._setup("first"), self._setup("second")
         connection = sqlite3.connect(":memory:")
         try:
-            pipeline.process_candidates(connection, [first, second], {})
+            pipeline.process_candidates(connection, [first, second], {
+                ("GC", "5m"): [SimpleNamespace(open_time=first.created_at, close_time=first.created_at,
+                                              close=3501.0, high=3501.0, low=3500.0)]
+            })
         finally:
             connection.close()
 
@@ -291,7 +297,10 @@ class Pipeline80Tests(unittest.TestCase):
         first, second = self._setup("first"), self._setup("second")
         connection = sqlite3.connect(":memory:")
         try:
-            pipeline.process_candidates(connection, [first, second], {})
+            pipeline.process_candidates(connection, [first, second], {
+                ("GC", "5m"): [SimpleNamespace(open_time=first.created_at, close_time=first.created_at,
+                                              close=3501.0, high=3501.0, low=3500.0)]
+            })
         finally:
             connection.close()
 

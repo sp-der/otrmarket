@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from src.research.run_scope import active_table
+
 import json
 from pathlib import Path
 
@@ -267,10 +269,10 @@ def _reconcile_active_connection_81(connection, event_time=None, current_price=N
             """
         )
         rows = connection.execute(
-            """
+            f"""
             SELECT p.setup_id,p.timeframe,p.status,s.created_at,s.payload_json
-            FROM paper_trades p
-            JOIN strategy_setups s ON s.setup_id=p.setup_id
+            FROM {active_table(connection, 'paper_trades')} p
+            JOIN {active_table(connection, 'strategy_setups')} s ON s.setup_id=p.setup_id
             WHERE p.status='PENDING'
             """
         ).fetchall()

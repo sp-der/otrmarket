@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from src.research.run_scope import active_table
+
 import asyncio
 import os
 from datetime import datetime, timezone
@@ -104,10 +106,10 @@ def _install_verify_trade_tag_trigger_72s() -> None:
         # test run. This repairs rows written through legacy direct references.
         if os.getenv("OTR_VERIFY_WIPE_TOKEN", "").strip():
             connection.execute(
-                """
+                f"""
                 INSERT INTO verify_run_trades(run_id, setup_id, build, first_seen_at)
                 SELECT a.run_id, p.setup_id, a.build, COALESCE(p.updated_at, datetime('now'))
-                FROM paper_trades p
+                FROM {active_table(connection, 'paper_trades')} p
                 CROSS JOIN verify_active_run_72s a
                 WHERE a.slot = 1
                 ON CONFLICT(run_id, setup_id) DO NOTHING
