@@ -56,7 +56,7 @@ def _ensure_active_run_alias(connection: sqlite3.Connection) -> None:
         connection.execute(
             f"""
             INSERT INTO {TRAINING_ACTIVE_RUN_TABLE}(slot,run_id,build,activated_at)
-            SELECT slot,run_id,build,activated_at FROM training_active_run_72t WHERE slot=1
+            SELECT slot,run_id,build,activated_at FROM verify_active_run_72s WHERE slot=1
             ON CONFLICT(slot) DO UPDATE SET
               run_id=excluded.run_id,build=excluded.build,activated_at=excluded.activated_at
             """
