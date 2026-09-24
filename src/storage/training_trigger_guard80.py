@@ -42,8 +42,6 @@ def _quote_identifier(name: str) -> str:
 
 def _ensure_active_run_alias(connection: sqlite3.Connection) -> None:
     """Give 8.x training capture a run source independent of legacy VERIFY env vars."""
-    if _table_exists(connection, TRAINING_ACTIVE_RUN_TABLE):
-        return
     connection.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {TRAINING_ACTIVE_RUN_TABLE} (
