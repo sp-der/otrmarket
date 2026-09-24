@@ -15,6 +15,7 @@ from src.storage.learning import ensure_learning_schema
 
 TRAINING_BUILD_72T = "7.2T"
 ACTIVE_RUN_TABLE_72T = "verify_active_run_72s"
+TRAINING_ACTIVE_RUN_TABLE_72T = "training_active_run_72t"
 
 
 def _table_exists(connection: sqlite3.Connection, name: str) -> bool:
@@ -56,6 +57,13 @@ def _ensure_training_schema(connection: sqlite3.Connection) -> None:
     _ensure_counterfactual_schema(connection)
     connection.executescript(
         """
+        CREATE TABLE IF NOT EXISTS training_active_run_72t (
+            slot INTEGER PRIMARY KEY CHECK(slot = 1),
+            run_id TEXT NOT NULL,
+            build TEXT NOT NULL,
+            activated_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS training_decisions_72t (
             run_id TEXT NOT NULL,
             setup_id TEXT NOT NULL,
@@ -178,6 +186,26 @@ def _active_run(connection: sqlite3.Connection) -> tuple[str, str]:
         if row:
             run_id = str(row[0] or run_id)
             build = str(row[1] or build)
+
+    # Operation 8.1 no longer requires the legacy VERIFY run environment. Its
+    # own durable research run id is authoritative and survives redeploys.
+    engine_module = os.getenv("OTR_ENGINE_MODULE", "").strip()
+    mode = os.getenv("OTR_TRADING_MODE", "").strip().upper()
+    operation81_state = False
+    if _table_exists(connection, "engine_state"):
+        row = connection.execute(
+            "SELECT value FROM engine_state WHERE key='operation81_research_run_id'"
+        ).fetchone()
+        operation81_state = bool(row and str(row[0] or "").strip())
+    if not run_id and (
+        operation81_state
+        or engine_module.endswith("main_81")
+        or mode in {"EVAL", "EVALUATION"}
+    ):
+        from src.research.run_scope import current_run_id
+
+        run_id = current_run_id(connection)
+        build = "8.1"
     return run_id, build
 
 
@@ -196,6 +224,17 @@ def install_training_capture_72t() -> dict[str, int | str]:
         run_id, build = _active_run(connection)
         if not run_id:
             return {"run_id": "", "decisions": 0, "trades": 0}
+
+        connection.execute(
+            """
+            INSERT INTO training_active_run_72t(slot,run_id,build,activated_at)
+            VALUES (1,?,?,?)
+            ON CONFLICT(slot) DO UPDATE SET
+              run_id=excluded.run_id,build=excluded.build,activated_at=excluded.activated_at
+            """,
+            (run_id, build, datetime.now(timezone.utc).isoformat()),
+        )
+        connection.commit()
 
         # SQLite triggers are deliberately database-side so inherited execution
         # paths cannot bypass training capture the way old VERIFY tagging did.
@@ -220,11 +259,11 @@ def install_training_capture_72t() -> dict[str, int | str]:
                 trigger_type,entry_price,stop_price,target_price,risk_reward,status,
                 payload_json,last_seen_at
               )
-              SELECT run_id,NEW.setup_id,'7.2T',NEW.symbol,NEW.timeframe,NEW.direction,
+              SELECT run_id,NEW.setup_id,build,NEW.symbol,NEW.timeframe,NEW.direction,
                 NEW.created_at,NEW.trigger_type,NEW.entry_price,NEW.stop_price,
                 NEW.target_price,NEW.risk_reward,NEW.status,NEW.payload_json,
                 datetime('now')
-              FROM verify_active_run_72s WHERE slot=1;
+              FROM training_active_run_72t WHERE slot=1;
             END;
 
             CREATE TRIGGER training_decision_update_72t
@@ -235,11 +274,11 @@ def install_training_capture_72t() -> dict[str, int | str]:
                 trigger_type,entry_price,stop_price,target_price,risk_reward,status,
                 payload_json,last_seen_at
               )
-              SELECT run_id,NEW.setup_id,'7.2T',NEW.symbol,NEW.timeframe,NEW.direction,
+              SELECT run_id,NEW.setup_id,build,NEW.symbol,NEW.timeframe,NEW.direction,
                 NEW.created_at,NEW.trigger_type,NEW.entry_price,NEW.stop_price,
                 NEW.target_price,NEW.risk_reward,NEW.status,NEW.payload_json,
                 datetime('now')
-              FROM verify_active_run_72s WHERE slot=1;
+              FROM training_active_run_72t WHERE slot=1;
             END;
 
             CREATE TRIGGER training_trade_insert_72t
@@ -249,10 +288,10 @@ def install_training_capture_72t() -> dict[str, int | str]:
                 run_id,setup_id,build,symbol,timeframe,direction,status,opened_at,
                 closed_at,result,result_r,risk_dollars,result_dollars,updated_at
               )
-              SELECT run_id,NEW.setup_id,'7.2T',NEW.symbol,NEW.timeframe,NEW.direction,
+              SELECT run_id,NEW.setup_id,build,NEW.symbol,NEW.timeframe,NEW.direction,
                 NEW.status,NEW.opened_at,NEW.closed_at,NEW.result,NEW.result_r,
                 NEW.risk_dollars,NEW.result_dollars,NEW.updated_at
-              FROM verify_active_run_72s WHERE slot=1;
+              FROM training_active_run_72t WHERE slot=1;
             END;
 
             CREATE TRIGGER training_trade_update_72t
@@ -262,10 +301,10 @@ def install_training_capture_72t() -> dict[str, int | str]:
                 run_id,setup_id,build,symbol,timeframe,direction,status,opened_at,
                 closed_at,result,result_r,risk_dollars,result_dollars,updated_at
               )
-              SELECT run_id,NEW.setup_id,'7.2T',NEW.symbol,NEW.timeframe,NEW.direction,
+              SELECT run_id,NEW.setup_id,build,NEW.symbol,NEW.timeframe,NEW.direction,
                 NEW.status,NEW.opened_at,NEW.closed_at,NEW.result,NEW.result_r,
                 NEW.risk_dollars,NEW.result_dollars,NEW.updated_at
-              FROM verify_active_run_72s WHERE slot=1;
+              FROM training_active_run_72t WHERE slot=1;
             END;
 
             CREATE TRIGGER training_intelligence_insert_72t
@@ -277,13 +316,13 @@ def install_training_capture_72t() -> dict[str, int | str]:
                 displacement_range_ratio,fvg_age_bars,htf_timeframe,htf_bias,mfe_r,
                 mae_r,duration_seconds,outcome_class,fingerprint_json,closed_at,updated_at
               )
-              SELECT run_id,NEW.setup_id,'7.2T',NEW.symbol,NEW.timeframe,NEW.strategy,
+              SELECT run_id,NEW.setup_id,build,NEW.symbol,NEW.timeframe,NEW.strategy,
                 NEW.trigger_type,NEW.entry_type,NEW.result,NEW.result_r,NEW.risk_reward,
                 NEW.displacement_body_ratio,NEW.displacement_range_ratio,
                 NEW.fvg_age_bars,NEW.htf_timeframe,NEW.htf_bias,NEW.mfe_r,NEW.mae_r,
                 NEW.duration_seconds,NEW.outcome_class,NEW.fingerprint_json,
                 NEW.closed_at,NEW.updated_at
-              FROM verify_active_run_72s WHERE slot=1;
+              FROM training_active_run_72t WHERE slot=1;
             END;
 
             CREATE TRIGGER training_intelligence_update_72t
@@ -295,13 +334,13 @@ def install_training_capture_72t() -> dict[str, int | str]:
                 displacement_range_ratio,fvg_age_bars,htf_timeframe,htf_bias,mfe_r,
                 mae_r,duration_seconds,outcome_class,fingerprint_json,closed_at,updated_at
               )
-              SELECT run_id,NEW.setup_id,'7.2T',NEW.symbol,NEW.timeframe,NEW.strategy,
+              SELECT run_id,NEW.setup_id,build,NEW.symbol,NEW.timeframe,NEW.strategy,
                 NEW.trigger_type,NEW.entry_type,NEW.result,NEW.result_r,NEW.risk_reward,
                 NEW.displacement_body_ratio,NEW.displacement_range_ratio,
                 NEW.fvg_age_bars,NEW.htf_timeframe,NEW.htf_bias,NEW.mfe_r,NEW.mae_r,
                 NEW.duration_seconds,NEW.outcome_class,NEW.fingerprint_json,
                 NEW.closed_at,NEW.updated_at
-              FROM verify_active_run_72s WHERE slot=1;
+              FROM training_active_run_72t WHERE slot=1;
             END;
 
             CREATE TRIGGER training_counterfactual_insert_72t
@@ -312,10 +351,10 @@ def install_training_capture_72t() -> dict[str, int | str]:
                 blocked_status,blocked_reason,outcome,resolved_at,max_favorable_r,
                 max_adverse_r,last_checked
               )
-              SELECT run_id,NEW.setup_id,'7.2T',NEW.symbol,NEW.timeframe,NEW.direction,
+              SELECT run_id,NEW.setup_id,build,NEW.symbol,NEW.timeframe,NEW.direction,
                 NEW.created_at,NEW.blocked_status,NEW.blocked_reason,NEW.outcome,
                 NEW.resolved_at,NEW.max_favorable_r,NEW.max_adverse_r,NEW.last_checked
-              FROM verify_active_run_72s WHERE slot=1;
+              FROM training_active_run_72t WHERE slot=1;
             END;
 
             CREATE TRIGGER training_counterfactual_update_72t
@@ -326,10 +365,10 @@ def install_training_capture_72t() -> dict[str, int | str]:
                 blocked_status,blocked_reason,outcome,resolved_at,max_favorable_r,
                 max_adverse_r,last_checked
               )
-              SELECT run_id,NEW.setup_id,'7.2T',NEW.symbol,NEW.timeframe,NEW.direction,
+              SELECT run_id,NEW.setup_id,build,NEW.symbol,NEW.timeframe,NEW.direction,
                 NEW.created_at,NEW.blocked_status,NEW.blocked_reason,NEW.outcome,
                 NEW.resolved_at,NEW.max_favorable_r,NEW.max_adverse_r,NEW.last_checked
-              FROM verify_active_run_72s WHERE slot=1;
+              FROM training_active_run_72t WHERE slot=1;
             END;
 
             CREATE TRIGGER training_shadow_insert_72t
@@ -339,10 +378,10 @@ def install_training_capture_72t() -> dict[str, int | str]:
                 run_id,setup_id,build,source_setup_id,profile,symbol,timeframe,
                 direction,strategy,status,result,result_r,mfe_r,mae_r,closed_at,updated_at
               )
-              SELECT run_id,NEW.setup_id,'7.2T',NEW.source_setup_id,NEW.profile,
+              SELECT run_id,NEW.setup_id,build,NEW.source_setup_id,NEW.profile,
                 NEW.symbol,NEW.timeframe,NEW.direction,NEW.strategy,NEW.status,
                 NEW.result,NEW.result_r,NEW.mfe_r,NEW.mae_r,NEW.closed_at,NEW.updated_at
-              FROM verify_active_run_72s WHERE slot=1;
+              FROM training_active_run_72t WHERE slot=1;
             END;
 
             CREATE TRIGGER training_shadow_update_72t
@@ -352,10 +391,10 @@ def install_training_capture_72t() -> dict[str, int | str]:
                 run_id,setup_id,build,source_setup_id,profile,symbol,timeframe,
                 direction,strategy,status,result,result_r,mfe_r,mae_r,closed_at,updated_at
               )
-              SELECT run_id,NEW.setup_id,'7.2T',NEW.source_setup_id,NEW.profile,
+              SELECT run_id,NEW.setup_id,build,NEW.source_setup_id,NEW.profile,
                 NEW.symbol,NEW.timeframe,NEW.direction,NEW.strategy,NEW.status,
                 NEW.result,NEW.result_r,NEW.mfe_r,NEW.mae_r,NEW.closed_at,NEW.updated_at
-              FROM verify_active_run_72s WHERE slot=1;
+              FROM training_active_run_72t WHERE slot=1;
             END;
             """
         )
@@ -368,11 +407,11 @@ def install_training_capture_72t() -> dict[str, int | str]:
               run_id,setup_id,build,symbol,timeframe,direction,created_at,trigger_type,
               entry_price,stop_price,target_price,risk_reward,status,payload_json,last_seen_at
             )
-            SELECT ?,setup_id,'7.2T',symbol,timeframe,direction,created_at,trigger_type,
+            SELECT ?,setup_id,?,symbol,timeframe,direction,created_at,trigger_type,
               entry_price,stop_price,target_price,risk_reward,status,payload_json,datetime('now')
             FROM strategy_setups
             """,
-            (run_id,),
+            (run_id, build),
         )
         connection.execute(
             """
@@ -380,10 +419,10 @@ def install_training_capture_72t() -> dict[str, int | str]:
               run_id,setup_id,build,symbol,timeframe,direction,status,opened_at,closed_at,
               result,result_r,risk_dollars,result_dollars,updated_at
             )
-            SELECT ?,setup_id,'7.2T',symbol,timeframe,direction,status,opened_at,closed_at,
+            SELECT ?,setup_id,?,symbol,timeframe,direction,status,opened_at,closed_at,
               result,result_r,risk_dollars,result_dollars,updated_at FROM paper_trades
             """,
-            (run_id,),
+            (run_id, build),
         )
         connection.execute(
             """
@@ -391,11 +430,11 @@ def install_training_capture_72t() -> dict[str, int | str]:
               run_id,setup_id,build,symbol,timeframe,direction,created_at,blocked_status,
               blocked_reason,outcome,resolved_at,max_favorable_r,max_adverse_r,last_checked
             )
-            SELECT ?,setup_id,'7.2T',symbol,timeframe,direction,created_at,blocked_status,
+            SELECT ?,setup_id,?,symbol,timeframe,direction,created_at,blocked_status,
               blocked_reason,outcome,resolved_at,max_favorable_r,max_adverse_r,last_checked
             FROM counterfactual_setups
             """,
-            (run_id,),
+            (run_id, build),
         )
         connection.execute(
             """
@@ -405,12 +444,12 @@ def install_training_capture_72t() -> dict[str, int | str]:
               fvg_age_bars,htf_timeframe,htf_bias,mfe_r,mae_r,duration_seconds,
               outcome_class,fingerprint_json,closed_at,updated_at
             )
-            SELECT ?,setup_id,'7.2T',symbol,timeframe,strategy,trigger_type,entry_type,
+            SELECT ?,setup_id,?,symbol,timeframe,strategy,trigger_type,entry_type,
               result,result_r,risk_reward,displacement_body_ratio,displacement_range_ratio,
               fvg_age_bars,htf_timeframe,htf_bias,mfe_r,mae_r,duration_seconds,
               outcome_class,fingerprint_json,closed_at,updated_at FROM trade_intelligence
             """,
-            (run_id,),
+            (run_id, build),
         )
         connection.execute(
             """
@@ -418,11 +457,11 @@ def install_training_capture_72t() -> dict[str, int | str]:
               run_id,setup_id,build,source_setup_id,profile,symbol,timeframe,direction,
               strategy,status,result,result_r,mfe_r,mae_r,closed_at,updated_at
             )
-            SELECT ?,setup_id,'7.2T',source_setup_id,profile,symbol,timeframe,direction,
+            SELECT ?,setup_id,?,source_setup_id,profile,symbol,timeframe,direction,
               strategy,status,result,result_r,mfe_r,mae_r,closed_at,updated_at
             FROM shadow_trades
             """,
-            (run_id,),
+            (run_id, build),
         )
         connection.commit()
 
@@ -736,17 +775,37 @@ def training_snapshot_72t(live_db_path: Path, research_db_path: Path) -> dict[st
         actual_rows = _actual_training_rows(connection)
         ranker = _shadow_ranker(actual_rows)
 
-        decisions_total = _count(connection, "SELECT COUNT(*) FROM training_decisions_72t WHERE symbol='GC'")
-        decisions_current = _count(
+        setup_decisions_total = _count(connection, "SELECT COUNT(*) FROM training_decisions_72t WHERE symbol='GC'")
+        setup_decisions_current = _count(
             connection,
             "SELECT COUNT(*) FROM training_decisions_72t WHERE symbol='GC' AND run_id=?",
             (run_id,),
         ) if run_id else 0
+        evaluation_total = 0
+        evaluation_current = 0
+        no_candidate_total = 0
+        if _table_exists(connection, "training_evaluations_81"):
+            evaluation_total = _count(
+                connection,
+                "SELECT COUNT(*) FROM training_evaluations_81 WHERE symbol='GC'",
+            )
+            evaluation_current = _count(
+                connection,
+                "SELECT COUNT(*) FROM training_evaluations_81 WHERE symbol='GC' AND run_id=?",
+                (run_id,),
+            ) if run_id else 0
+            no_candidate_total = _count(
+                connection,
+                "SELECT COUNT(*) FROM training_evaluations_81 WHERE symbol='GC' AND final_status='NO_CANDIDATE'",
+            )
+        decisions_total = evaluation_total if evaluation_total else setup_decisions_total
+        decisions_current = evaluation_current if evaluation_total else setup_decisions_current
+
         accepted_total = _count(
             connection,
             "SELECT COUNT(*) FROM training_decisions_72t WHERE symbol='GC' AND status IN ('REGISTERED','PENDING','OPEN','CLOSED')",
         )
-        blocked_total = decisions_total - accepted_total
+        blocked_total = setup_decisions_total - accepted_total
         closed_total = len(actual_rows)
         wins_total = sum(1 for row in actual_rows if row["result"] == "WIN")
         losses_total = closed_total - wins_total
@@ -819,20 +878,54 @@ def training_snapshot_72t(live_db_path: Path, research_db_path: Path) -> dict[st
             ]
 
         recent_decisions = []
-        for row in connection.execute(
-            """
-            SELECT run_id,setup_id,timeframe,direction,trigger_type,risk_reward,status,
-                   payload_json,created_at
-            FROM training_decisions_72t
-            WHERE symbol='GC'
-            ORDER BY created_at DESC LIMIT 12
-            """
-        ).fetchall():
-            item = dict(row)
-            strategy, grade = _parse_payload_strategy(item.pop("payload_json", None))
-            item["strategy"] = strategy
-            item["grade"] = grade
-            recent_decisions.append(item)
+        if _table_exists(connection, "training_evaluations_81"):
+            for row in connection.execute(
+                """
+                SELECT run_id,timeframe,direction,evaluated_at,final_status,
+                       candidate_count,candidate_json
+                FROM training_evaluations_81
+                WHERE symbol='GC'
+                ORDER BY evaluated_at DESC LIMIT 12
+                """
+            ).fetchall():
+                candidates = []
+                try:
+                    candidates = json.loads(row[6] or "[]")
+                except (TypeError, json.JSONDecodeError):
+                    candidates = []
+                first = candidates[0] if candidates and isinstance(candidates[0], dict) else {}
+                recent_decisions.append(
+                    {
+                        "run_id": row[0],
+                        "setup_id": first.get("setup_id") or "",
+                        "timeframe": row[1],
+                        "direction": row[2] or first.get("direction") or "",
+                        "trigger_type": (
+                            "NO_CANDIDATE" if int(row[5] or 0) == 0
+                            else f"{int(row[5] or 0)} CANDIDATE(S)"
+                        ),
+                        "risk_reward": first.get("risk_reward"),
+                        "status": row[4],
+                        "created_at": row[3],
+                        "strategy": first.get("strategy") or "MARKET_EVALUATION",
+                        "grade": first.get("grade"),
+                    }
+                )
+        if not recent_decisions:
+            for row in connection.execute(
+                """
+                SELECT run_id,setup_id,timeframe,direction,trigger_type,risk_reward,status,
+                       payload_json,created_at
+                FROM training_decisions_72t
+                WHERE symbol='GC'
+                ORDER BY created_at DESC LIMIT 12
+                """
+            ).fetchall():
+                item = dict(row)
+                strategy, grade = _parse_payload_strategy(item.pop("payload_json", None))
+                item["strategy"] = strategy
+                item["grade"] = grade
+                recent_decisions.append(item)
 
         decision_progress = min(100.0, decisions_total / 500.0 * 100.0)
         outcome_progress = min(100.0, (closed_total + counter_resolved) / 150.0 * 100.0)
@@ -860,6 +953,8 @@ def training_snapshot_72t(live_db_path: Path, research_db_path: Path) -> dict[st
                 "current_run_decisions": decisions_current,
                 "accepted_decisions": accepted_total,
                 "blocked_decisions": max(0, blocked_total),
+                "setup_decisions": setup_decisions_total,
+                "no_candidate_evaluations": no_candidate_total,
                 "closed_actual_trades": closed_total,
                 "wins": wins_total,
                 "losses": losses_total,
