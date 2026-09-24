@@ -17,6 +17,32 @@ class CandidateCollector80:
         self.engine = engine
         self.continuation = continuation
         self._early_arm_seen: set[tuple] = set()
+        # Operation 8.1 can opt into concurrent family discovery. 8.0 keeps
+        # the historical fallback ordering unless its caller explicitly flips
+        # this flag, so this patch cannot silently widen older operations.
+        self.collect_all_families = False
+
+    @staticmethod
+    def _dedupe_candidates(candidates: list) -> list:
+        """Remove exact geometry duplicates without collapsing strategy families."""
+        output = []
+        seen: set[tuple] = set()
+        for setup in candidates:
+            metadata = getattr(setup, "metadata", {}) or {}
+            key = (
+                str(metadata.get("strategy") or "UNKNOWN"),
+                str(getattr(setup, "symbol", "") or ""),
+                str(getattr(setup, "timeframe", "") or ""),
+                str(getattr(setup, "direction", "") or ""),
+                round(float(getattr(setup, "entry_price", 0.0) or 0.0), 6),
+                round(float(getattr(setup, "stop_price", 0.0) or 0.0), 6),
+                round(float(getattr(setup, "target_price", 0.0) or 0.0), 6),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            output.append(setup)
+        return output
 
     def _momentum(self) -> GoldMomentumPullbackEngine72R:
         momentum = getattr(self.engine, "_gold_momentum_pullback_72r", None)
@@ -180,9 +206,10 @@ class CandidateCollector80:
             if reversal is not None:
                 candidates.append(reversal)
 
-        # Preserve the established stale-thesis continuation before trying the
-        # newer momentum-recognition fallback.
-        if not candidates and self.continuation is not None:
+        # Operation 8.0 preserves fallback ordering. Operation 8.1 deliberately
+        # lets every mature family reach the arbiter so one mediocre family
+        # cannot suppress a stronger setup before ranking even begins.
+        if self.continuation is not None and (self.collect_all_families or not candidates):
             continuation = self._annotate(
                 self.continuation.on_candle(symbol, timeframe, histories),
                 "TREND_CONTINUATION_REARM",
@@ -192,7 +219,7 @@ class CandidateCollector80:
 
         normalized_mode = str(mode or "").strip().upper()
         if (
-            not candidates
+            (self.collect_all_families or not candidates)
             and normalized_mode in VERIFY_MODES
             and symbol == "GC"
             and timeframe in {"5m", "15m"}
@@ -211,7 +238,7 @@ class CandidateCollector80:
         # Persist the 7.2H plan through the same setup store so the dashboard can
         # draw confluence geometry and ENTRY / SL / TP before execution. A preview
         # never executes; 5/6+ fresh arms are reduced-risk candidates.
-        if ict is None:
+        if self.collect_all_families or ict is None:
             early = self._early_arm_candidate(symbol, timeframe, histories)
             if early is not None:
                 candidates.append(early)
@@ -221,6 +248,7 @@ class CandidateCollector80:
             self.engine._refresh_events()
         except Exception:
             pass
+        candidates = self._dedupe_candidates(candidates)
         if candidates:
             non_preview = [
                 setup for setup in candidates
