@@ -16,6 +16,8 @@ CANONICAL_TRIGGER_NAMES = (
     "training_shadow_update_72t",
 )
 
+TRAINING_ACTIVE_RUN_TABLE = "training_active_run_72t"
+
 TRAINING_TARGET_TABLES = (
     "training_decisions_72t",
     "training_trades_72t",
@@ -38,9 +40,38 @@ def _quote_identifier(name: str) -> str:
     return '"' + str(name).replace('"', '""') + '"'
 
 
+def _ensure_active_run_alias(connection: sqlite3.Connection) -> None:
+    """Give 8.x training capture a run source independent of legacy VERIFY env vars."""
+    if _table_exists(connection, TRAINING_ACTIVE_RUN_TABLE):
+        return
+    connection.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {TRAINING_ACTIVE_RUN_TABLE} (
+            slot INTEGER PRIMARY KEY CHECK(slot = 1),
+            run_id TEXT NOT NULL,
+            build TEXT NOT NULL,
+            activated_at TEXT NOT NULL
+        )
+        """
+    )
+    if _table_exists(connection, "verify_active_run_72s"):
+        connection.execute(
+            f"""
+            INSERT INTO {TRAINING_ACTIVE_RUN_TABLE}(slot,run_id,build,activated_at)
+            SELECT slot,run_id,build,activated_at FROM training_active_run_72t WHERE slot=1
+            ON CONFLICT(slot) DO UPDATE SET
+              run_id=excluded.run_id,build=excluded.build,activated_at=excluded.activated_at
+            """
+        )
+    connection.commit()
+
+
 def _can_install(connection: sqlite3.Connection, source: str, target: str) -> bool:
     return (
-        _table_exists(connection, "verify_active_run_72s")
+        _table_exists(connection, TRAINING_ACTIVE_RUN_TABLE)
+        and connection.execute(
+            f"SELECT 1 FROM {TRAINING_ACTIVE_RUN_TABLE} WHERE slot=1"
+        ).fetchone() is not None
         and _table_exists(connection, source)
         and _table_exists(connection, target)
     )
@@ -60,6 +91,7 @@ def harden_training_trade_triggers_80(connection: sqlite3.Connection) -> dict[st
     target pair with its own explicit ON CONFLICT(run_id, setup_id) DO UPDATE.
     """
     summary = {"dropped": 0, "installed": 0}
+    _ensure_active_run_alias(connection)
 
     rows = connection.execute(
         """
@@ -90,10 +122,10 @@ def harden_training_trade_triggers_80(connection: sqlite3.Connection) -> dict[st
                 trigger_type,entry_price,stop_price,target_price,risk_reward,status,
                 payload_json,last_seen_at
               )
-              SELECT run_id,NEW.setup_id,'8.0',NEW.symbol,NEW.timeframe,NEW.direction,
+              SELECT run_id,NEW.setup_id,build,NEW.symbol,NEW.timeframe,NEW.direction,
                 NEW.created_at,NEW.trigger_type,NEW.entry_price,NEW.stop_price,
                 NEW.target_price,NEW.risk_reward,NEW.status,NEW.payload_json,datetime('now')
-              FROM verify_active_run_72s WHERE slot=1
+              FROM training_active_run_72t WHERE slot=1
               ON CONFLICT(run_id,setup_id) DO UPDATE SET
                 build=excluded.build,symbol=excluded.symbol,timeframe=excluded.timeframe,
                 direction=excluded.direction,created_at=excluded.created_at,
@@ -111,10 +143,10 @@ def harden_training_trade_triggers_80(connection: sqlite3.Connection) -> dict[st
                 trigger_type,entry_price,stop_price,target_price,risk_reward,status,
                 payload_json,last_seen_at
               )
-              SELECT run_id,NEW.setup_id,'8.0',NEW.symbol,NEW.timeframe,NEW.direction,
+              SELECT run_id,NEW.setup_id,build,NEW.symbol,NEW.timeframe,NEW.direction,
                 NEW.created_at,NEW.trigger_type,NEW.entry_price,NEW.stop_price,
                 NEW.target_price,NEW.risk_reward,NEW.status,NEW.payload_json,datetime('now')
-              FROM verify_active_run_72s WHERE slot=1
+              FROM training_active_run_72t WHERE slot=1
               ON CONFLICT(run_id,setup_id) DO UPDATE SET
                 build=excluded.build,symbol=excluded.symbol,timeframe=excluded.timeframe,
                 direction=excluded.direction,created_at=excluded.created_at,
@@ -137,10 +169,10 @@ def harden_training_trade_triggers_80(connection: sqlite3.Connection) -> dict[st
                 run_id,setup_id,build,symbol,timeframe,direction,status,opened_at,
                 closed_at,result,result_r,risk_dollars,result_dollars,updated_at
               )
-              SELECT run_id,NEW.setup_id,'8.0',NEW.symbol,NEW.timeframe,NEW.direction,
+              SELECT run_id,NEW.setup_id,build,NEW.symbol,NEW.timeframe,NEW.direction,
                 NEW.status,NEW.opened_at,NEW.closed_at,NEW.result,NEW.result_r,
                 NEW.risk_dollars,NEW.result_dollars,NEW.updated_at
-              FROM verify_active_run_72s WHERE slot=1
+              FROM training_active_run_72t WHERE slot=1
               ON CONFLICT(run_id,setup_id) DO UPDATE SET
                 build=excluded.build,symbol=excluded.symbol,timeframe=excluded.timeframe,
                 direction=excluded.direction,status=excluded.status,
@@ -157,10 +189,10 @@ def harden_training_trade_triggers_80(connection: sqlite3.Connection) -> dict[st
                 run_id,setup_id,build,symbol,timeframe,direction,status,opened_at,
                 closed_at,result,result_r,risk_dollars,result_dollars,updated_at
               )
-              SELECT run_id,NEW.setup_id,'8.0',NEW.symbol,NEW.timeframe,NEW.direction,
+              SELECT run_id,NEW.setup_id,build,NEW.symbol,NEW.timeframe,NEW.direction,
                 NEW.status,NEW.opened_at,NEW.closed_at,NEW.result,NEW.result_r,
                 NEW.risk_dollars,NEW.result_dollars,NEW.updated_at
-              FROM verify_active_run_72s WHERE slot=1
+              FROM training_active_run_72t WHERE slot=1
               ON CONFLICT(run_id,setup_id) DO UPDATE SET
                 build=excluded.build,symbol=excluded.symbol,timeframe=excluded.timeframe,
                 direction=excluded.direction,status=excluded.status,
@@ -185,13 +217,13 @@ def harden_training_trade_triggers_80(connection: sqlite3.Connection) -> dict[st
                 displacement_range_ratio,fvg_age_bars,htf_timeframe,htf_bias,mfe_r,
                 mae_r,duration_seconds,outcome_class,fingerprint_json,closed_at,updated_at
               )
-              SELECT run_id,NEW.setup_id,'8.0',NEW.symbol,NEW.timeframe,NEW.strategy,
+              SELECT run_id,NEW.setup_id,build,NEW.symbol,NEW.timeframe,NEW.strategy,
                 NEW.trigger_type,NEW.entry_type,NEW.result,NEW.result_r,NEW.risk_reward,
                 NEW.displacement_body_ratio,NEW.displacement_range_ratio,
                 NEW.fvg_age_bars,NEW.htf_timeframe,NEW.htf_bias,NEW.mfe_r,NEW.mae_r,
                 NEW.duration_seconds,NEW.outcome_class,NEW.fingerprint_json,
                 NEW.closed_at,NEW.updated_at
-              FROM verify_active_run_72s WHERE slot=1
+              FROM training_active_run_72t WHERE slot=1
               ON CONFLICT(run_id,setup_id) DO UPDATE SET
                 build=excluded.build,symbol=excluded.symbol,timeframe=excluded.timeframe,
                 strategy=excluded.strategy,trigger_type=excluded.trigger_type,
@@ -216,13 +248,13 @@ def harden_training_trade_triggers_80(connection: sqlite3.Connection) -> dict[st
                 displacement_range_ratio,fvg_age_bars,htf_timeframe,htf_bias,mfe_r,
                 mae_r,duration_seconds,outcome_class,fingerprint_json,closed_at,updated_at
               )
-              SELECT run_id,NEW.setup_id,'8.0',NEW.symbol,NEW.timeframe,NEW.strategy,
+              SELECT run_id,NEW.setup_id,build,NEW.symbol,NEW.timeframe,NEW.strategy,
                 NEW.trigger_type,NEW.entry_type,NEW.result,NEW.result_r,NEW.risk_reward,
                 NEW.displacement_body_ratio,NEW.displacement_range_ratio,
                 NEW.fvg_age_bars,NEW.htf_timeframe,NEW.htf_bias,NEW.mfe_r,NEW.mae_r,
                 NEW.duration_seconds,NEW.outcome_class,NEW.fingerprint_json,
                 NEW.closed_at,NEW.updated_at
-              FROM verify_active_run_72s WHERE slot=1
+              FROM training_active_run_72t WHERE slot=1
               ON CONFLICT(run_id,setup_id) DO UPDATE SET
                 build=excluded.build,symbol=excluded.symbol,timeframe=excluded.timeframe,
                 strategy=excluded.strategy,trigger_type=excluded.trigger_type,
@@ -252,10 +284,10 @@ def harden_training_trade_triggers_80(connection: sqlite3.Connection) -> dict[st
                 blocked_status,blocked_reason,outcome,resolved_at,max_favorable_r,
                 max_adverse_r,last_checked
               )
-              SELECT run_id,NEW.setup_id,'8.0',NEW.symbol,NEW.timeframe,NEW.direction,
+              SELECT run_id,NEW.setup_id,build,NEW.symbol,NEW.timeframe,NEW.direction,
                 NEW.created_at,NEW.blocked_status,NEW.blocked_reason,NEW.outcome,
                 NEW.resolved_at,NEW.max_favorable_r,NEW.max_adverse_r,NEW.last_checked
-              FROM verify_active_run_72s WHERE slot=1
+              FROM training_active_run_72t WHERE slot=1
               ON CONFLICT(run_id,setup_id) DO UPDATE SET
                 build=excluded.build,symbol=excluded.symbol,timeframe=excluded.timeframe,
                 direction=excluded.direction,created_at=excluded.created_at,
@@ -273,10 +305,10 @@ def harden_training_trade_triggers_80(connection: sqlite3.Connection) -> dict[st
                 blocked_status,blocked_reason,outcome,resolved_at,max_favorable_r,
                 max_adverse_r,last_checked
               )
-              SELECT run_id,NEW.setup_id,'8.0',NEW.symbol,NEW.timeframe,NEW.direction,
+              SELECT run_id,NEW.setup_id,build,NEW.symbol,NEW.timeframe,NEW.direction,
                 NEW.created_at,NEW.blocked_status,NEW.blocked_reason,NEW.outcome,
                 NEW.resolved_at,NEW.max_favorable_r,NEW.max_adverse_r,NEW.last_checked
-              FROM verify_active_run_72s WHERE slot=1
+              FROM training_active_run_72t WHERE slot=1
               ON CONFLICT(run_id,setup_id) DO UPDATE SET
                 build=excluded.build,symbol=excluded.symbol,timeframe=excluded.timeframe,
                 direction=excluded.direction,created_at=excluded.created_at,
@@ -299,10 +331,10 @@ def harden_training_trade_triggers_80(connection: sqlite3.Connection) -> dict[st
                 run_id,setup_id,build,source_setup_id,profile,symbol,timeframe,
                 direction,strategy,status,result,result_r,mfe_r,mae_r,closed_at,updated_at
               )
-              SELECT run_id,NEW.setup_id,'8.0',NEW.source_setup_id,NEW.profile,
+              SELECT run_id,NEW.setup_id,build,NEW.source_setup_id,NEW.profile,
                 NEW.symbol,NEW.timeframe,NEW.direction,NEW.strategy,NEW.status,
                 NEW.result,NEW.result_r,NEW.mfe_r,NEW.mae_r,NEW.closed_at,NEW.updated_at
-              FROM verify_active_run_72s WHERE slot=1
+              FROM training_active_run_72t WHERE slot=1
               ON CONFLICT(run_id,setup_id) DO UPDATE SET
                 build=excluded.build,source_setup_id=excluded.source_setup_id,
                 profile=excluded.profile,symbol=excluded.symbol,timeframe=excluded.timeframe,
@@ -318,10 +350,10 @@ def harden_training_trade_triggers_80(connection: sqlite3.Connection) -> dict[st
                 run_id,setup_id,build,source_setup_id,profile,symbol,timeframe,
                 direction,strategy,status,result,result_r,mfe_r,mae_r,closed_at,updated_at
               )
-              SELECT run_id,NEW.setup_id,'8.0',NEW.source_setup_id,NEW.profile,
+              SELECT run_id,NEW.setup_id,build,NEW.source_setup_id,NEW.profile,
                 NEW.symbol,NEW.timeframe,NEW.direction,NEW.strategy,NEW.status,
                 NEW.result,NEW.result_r,NEW.mfe_r,NEW.mae_r,NEW.closed_at,NEW.updated_at
-              FROM verify_active_run_72s WHERE slot=1
+              FROM training_active_run_72t WHERE slot=1
               ON CONFLICT(run_id,setup_id) DO UPDATE SET
                 build=excluded.build,source_setup_id=excluded.source_setup_id,
                 profile=excluded.profile,symbol=excluded.symbol,timeframe=excluded.timeframe,
