@@ -765,17 +765,37 @@ def training_snapshot_72t(live_db_path: Path, research_db_path: Path) -> dict[st
         actual_rows = _actual_training_rows(connection)
         ranker = _shadow_ranker(actual_rows)
 
-        decisions_total = _count(connection, "SELECT COUNT(*) FROM training_decisions_72t WHERE symbol='GC'")
-        decisions_current = _count(
+        setup_decisions_total = _count(connection, "SELECT COUNT(*) FROM training_decisions_72t WHERE symbol='GC'")
+        setup_decisions_current = _count(
             connection,
             "SELECT COUNT(*) FROM training_decisions_72t WHERE symbol='GC' AND run_id=?",
             (run_id,),
         ) if run_id else 0
+        evaluation_total = 0
+        evaluation_current = 0
+        no_candidate_total = 0
+        if _table_exists(connection, "training_evaluations_81"):
+            evaluation_total = _count(
+                connection,
+                "SELECT COUNT(*) FROM training_evaluations_81 WHERE symbol='GC'",
+            )
+            evaluation_current = _count(
+                connection,
+                "SELECT COUNT(*) FROM training_evaluations_81 WHERE symbol='GC' AND run_id=?",
+                (run_id,),
+            ) if run_id else 0
+            no_candidate_total = _count(
+                connection,
+                "SELECT COUNT(*) FROM training_evaluations_81 WHERE symbol='GC' AND final_status='NO_CANDIDATE'",
+            )
+        decisions_total = evaluation_total if evaluation_total else setup_decisions_total
+        decisions_current = evaluation_current if evaluation_total else setup_decisions_current
+
         accepted_total = _count(
             connection,
             "SELECT COUNT(*) FROM training_decisions_72t WHERE symbol='GC' AND status IN ('REGISTERED','PENDING','OPEN','CLOSED')",
         )
-        blocked_total = decisions_total - accepted_total
+        blocked_total = setup_decisions_total - accepted_total
         closed_total = len(actual_rows)
         wins_total = sum(1 for row in actual_rows if row["result"] == "WIN")
         losses_total = closed_total - wins_total
@@ -848,20 +868,54 @@ def training_snapshot_72t(live_db_path: Path, research_db_path: Path) -> dict[st
             ]
 
         recent_decisions = []
-        for row in connection.execute(
-            """
-            SELECT run_id,setup_id,timeframe,direction,trigger_type,risk_reward,status,
-                   payload_json,created_at
-            FROM training_decisions_72t
-            WHERE symbol='GC'
-            ORDER BY created_at DESC LIMIT 12
-            """
-        ).fetchall():
-            item = dict(row)
-            strategy, grade = _parse_payload_strategy(item.pop("payload_json", None))
-            item["strategy"] = strategy
-            item["grade"] = grade
-            recent_decisions.append(item)
+        if _table_exists(connection, "training_evaluations_81"):
+            for row in connection.execute(
+                """
+                SELECT run_id,timeframe,direction,evaluated_at,final_status,
+                       candidate_count,candidate_json
+                FROM training_evaluations_81
+                WHERE symbol='GC'
+                ORDER BY evaluated_at DESC LIMIT 12
+                """
+            ).fetchall():
+                candidates = []
+                try:
+                    candidates = json.loads(row[6] or "[]")
+                except (TypeError, json.JSONDecodeError):
+                    candidates = []
+                first = candidates[0] if candidates and isinstance(candidates[0], dict) else {}
+                recent_decisions.append(
+                    {
+                        "run_id": row[0],
+                        "setup_id": first.get("setup_id") or "",
+                        "timeframe": row[1],
+                        "direction": row[2] or first.get("direction") or "",
+                        "trigger_type": (
+                            "NO_CANDIDATE" if int(row[5] or 0) == 0
+                            else f"{int(row[5] or 0)} CANDIDATE(S)"
+                        ),
+                        "risk_reward": first.get("risk_reward"),
+                        "status": row[4],
+                        "created_at": row[3],
+                        "strategy": first.get("strategy") or "MARKET_EVALUATION",
+                        "grade": first.get("grade"),
+                    }
+                )
+        if not recent_decisions:
+            for row in connection.execute(
+                """
+                SELECT run_id,setup_id,timeframe,direction,trigger_type,risk_reward,status,
+                       payload_json,created_at
+                FROM training_decisions_72t
+                WHERE symbol='GC'
+                ORDER BY created_at DESC LIMIT 12
+                """
+            ).fetchall():
+                item = dict(row)
+                strategy, grade = _parse_payload_strategy(item.pop("payload_json", None))
+                item["strategy"] = strategy
+                item["grade"] = grade
+                recent_decisions.append(item)
 
         decision_progress = min(100.0, decisions_total / 500.0 * 100.0)
         outcome_progress = min(100.0, (closed_total + counter_resolved) / 150.0 * 100.0)
@@ -889,6 +943,8 @@ def training_snapshot_72t(live_db_path: Path, research_db_path: Path) -> dict[st
                 "current_run_decisions": decisions_current,
                 "accepted_decisions": accepted_total,
                 "blocked_decisions": max(0, blocked_total),
+                "setup_decisions": setup_decisions_total,
+                "no_candidate_evaluations": no_candidate_total,
                 "closed_actual_trades": closed_total,
                 "wins": wins_total,
                 "losses": losses_total,
