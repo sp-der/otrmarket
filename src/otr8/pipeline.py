@@ -383,6 +383,26 @@ class OTRPipeline80:
 
             self.runtime.upsert_paper_trade(connection, position, setup.created_at.isoformat())
             final_status = str(position.result or position.status or "PENDING")
+            if (
+                str(getattr(position, "status", "") or "").upper() == "INVALIDATED"
+                and str(getattr(position, "result", "") or "").upper() == "CANNOT_SIZE_MGC"
+            ):
+                terminal_reason = final_status
+                setup.status = "RISK_REJECTED"
+                setup.metadata["geometry_rejection"] = final_status
+                setup.metadata.setdefault("setup_arbiter_80", {})["preflight_failed"] = True
+                self.runtime.save_setup(connection, setup)
+                trace.add(
+                    "EXECUTOR_PREFLIGHT",
+                    "BLOCKED",
+                    "Selected geometry could not fund one whole MGC contract inside the risk cap.",
+                    {"position_status": position.status, "result": position.result},
+                )
+                trace.finish("RISK_REJECTED")
+                self._persist_trace(connection, trace)
+                self._generic_counterfactual(connection, setup, final_status)
+                handled.append(setup)
+                continue
             trace.add(
                 "EXECUTION_HANDOFF",
                 "ACCEPTED" if str(position.status).upper() in {"PENDING", "OPEN"} else "SUPPRESSED",
