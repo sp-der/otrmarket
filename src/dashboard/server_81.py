@@ -13,6 +13,7 @@ from src.integrations.vibe_research.routes import install_vibe_research_routes
 from src.execution.paper import PAPER_ACCOUNTING_VERSION_MGC_WHOLE_CONTRACT_V1
 from src.otr8.execution_policy81 import FULL_RISK_DOLLARS, REDUCED_RISK_DOLLARS
 from src.research.conversion_funnel81 import conversion_funnel81
+from src.research.run_archive81 import archive_active_run81, archived_trades81, list_run_archives81
 from src.research.run_scope import ENGINE_VERSION, OPERATION_VERSION, current_run_id, rotate_run_id
 from src.risk.evaluation import EvaluationConfig
 from src.storage.database import get_connection, get_engine_state, set_engine_state
@@ -36,6 +37,8 @@ RUN_RESET_TABLES_81 = (
     "training_trade_metrics_72t",
     "training_counterfactuals_72t",
     "training_shadow_72t",
+    "training_evaluations_81",
+    "training_active_run_72t",
     "verify_active_run_72s",
 )
 
@@ -94,6 +97,28 @@ def _reset_active_replay_progress_81() -> dict[str, int]:
                     flush=True,
                 )
                 return {}
+
+        try:
+            archive = archive_active_run81(
+                connection,
+                archive_key=token,
+                label=(os.getenv("OTR_RUN_ARCHIVE_LABEL") or "").strip() or None,
+            )
+        except Exception as exc:
+            print(
+                "Operation 8.1 overnight replay reset REFUSED: durable archive failed; "
+                f"{type(exc).__name__}: {exc}. No active ledger rows were deleted.",
+                flush=True,
+            )
+            return {}
+
+        print(
+            "Operation 8.1 RUN ARCHIVE saved before reset: "
+            f"archive_id={archive['archive_id']}, run_id={archive['run_id']}, "
+            f"trades={archive['trade_count']}, closed={archive['closed_count']}, "
+            f"W/L={archive['wins']}/{archive['losses']}, net_pnl=${archive['net_pnl']:.2f}.",
+            flush=True,
+        )
 
         counts: dict[str, int] = {}
         for table in RUN_RESET_TABLES_81:
@@ -349,6 +374,45 @@ def _install_nautilus_parity_api_81() -> None:
         dashboard.app.add_api_route(page_path, parity_page, methods=["GET"], name="nautilus_parity_page_81", response_class=HTMLResponse)
 
 
+def _install_run_archive_api_81() -> None:
+    """Protected read-only access to pre-reset milestone ledgers."""
+    from src.dashboard import app as dashboard
+
+    root = f"{dashboard.BASE_PATH}/api/otr81/run-archives"
+    trades_path = f"{root}/{{archive_id}}/trades"
+    existing = {getattr(route, "path", None) for route in dashboard.app.routes}
+
+    def archives(request: Request, limit: int = 50):
+        dashboard.require_http_auth(request)
+        connection = get_connection()
+        try:
+            return {
+                "authoritative": False,
+                "read_only": True,
+                "archives": list_run_archives81(connection, limit=limit),
+            }
+        finally:
+            connection.close()
+
+    def trades(archive_id: str, request: Request, limit: int = 500):
+        dashboard.require_http_auth(request)
+        connection = get_connection()
+        try:
+            return {
+                "authoritative": False,
+                "read_only": True,
+                "archive_id": archive_id,
+                "trades": archived_trades81(connection, archive_id, limit=limit),
+            }
+        finally:
+            connection.close()
+
+    if root not in existing:
+        dashboard.app.add_api_route(root, archives, methods=["GET"], name="run_archives_81")
+    if trades_path not in existing:
+        dashboard.app.add_api_route(trades_path, trades, methods=["GET"], name="run_archive_trades_81")
+
+
 def _install_connection_fallback_81() -> None:
     """Keep the full dashboard live behind Vercel rewrites.
 
@@ -477,13 +541,14 @@ def main() -> None:
     base._promote_engine_80 = _promote_engine_81
     _install_conversion_api_81()
     _install_nautilus_parity_api_81()
+    _install_run_archive_api_81()
     _install_connection_fallback_81()
     install_vibe_research_routes()
     print(
         "Operation 8.1 supervisor: Operation 8.0 dashboard + Gold Execution Conversion engine; "
         "first-touch zones, registration-time entry life, dynamic R:R, $750/$500 eval sizing, "
         "detected->qualified->selected->registered->filled conversion telemetry, authenticated "
-        "Nautilus replay parity diagnostics, and Vercel-safe full snapshot rendering fallback enabled; "
+        "Nautilus replay parity diagnostics, durable pre-reset run archives, and Vercel-safe full snapshot rendering fallback enabled; "
         f"overnight_reset_rows={sum(reset_counts.values())}.",
         flush=True,
     )
