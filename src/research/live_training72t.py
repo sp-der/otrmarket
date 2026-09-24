@@ -259,7 +259,7 @@ def install_training_capture_72t() -> dict[str, int | str]:
                 trigger_type,entry_price,stop_price,target_price,risk_reward,status,
                 payload_json,last_seen_at
               )
-              SELECT run_id,NEW.setup_id,'7.2T',NEW.symbol,NEW.timeframe,NEW.direction,
+              SELECT run_id,NEW.setup_id,build,NEW.symbol,NEW.timeframe,NEW.direction,
                 NEW.created_at,NEW.trigger_type,NEW.entry_price,NEW.stop_price,
                 NEW.target_price,NEW.risk_reward,NEW.status,NEW.payload_json,
                 datetime('now')
@@ -274,7 +274,7 @@ def install_training_capture_72t() -> dict[str, int | str]:
                 trigger_type,entry_price,stop_price,target_price,risk_reward,status,
                 payload_json,last_seen_at
               )
-              SELECT run_id,NEW.setup_id,'7.2T',NEW.symbol,NEW.timeframe,NEW.direction,
+              SELECT run_id,NEW.setup_id,build,NEW.symbol,NEW.timeframe,NEW.direction,
                 NEW.created_at,NEW.trigger_type,NEW.entry_price,NEW.stop_price,
                 NEW.target_price,NEW.risk_reward,NEW.status,NEW.payload_json,
                 datetime('now')
@@ -288,7 +288,7 @@ def install_training_capture_72t() -> dict[str, int | str]:
                 run_id,setup_id,build,symbol,timeframe,direction,status,opened_at,
                 closed_at,result,result_r,risk_dollars,result_dollars,updated_at
               )
-              SELECT run_id,NEW.setup_id,'7.2T',NEW.symbol,NEW.timeframe,NEW.direction,
+              SELECT run_id,NEW.setup_id,build,NEW.symbol,NEW.timeframe,NEW.direction,
                 NEW.status,NEW.opened_at,NEW.closed_at,NEW.result,NEW.result_r,
                 NEW.risk_dollars,NEW.result_dollars,NEW.updated_at
               FROM training_active_run_72t WHERE slot=1;
@@ -301,7 +301,7 @@ def install_training_capture_72t() -> dict[str, int | str]:
                 run_id,setup_id,build,symbol,timeframe,direction,status,opened_at,
                 closed_at,result,result_r,risk_dollars,result_dollars,updated_at
               )
-              SELECT run_id,NEW.setup_id,'7.2T',NEW.symbol,NEW.timeframe,NEW.direction,
+              SELECT run_id,NEW.setup_id,build,NEW.symbol,NEW.timeframe,NEW.direction,
                 NEW.status,NEW.opened_at,NEW.closed_at,NEW.result,NEW.result_r,
                 NEW.risk_dollars,NEW.result_dollars,NEW.updated_at
               FROM training_active_run_72t WHERE slot=1;
@@ -316,7 +316,7 @@ def install_training_capture_72t() -> dict[str, int | str]:
                 displacement_range_ratio,fvg_age_bars,htf_timeframe,htf_bias,mfe_r,
                 mae_r,duration_seconds,outcome_class,fingerprint_json,closed_at,updated_at
               )
-              SELECT run_id,NEW.setup_id,'7.2T',NEW.symbol,NEW.timeframe,NEW.strategy,
+              SELECT run_id,NEW.setup_id,build,NEW.symbol,NEW.timeframe,NEW.strategy,
                 NEW.trigger_type,NEW.entry_type,NEW.result,NEW.result_r,NEW.risk_reward,
                 NEW.displacement_body_ratio,NEW.displacement_range_ratio,
                 NEW.fvg_age_bars,NEW.htf_timeframe,NEW.htf_bias,NEW.mfe_r,NEW.mae_r,
@@ -334,7 +334,7 @@ def install_training_capture_72t() -> dict[str, int | str]:
                 displacement_range_ratio,fvg_age_bars,htf_timeframe,htf_bias,mfe_r,
                 mae_r,duration_seconds,outcome_class,fingerprint_json,closed_at,updated_at
               )
-              SELECT run_id,NEW.setup_id,'7.2T',NEW.symbol,NEW.timeframe,NEW.strategy,
+              SELECT run_id,NEW.setup_id,build,NEW.symbol,NEW.timeframe,NEW.strategy,
                 NEW.trigger_type,NEW.entry_type,NEW.result,NEW.result_r,NEW.risk_reward,
                 NEW.displacement_body_ratio,NEW.displacement_range_ratio,
                 NEW.fvg_age_bars,NEW.htf_timeframe,NEW.htf_bias,NEW.mfe_r,NEW.mae_r,
@@ -351,7 +351,7 @@ def install_training_capture_72t() -> dict[str, int | str]:
                 blocked_status,blocked_reason,outcome,resolved_at,max_favorable_r,
                 max_adverse_r,last_checked
               )
-              SELECT run_id,NEW.setup_id,'7.2T',NEW.symbol,NEW.timeframe,NEW.direction,
+              SELECT run_id,NEW.setup_id,build,NEW.symbol,NEW.timeframe,NEW.direction,
                 NEW.created_at,NEW.blocked_status,NEW.blocked_reason,NEW.outcome,
                 NEW.resolved_at,NEW.max_favorable_r,NEW.max_adverse_r,NEW.last_checked
               FROM training_active_run_72t WHERE slot=1;
@@ -365,7 +365,7 @@ def install_training_capture_72t() -> dict[str, int | str]:
                 blocked_status,blocked_reason,outcome,resolved_at,max_favorable_r,
                 max_adverse_r,last_checked
               )
-              SELECT run_id,NEW.setup_id,'7.2T',NEW.symbol,NEW.timeframe,NEW.direction,
+              SELECT run_id,NEW.setup_id,build,NEW.symbol,NEW.timeframe,NEW.direction,
                 NEW.created_at,NEW.blocked_status,NEW.blocked_reason,NEW.outcome,
                 NEW.resolved_at,NEW.max_favorable_r,NEW.max_adverse_r,NEW.last_checked
               FROM training_active_run_72t WHERE slot=1;
@@ -378,7 +378,7 @@ def install_training_capture_72t() -> dict[str, int | str]:
                 run_id,setup_id,build,source_setup_id,profile,symbol,timeframe,
                 direction,strategy,status,result,result_r,mfe_r,mae_r,closed_at,updated_at
               )
-              SELECT run_id,NEW.setup_id,'7.2T',NEW.source_setup_id,NEW.profile,
+              SELECT run_id,NEW.setup_id,build,NEW.source_setup_id,NEW.profile,
                 NEW.symbol,NEW.timeframe,NEW.direction,NEW.strategy,NEW.status,
                 NEW.result,NEW.result_r,NEW.mfe_r,NEW.mae_r,NEW.closed_at,NEW.updated_at
               FROM training_active_run_72t WHERE slot=1;
@@ -391,7 +391,7 @@ def install_training_capture_72t() -> dict[str, int | str]:
                 run_id,setup_id,build,source_setup_id,profile,symbol,timeframe,
                 direction,strategy,status,result,result_r,mfe_r,mae_r,closed_at,updated_at
               )
-              SELECT run_id,NEW.setup_id,'7.2T',NEW.source_setup_id,NEW.profile,
+              SELECT run_id,NEW.setup_id,build,NEW.source_setup_id,NEW.profile,
                 NEW.symbol,NEW.timeframe,NEW.direction,NEW.strategy,NEW.status,
                 NEW.result,NEW.result_r,NEW.mfe_r,NEW.mae_r,NEW.closed_at,NEW.updated_at
               FROM training_active_run_72t WHERE slot=1;
@@ -407,11 +407,11 @@ def install_training_capture_72t() -> dict[str, int | str]:
               run_id,setup_id,build,symbol,timeframe,direction,created_at,trigger_type,
               entry_price,stop_price,target_price,risk_reward,status,payload_json,last_seen_at
             )
-            SELECT ?,setup_id,'7.2T',symbol,timeframe,direction,created_at,trigger_type,
+            SELECT ?,setup_id,?,symbol,timeframe,direction,created_at,trigger_type,
               entry_price,stop_price,target_price,risk_reward,status,payload_json,datetime('now')
             FROM strategy_setups
             """,
-            (run_id,),
+            (run_id, build),
         )
         connection.execute(
             """
@@ -419,10 +419,10 @@ def install_training_capture_72t() -> dict[str, int | str]:
               run_id,setup_id,build,symbol,timeframe,direction,status,opened_at,closed_at,
               result,result_r,risk_dollars,result_dollars,updated_at
             )
-            SELECT ?,setup_id,'7.2T',symbol,timeframe,direction,status,opened_at,closed_at,
+            SELECT ?,setup_id,?,symbol,timeframe,direction,status,opened_at,closed_at,
               result,result_r,risk_dollars,result_dollars,updated_at FROM paper_trades
             """,
-            (run_id,),
+            (run_id, build),
         )
         connection.execute(
             """
@@ -430,11 +430,11 @@ def install_training_capture_72t() -> dict[str, int | str]:
               run_id,setup_id,build,symbol,timeframe,direction,created_at,blocked_status,
               blocked_reason,outcome,resolved_at,max_favorable_r,max_adverse_r,last_checked
             )
-            SELECT ?,setup_id,'7.2T',symbol,timeframe,direction,created_at,blocked_status,
+            SELECT ?,setup_id,?,symbol,timeframe,direction,created_at,blocked_status,
               blocked_reason,outcome,resolved_at,max_favorable_r,max_adverse_r,last_checked
             FROM counterfactual_setups
             """,
-            (run_id,),
+            (run_id, build),
         )
         connection.execute(
             """
@@ -444,12 +444,12 @@ def install_training_capture_72t() -> dict[str, int | str]:
               fvg_age_bars,htf_timeframe,htf_bias,mfe_r,mae_r,duration_seconds,
               outcome_class,fingerprint_json,closed_at,updated_at
             )
-            SELECT ?,setup_id,'7.2T',symbol,timeframe,strategy,trigger_type,entry_type,
+            SELECT ?,setup_id,?,symbol,timeframe,strategy,trigger_type,entry_type,
               result,result_r,risk_reward,displacement_body_ratio,displacement_range_ratio,
               fvg_age_bars,htf_timeframe,htf_bias,mfe_r,mae_r,duration_seconds,
               outcome_class,fingerprint_json,closed_at,updated_at FROM trade_intelligence
             """,
-            (run_id,),
+            (run_id, build),
         )
         connection.execute(
             """
@@ -457,11 +457,11 @@ def install_training_capture_72t() -> dict[str, int | str]:
               run_id,setup_id,build,source_setup_id,profile,symbol,timeframe,direction,
               strategy,status,result,result_r,mfe_r,mae_r,closed_at,updated_at
             )
-            SELECT ?,setup_id,'7.2T',source_setup_id,profile,symbol,timeframe,direction,
+            SELECT ?,setup_id,?,source_setup_id,profile,symbol,timeframe,direction,
               strategy,status,result,result_r,mfe_r,mae_r,closed_at,updated_at
             FROM shadow_trades
             """,
-            (run_id,),
+            (run_id, build),
         )
         connection.commit()
 
@@ -779,7 +779,7 @@ def training_snapshot_72t(live_db_path: Path, research_db_path: Path) -> dict[st
         setup_decisions_current = _count(
             connection,
             "SELECT COUNT(*) FROM training_decisions_72t WHERE symbol='GC' AND run_id=?",
-            (run_id,),
+            (run_id, build),
         ) if run_id else 0
         evaluation_total = 0
         evaluation_current = 0
