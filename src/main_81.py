@@ -18,6 +18,7 @@ from src.otr8.execution_policy81 import (
     rr_decision81,
     stamp_registration81,
 )
+from src.research.pipeline_recorder81 import make_evaluation_recorder81
 from src.strategies import early_entry72, gold_momentum72r
 from src.strategies.execution_quality import evaluate_ict_context
 from src.strategies.reversal import evaluate_reversal_context
@@ -347,6 +348,9 @@ def _install_pipeline_81():
     pipeline = _original_install_pipeline_80()
     pipeline.quality_gate = _quality_gate_81
     pipeline.setup_risk = _setup_risk_81
+    pipeline.collector.collect_all_families = True
+    pipeline.promote_runner_up = True
+    pipeline.evaluation_recorder = make_evaluation_recorder81(runtime)
     try:
         pipeline.collector._momentum().min_rr = 1.20
     except Exception:
@@ -387,7 +391,9 @@ def main() -> None:
     runtime.console.log(
         "Operation 8.1 armed: Gold execution conversion uses first-touch FVG/OTE/OB zones, "
         "registration-time pending lifetimes, A/A+ dynamic 1.20-1.50R policy, explicit $750/$500 eval sizing, "
-        "no strategy trade quota and no profit ceiling; 8.0 regime/arbiter/tracing plus legacy account/no-chase/exposure protections retained."
+        "no strategy trade quota and no profit ceiling; all mature candidate families now reach the arbiter concurrently, "
+        "executor-preflight runner-up promotion is enabled, and every Gold evaluation including NO_CANDIDATE is recorded; "
+        "8.0 regime/arbiter/tracing plus legacy account/no-chase/exposure protections retained."
     )
     op80.main()
 
