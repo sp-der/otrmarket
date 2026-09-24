@@ -45,6 +45,10 @@ class OTRPipeline80:
         self.collector = CandidateCollector80(runtime.strategy, continuation=continuation)
         self.arbiter = arbiter or SetupArbiter80()
         self.regime_engine = regime_engine or GoldRegimeEngine80()
+        # Opt-in hooks used by Operation 8.1 only. Defaults preserve Operation
+        # 8.0 behavior and its existing regression contract.
+        self.promote_runner_up = False
+        self.evaluation_recorder = None
 
     @staticmethod
     def _ensure_trace_schema(connection) -> None:
@@ -231,7 +235,218 @@ class OTRPipeline80:
 
         return eligible, traces, regimes, handled
 
+    def _process_candidates_with_promotion(self, connection, candidates, histories, *, source: str):
+        """Operation 8.1 ranked fallback.
+
+        Every candidate still clears session + quality before ranking. A lower
+        ranked candidate is considered only when a higher-ranked candidate
+        fails executor preflight/geometry. Account-wide guard failures and
+        active-symbol conflicts never fall through, so promotion cannot bypass
+        risk controls or create a second Gold position.
+        """
+        if not candidates:
+            return []
+
+        eligible, traces, regimes, handled = self._prepare_eligible(
+            connection, candidates, histories, source
+        )
+        if not eligible:
+            return handled
+
+        _chosen, assessments = self.arbiter.choose(eligible, histories, regimes)
+        setup_by_id = {str(setup.setup_id): setup for setup in eligible}
+        ranked = sorted(
+            assessments,
+            key=lambda item: (item.score, item.risk_reward, item.setup_id),
+            reverse=True,
+        )
+        assessment_payload = [item.to_dict() for item in ranked]
+        attempted: set[str] = set()
+        winner = None
+        winner_assessment = None
+        terminal_reason = ""
+
+        for rank, assessment in enumerate(ranked, start=1):
+            setup_id = str(assessment.setup_id)
+            setup = setup_by_id[setup_id]
+            trace = traces[setup_id]
+            attempted.add(setup_id)
+            setup.metadata["setup_arbiter_80"] = {
+                "selected": True,
+                "score": assessment.score,
+                "promoted_rank": rank,
+                "assessments": assessment_payload,
+                "reason": (
+                    "Top-ranked qualified candidate."
+                    if rank == 1
+                    else f"Promoted after {rank - 1} higher-ranked candidate(s) failed executor preflight."
+                ),
+            }
+            trace.add(
+                "ARBITER",
+                "SELECTED" if rank == 1 else "PROMOTED",
+                (
+                    f"Candidate score {assessment.score:.2f}/100"
+                    if rank == 1
+                    else f"Runner-up promoted at rank {rank}; score {assessment.score:.2f}/100."
+                ),
+                assessment.to_dict(),
+            )
+
+            decision = self.runtime.evaluation_guard.decide(connection, setup.created_at)
+            applied_risk, risk_multiplier = self.setup_risk(decision, setup)
+            setup.metadata["evaluation_guard"] = {
+                "status": decision.status,
+                "allowed": decision.allowed,
+                "risk_cap_dollars": decision.risk_dollars,
+                "risk_multiplier": risk_multiplier,
+                "risk_dollars": applied_risk if decision.allowed else 0.0,
+                "reason": decision.reason,
+                "profile": decision.snapshot.get("profile"),
+                "phase": decision.snapshot.get("phase"),
+            }
+            if not decision.allowed:
+                terminal_reason = decision.reason
+                handled.append(
+                    self._save_block(
+                        connection,
+                        setup,
+                        trace,
+                        "GUARD_BLOCKED",
+                        "ACCOUNT_GUARD",
+                        decision.reason,
+                        decision.snapshot,
+                    )
+                )
+                break
+            trace.add("ACCOUNT_GUARD", "PASSED", decision.reason, decision.snapshot)
+
+            regime = regimes[setup_id]
+            grade = str(
+                setup.metadata.get("a_plus_context", {}).get("quality_grade")
+                or assessment.details.get("quality_grade")
+                or "A"
+            )
+            plan = TradePlan80(
+                setup_id=setup_id,
+                symbol=str(setup.symbol),
+                timeframe=str(setup.timeframe),
+                strategy=str(setup.metadata.get("strategy", "ICT_CONFLUENCE")),
+                direction=str(setup.direction),
+                entry_price=float(setup.entry_price),
+                stop_price=float(setup.stop_price),
+                target_price=float(setup.target_price),
+                risk_reward=float(setup.risk_reward),
+                risk_dollars=float(applied_risk),
+                quality_grade=grade,
+                arbiter_score=float(assessment.score),
+                regime=regime.regime,
+                created_at=setup.created_at,
+                source=source,
+                metadata={
+                    "risk_multiplier": risk_multiplier,
+                    "session_tier": setup.metadata.get("session_tier"),
+                    "entry_type": setup.metadata.get("entry_type"),
+                    "promoted_rank": rank,
+                },
+            )
+            setup.metadata["trade_plan_80"] = plan.to_dict()
+            trace.add("TRADE_PLAN", "CREATED", "Canonical strategy-side trade plan created.", plan.to_dict())
+
+            self.runtime.save_setup(connection, setup)
+            try:
+                position = self.runtime.paper.register_setup(
+                    setup,
+                    risk_dollars=applied_risk,
+                    guard_reason=(
+                        f"{decision.reason} OTR 8.1 ranked candidate {rank} at "
+                        f"{assessment.score:.2f}/100; risk tier {risk_multiplier:.0%}."
+                    ),
+                )
+            except ValueError as exc:
+                message = str(exc)
+                terminal_reason = message
+                setup.status = "RISK_REJECTED"
+                setup.metadata["geometry_rejection"] = message
+                setup.metadata.setdefault("setup_arbiter_80", {})["preflight_failed"] = True
+                self.runtime.save_setup(connection, setup)
+                trace.add("EXECUTOR_PREFLIGHT", "BLOCKED", message)
+                trace.finish("RISK_REJECTED")
+                self._persist_trace(connection, trace)
+                self._generic_counterfactual(connection, setup, message)
+                handled.append(setup)
+                # Existing exposure is account state, not candidate geometry.
+                # Never use runner-up promotion to route around that invariant.
+                if "ACTIVE_SYMBOL_CONFLICT" in message.upper():
+                    break
+                continue
+
+            self.runtime.upsert_paper_trade(connection, position, setup.created_at.isoformat())
+            final_status = str(position.result or position.status or "PENDING")
+            trace.add(
+                "EXECUTION_HANDOFF",
+                "ACCEPTED" if str(position.status).upper() in {"PENDING", "OPEN"} else "SUPPRESSED",
+                f"Paper/execution kernel returned {final_status}.",
+                {"position_status": position.status, "result": position.result, "risk_dollars": applied_risk},
+            )
+            trace.finish(final_status)
+            self._persist_trace(connection, trace)
+            handled.append(setup)
+            self.runtime.console.log(
+                f"OTR 8.1 SELECTED {setup.symbol} {setup.timeframe} "
+                f"[{setup.metadata.get('strategy', 'UNKNOWN')}] {setup.direction.upper()} "
+                f"rank={rank} score={assessment.score:.2f}/100 rr={setup.risk_reward:.2f}R "
+                f"regime={regime.regime} risk=${applied_risk:.2f} result={final_status}"
+            )
+            winner = setup
+            winner_assessment = assessment
+            break
+
+        for assessment in ranked:
+            setup_id = str(assessment.setup_id)
+            if setup_id in attempted or (winner is not None and setup_id == str(winner.setup_id)):
+                continue
+            setup = setup_by_id[setup_id]
+            trace = traces[setup_id]
+            if winner is not None and winner_assessment is not None:
+                reason = (
+                    f"Another executable GC candidate ranked/converted first: "
+                    f"{winner.metadata.get('strategy', 'UNKNOWN')} "
+                    f"{winner_assessment.score:.2f} > {assessment.score:.2f}."
+                )
+            else:
+                reason = (
+                    "No lower-ranked promotion attempted because the selected candidate "
+                    f"hit an account-wide terminal condition: {terminal_reason or 'guard/preflight stop'}."
+                )
+            setup.status = "ARBITER_BLOCKED"
+            setup.metadata["setup_arbiter_80"] = {
+                "selected": False,
+                "score": assessment.score,
+                "winner_setup_id": str(getattr(winner, "setup_id", "") or ""),
+                "winner_score": getattr(winner_assessment, "score", None),
+                "reason": reason,
+                "promotion_considered": True,
+            }
+            setup.metadata["execution_quality_gate"] = {
+                "allowed": False,
+                "reason": reason,
+                "profile": "SETUP_ARBITER_8_1",
+            }
+            self.runtime.save_setup(connection, setup)
+            self._generic_counterfactual(connection, setup, reason)
+            trace.add("ARBITER", "BLOCKED", reason, assessment.to_dict())
+            trace.finish("ARBITER_BLOCKED")
+            self._persist_trace(connection, trace)
+            handled.append(setup)
+
+        return handled
+
     def process_candidates(self, connection, candidates, histories, *, source: str = "CANDLE_CLOSE"):
+        if self.promote_runner_up:
+            return self._process_candidates_with_promotion(
+                connection, candidates, histories, source=source
+            )
         if not candidates:
             return []
 
@@ -406,6 +621,19 @@ class OTRPipeline80:
             histories,
             source="CANDLE_CLOSE",
         )
+        if self.evaluation_recorder is not None:
+            try:
+                self.evaluation_recorder(
+                    connection,
+                    symbol,
+                    timeframe,
+                    histories,
+                    candidates,
+                    handled,
+                    source="CANDLE_CLOSE",
+                )
+            except Exception as exc:
+                self.runtime.console.log(f"OTR 8.1 decision-recorder warning: {exc}")
         if self.observer is not None:
             self.observer(connection, symbol, timeframe, histories)
         return handled[-1] if handled else None
