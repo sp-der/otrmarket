@@ -191,7 +191,17 @@ def _active_run(connection: sqlite3.Connection) -> tuple[str, str]:
     # own durable research run id is authoritative and survives redeploys.
     engine_module = os.getenv("OTR_ENGINE_MODULE", "").strip()
     mode = os.getenv("OTR_TRADING_MODE", "").strip().upper()
-    if not run_id and (engine_module.endswith("main_81") or mode in {"EVAL", "EVALUATION"}):
+    operation81_state = False
+    if _table_exists(connection, "engine_state"):
+        row = connection.execute(
+            "SELECT value FROM engine_state WHERE key='operation81_research_run_id'"
+        ).fetchone()
+        operation81_state = bool(row and str(row[0] or "").strip())
+    if not run_id and (
+        operation81_state
+        or engine_module.endswith("main_81")
+        or mode in {"EVAL", "EVALUATION"}
+    ):
         from src.research.run_scope import current_run_id
 
         run_id = current_run_id(connection)
