@@ -209,17 +209,34 @@ def get_connection():
                 (symbol, int(count or 0), now),
             )
     connection.commit()
-    # Active views keep original rows durable while legacy dashboard/risk readers
-    # see only the selected evaluation. Before the first explicit run boundary,
-    # untagged historical rows remain visible exactly as before.
-    for table in ("paper_trades", "strategy_setups"):
-        connection.execute(f"""CREATE VIEW IF NOT EXISTS active_{table} AS
+    ensure_active_run_views(connection)
+    return connection
+
+
+# The active views keep original rows durable while legacy dashboard/risk
+# readers see only the selected evaluation. Before the first explicit run
+# boundary, untagged historical rows remain visible exactly as before.
+#
+# This DDL lives in one place on purpose. src/storage/database_concurrency80.py
+# keeps its own copy of the schema/migration for WAL concurrency and REPLACES
+# this module's get_connection in production (see its install()), so anything
+# defined only inside get_connection never runs on the real deployment. Columns
+# already carry that warning; the run-scoping views were previously missed,
+# which silently disabled every active_table() read path.
+ACTIVE_RUN_VIEW_TABLES = ("paper_trades", "strategy_setups")
+
+
+def ensure_active_run_views(connection) -> None:
+    """Create the run-scoped active_* views. Safe to call on every connection."""
+    for table in ACTIVE_RUN_VIEW_TABLES:
+        connection.execute(
+            f"""CREATE VIEW IF NOT EXISTS active_{table} AS
             SELECT rowid AS rowid, * FROM {table}
             WHERE NOT EXISTS (SELECT 1 FROM engine_state WHERE key='operation81_scoped_ledger')
                OR run_id=(SELECT value FROM engine_state WHERE key='operation81_research_run_id')
-        """)
+        """
+        )
     connection.commit()
-    return connection
 
 
 def _retention_limit(symbol: str) -> int:
