@@ -222,6 +222,12 @@ def _initialize_database(database_module) -> None:
                         (symbol, int(count or 0), now),
                     )
             connection.commit()
+            # Operation 8.1 run scoping. database.py defines these views inside
+            # its own get_connection, which this module replaces in production,
+            # so without this call active_table() silently resolves to the base
+            # tables and every run-scoped dashboard/risk/research read keeps
+            # seeing archived runs.
+            database_module.ensure_active_run_views(connection)
             _initialized_paths.add(key)
         finally:
             connection.close()
