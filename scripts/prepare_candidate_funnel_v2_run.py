@@ -2,6 +2,15 @@ from __future__ import annotations
 
 import json
 import runpy
+import sys
+from pathlib import Path
+
+# Railway starts this file as "python scripts/prepare_candidate_funnel_v2_run.py".
+# In that invocation Python puts /app/scripts on sys.path, not the repository
+# root, so imports from src fail unless we add the project root explicitly.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import src.storage.database as database
 from src.storage.database_concurrency80 import install as install_database_concurrency
