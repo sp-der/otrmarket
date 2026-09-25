@@ -4,7 +4,7 @@ import json
 import os
 from pathlib import Path
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from src.dashboard import server_80 as base
@@ -339,6 +339,61 @@ def _install_run_archive_api_81() -> None:
     current_path = f"{dashboard.BASE_PATH}/api/otr81/current-run"
     if current_path not in existing:
         dashboard.app.add_api_route(current_path, current_run, methods=["GET"])
+
+    async def start_fresh_run(request: Request):
+        """Operator-only run rotation with an expected-run guard.
+
+        This is intentionally explicit and authenticated. It preserves the
+        baseline in place, refuses live paper exposure, and prevents duplicate
+        rotations by requiring the caller to name the run being archived.
+        """
+        dashboard.require_http_auth(request)
+        payload = await request.json()
+        if payload.get("confirm") != "START_FRESH_RUN":
+            raise HTTPException(status_code=400, detail="confirm must be START_FRESH_RUN")
+
+        connection = get_connection()
+        try:
+            expected_run_id = str(payload.get("expected_run_id") or "").strip()
+            active_run_id = current_run_id(connection)
+            if not expected_run_id or expected_run_id != active_run_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"expected_run_id mismatch; active run is {active_run_id}",
+                )
+
+            from src.research.run_dashboard81 import run_dashboard81
+
+            before = run_dashboard81(connection)
+            result = start_fresh_run81(
+                connection,
+                baseline_label=str(
+                    payload.get("baseline_label")
+                    or "Full Week Baseline - Pre Candidate Funnel V2"
+                ),
+                new_label=str(
+                    payload.get("new_label")
+                    or "Candidate Funnel V2 - Same Week Validation"
+                ),
+            )
+            connection.execute("DELETE FROM strategy_diagnostics")
+            set_engine_state(connection, "eval_reset_excluded_setup_ids_72", "[]")
+            connection.commit()
+            after = run_dashboard81(connection)
+            report = {"before": before, "rotation": result, "after": after}
+            print("OTR_FRESH_RUN_ROTATION=" + json.dumps(report, default=str), flush=True)
+            return report
+        finally:
+            connection.close()
+
+    fresh_path = f"{dashboard.BASE_PATH}/api/otr81/start-fresh-run"
+    if fresh_path not in existing:
+        dashboard.app.add_api_route(
+            fresh_path,
+            start_fresh_run,
+            methods=["POST"],
+            name="start_fresh_run_81",
+        )
 
     def archives(request: Request, limit: int = 50):
         dashboard.require_http_auth(request)
