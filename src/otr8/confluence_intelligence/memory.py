@@ -88,10 +88,19 @@ def find_similar_setups(connection: sqlite3.Connection, setup, features: dict[st
     eligible -- legacy theoretical-budget rows are never silently pooled
     into dollar-outcome statistics. Direction must match exactly (a bullish
     setup is never compared against bearish outcomes).
+
+    The pool is also cut off at `setup.created_at`: only trades that had
+    already closed before this setup's own event time are comparable
+    evidence. Without this, a resolved outcome's wall-clock capture order
+    (which depends only on how fast each setup happened to be processed
+    during a replay) could stand in for causal/simulated chronology and let
+    a later trade's result leak into an earlier decision's shadow context.
     """
     direction = str(getattr(setup, "direction", "") or "")
     pool = store.compatible_snapshots_for_training(
-        connection, accounting_version=PAPER_ACCOUNTING_VERSION_MGC_WHOLE_CONTRACT_V1
+        connection,
+        accounting_version=PAPER_ACCOUNTING_VERSION_MGC_WHOLE_CONTRACT_V1,
+        resolved_before=getattr(setup, "created_at", None),
     )
     pool = [row for row in pool if row.get("direction") == direction and row.get("setup_id") != str(setup.setup_id)]
 

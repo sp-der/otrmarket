@@ -191,10 +191,16 @@ def _seed_comparable_snapshot(
     mae_r: float = 0.3,
     accounting_version: str | None = PAPER_ACCOUNTING_VERSION_MGC_WHOLE_CONTRACT_V1,
     captured_at: str,
+    closed_at: str | None = None,
 ) -> None:
     """Seed one resolved, comparable confluence snapshot + its paper_trades
     row directly, for memory/model tests that need a pool of prior trades
     without running the full capture pipeline for each one.
+
+    `closed_at` is the trade's own event-time close (defaults to
+    `captured_at` when omitted) -- this is the field the leakage-cutoff
+    check in store.compatible_snapshots_for_training() compares against, so
+    tests exercising that cutoff pass it explicitly.
     """
     store_mod.save_snapshot(
         connection,
@@ -228,10 +234,10 @@ def _seed_comparable_snapshot(
         """
         INSERT INTO paper_trades (
             setup_id, symbol, timeframe, direction, status,
-            entry_price, stop_price, target_price, updated_at, accounting_version
-        ) VALUES (?, 'GC', '1m', ?, 'CLOSED', 4322.5, 4321.6, 4326.7, ?, ?)
+            entry_price, stop_price, target_price, closed_at, updated_at, accounting_version
+        ) VALUES (?, 'GC', '1m', ?, 'CLOSED', 4322.5, 4321.6, 4326.7, ?, ?, ?)
         """,
-        (setup_id, direction, captured_at, accounting_version),
+        (setup_id, direction, closed_at or captured_at, captured_at, accounting_version),
     )
     connection.commit()
 
@@ -490,6 +496,70 @@ class SimilarSetupMemoryTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "INSUFFICIENT_EVIDENCE")
         self.assertEqual(result["comparable_samples"], 0)
+
+    def test_store_cutoff_excludes_trades_resolved_at_or_after_the_reference_time(self):
+        # Direct test of the store-level primitive the leakage fix relies on.
+        connection = _full_database_connection()
+        _seed_comparable_snapshot(
+            connection, "cutoff-before", closed_at="2026-09-10T00:00:00+00:00",
+            captured_at="2026-09-09T00:00:00+00:00",
+        )
+        _seed_comparable_snapshot(
+            connection, "cutoff-after", closed_at="2026-09-20T00:00:00+00:00",
+            captured_at="2026-09-09T00:00:00+00:00",
+        )
+
+        pool = store_mod.compatible_snapshots_for_training(
+            connection,
+            accounting_version=PAPER_ACCOUNTING_VERSION_MGC_WHOLE_CONTRACT_V1,
+            resolved_before=datetime(2026, 9, 15, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual([row["setup_id"] for row in pool], ["cutoff-before"])
+
+    def test_a_setup_resolved_in_the_future_never_leaks_into_an_earlier_decisions_pool(self):
+        # This is the Section 10 / P1.5 leakage scenario: 20 trades are
+        # comparable by direction and accounting version, but their outcomes
+        # only closed AFTER the querying setup's own event time (e.g. written
+        # out of simulated order during a replay). None of them may count as
+        # evidence for a decision made earlier in simulated time.
+        connection = _full_database_connection()
+        base = datetime(2026, 9, 1, tzinfo=timezone.utc)
+        for i in range(memory_mod.MIN_COMPARABLE_SAMPLES):
+            _seed_comparable_snapshot(
+                connection,
+                f"mem-future-{i}",
+                captured_at=(base + timedelta(hours=i)).isoformat(),
+                closed_at="2026-09-25T00:00:00+00:00",  # after the query below
+            )
+        # setup.created_at defaults to 2026-09-19T14:00:00+00:00, before every
+        # seeded trade's closed_at above.
+        setup = _gc_setup_with_metadata(setup_id="mem-query-future")
+
+        result = memory_mod.find_similar_setups(connection, setup, features_mod.extract_features(setup))
+
+        self.assertEqual(result["status"], "INSUFFICIENT_EVIDENCE")
+        self.assertEqual(result["comparable_samples"], 0)
+
+    def test_a_setup_resolved_before_the_reference_time_is_still_eligible(self):
+        # Same shape as the leakage test above, but closed_at is safely in the
+        # past relative to the querying setup -- confirms the cutoff excludes
+        # only future-resolved rows, not every row.
+        connection = _full_database_connection()
+        base = datetime(2026, 9, 1, tzinfo=timezone.utc)
+        for i in range(memory_mod.MIN_COMPARABLE_SAMPLES):
+            _seed_comparable_snapshot(
+                connection,
+                f"mem-past-{i}",
+                captured_at=(base + timedelta(hours=i)).isoformat(),
+                closed_at=(base + timedelta(hours=i, minutes=30)).isoformat(),
+            )
+        setup = _gc_setup_with_metadata(setup_id="mem-query-past")
+
+        result = memory_mod.find_similar_setups(connection, setup, features_mod.extract_features(setup))
+
+        self.assertEqual(result["status"], "OK")
+        self.assertEqual(result["comparable_samples"], memory_mod.MIN_COMPARABLE_SAMPLES)
 
     def test_summarize_neighbors_below_minimum_is_insufficient_evidence(self):
         result = memory_mod.summarize_neighbors([{"result": "WIN", "result_r": 1.0}])

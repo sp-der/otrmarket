@@ -15,6 +15,7 @@ from src.integrations.nautilus_shadow.ledger import (
     load_closed_gold_candidates,
     persist_parity_record,
     resolve_signal_contract,
+    run_candidate_parity,
     run_recent_gold_parity,
     shadow_quantity,
     trade_path_match,
@@ -186,6 +187,59 @@ class NautilusParityLedgerTests(unittest.TestCase):
             ticks = load_candidate_ticks(connection, candidate, signal_contract="GC DEC26")
             self.assertEqual([item.price for item in ticks], [3501.0, 3500.0])
             self.assertTrue(all(item.timestamp >= candidate.created_at for item in ticks))
+        finally:
+            connection.close()
+
+    def test_candidate_ticks_are_not_lost_behind_a_large_recent_quote_volume(self):
+        # Reproduces the P0.1 defect: the old query took the newest `max_ticks`
+        # rows (by insertion order) and only then filtered by the candidate's
+        # time window. A long-held or late-replayed trade whose real window
+        # sits further back than the newest N quotes was silently handed an
+        # empty/wrong tick set. Here the in-window quotes are inserted FIRST,
+        # then far more than `max_ticks` unrelated quotes are inserted after
+        # close -- a small max_ticks makes the old "latest N" bug reproduce
+        # deterministically without needing 50,000 rows.
+        connection = self.connection()
+        try:
+            candidate = self.candidate()
+            self.add_quote(connection, candidate.created_at, "GC DEC26", 3501.0)
+            self.add_quote(connection, candidate.created_at + timedelta(seconds=1), "GC DEC26", 3500.0)
+            for i in range(20):
+                self.add_quote(
+                    connection,
+                    candidate.closed_at + timedelta(minutes=1, seconds=i),
+                    "GC DEC26",
+                    3600.0 + i,
+                )
+            connection.commit()
+
+            ticks = load_candidate_ticks(connection, candidate, signal_contract="GC DEC26", max_ticks=5)
+
+            self.assertEqual([item.price for item in ticks], [3501.0, 3500.0])
+        finally:
+            connection.close()
+
+    def test_run_candidate_parity_reports_insufficient_coverage_when_history_rolled_past_entry(self):
+        # Even with the query fixed, retention can have already deleted the
+        # quotes at the trade's actual entry moment. In that case the fetched
+        # (post-start) tick set will start later than the real entry -- that
+        # must fail loudly as an insufficient-coverage error, never a silent
+        # PENDING/no-fill verdict built from a truncated window.
+        connection = self.connection()
+        try:
+            self.insert_candidate_rows(connection)
+            candidate = self.candidate()
+            # Retained quotes begin well after the real paper entry (but still
+            # inside the [start, end] window so they aren't dropped by the
+            # ordinary time filter) -- simulating retention having already
+            # deleted the quotes at the actual entry moment.
+            self.add_quote(connection, candidate.created_at + timedelta(seconds=10), "GC DEC26", 3500.5)
+            self.add_quote(connection, candidate.created_at + timedelta(seconds=11), "GC DEC26", 3501.0)
+            connection.commit()
+
+            with self.assertRaises(ValueError) as ctx:
+                run_candidate_parity(connection, candidate)
+            self.assertIn("insufficient coverage", str(ctx.exception))
         finally:
             connection.close()
 

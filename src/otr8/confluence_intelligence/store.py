@@ -205,15 +205,54 @@ def _shape_row(row: dict[str, Any]) -> dict[str, Any]:
     return row
 
 
+def _parse_event_time(value: Any) -> datetime | None:
+    """Tolerant ISO-8601 parse for an event-time cutoff comparison.
+
+    Deliberately not done as SQL string comparison: stored timestamps mix
+    trailing `Z` and explicit `+00:00` offsets and different fractional-second
+    widths, which do not compare correctly as raw strings.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def compatible_snapshots_for_training(
     connection: sqlite3.Connection,
     *,
     accounting_version: str,
+    resolved_before: Any = None,
 ) -> list[dict[str, Any]]:
     """Resolved (result is not NULL) snapshots whose paper trade used the
     given accounting_version -- the join back to paper_trades is required so
     dollar-outcome data never mixes MGC_WHOLE_CONTRACT_V1 trades with legacy
     theoretical-budget rows.
+
+    `resolved_before`, when given, excludes any snapshot whose own trade
+    closed at or after that event time. This is the causal cutoff for a
+    setup being scored right now: without it, a resolved outcome is eligible
+    evidence purely because its wall-clock capture/outcome-write happened to
+    run first, which during a replay says nothing about simulated
+    chronology -- a slow-processed early setup and a fast-processed later
+    one can be written in either order. Comparing against `paper_trades
+    .closed_at` (the trade's own simulated event time) instead of wall-clock
+    metadata is what actually prevents a later outcome from leaking into an
+    earlier shadow decision. `resolved_before` accepts a datetime or an
+    ISO-8601 string.
     """
     ensure_schema(connection)
     exists = connection.execute(
@@ -223,7 +262,7 @@ def compatible_snapshots_for_training(
         return []
     cursor = connection.execute(
         f"""
-        SELECT c.* FROM {FEATURE_TABLE} c
+        SELECT c.*, p.closed_at AS otr_closed_at FROM {FEATURE_TABLE} c
         JOIN paper_trades p ON p.setup_id = c.setup_id
         WHERE c.result IS NOT NULL AND p.accounting_version = ?
         ORDER BY c.captured_at ASC
@@ -232,4 +271,21 @@ def compatible_snapshots_for_training(
     )
     rows = cursor.fetchall()
     columns = [column[0] for column in cursor.description]
-    return [_shape_row(dict(zip(columns, row))) for row in rows]
+    shaped = [_shape_row(dict(zip(columns, row))) for row in rows]
+
+    cutoff = _parse_event_time(resolved_before)
+    if cutoff is None:
+        for row in shaped:
+            row.pop("otr_closed_at", None)
+        return shaped
+
+    eligible: list[dict[str, Any]] = []
+    for row in shaped:
+        closed_at = _parse_event_time(row.pop("otr_closed_at", None))
+        if closed_at is None or closed_at >= cutoff:
+            # Missing closure time or resolved at/after the querying setup's
+            # own event time: not yet knowable evidence, so it is excluded
+            # rather than optimistically included.
+            continue
+        eligible.append(row)
+    return eligible

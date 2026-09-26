@@ -200,7 +200,10 @@ def process_one_auto_certification(
         record = execute(connection, candidate)
     except ValueError as exc:
         message = str(exc)
-        retention_error = "Not enough retained post-setup Gold ticks" in message
+        retention_error = (
+            "Not enough retained post-setup Gold ticks" in message
+            or "insufficient coverage" in message
+        )
         if retention_error and attempts < MAX_ATTEMPTS:
             status = "WAITING_TICKS"
             completed = False

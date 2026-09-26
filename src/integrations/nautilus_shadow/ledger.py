@@ -222,6 +222,13 @@ def resolve_signal_contract(connection: sqlite3.Connection, candidate: GoldTrade
     Timestamp filtering is done in Python rather than lexicographically in SQL so
     equivalent ISO timestamps using `Z`, offsets, or different fractional-second
     widths cannot select the wrong futures contract.
+
+    Deliberately unbounded by an `ORDER BY id DESC LIMIT n` clause: that pattern
+    silently drops rows older than the newest n regardless of relevance, so an
+    older setup's actual contract window can fall entirely outside the fetched
+    slice once enough newer quotes accumulate. `market_quotes` is already bounded
+    per symbol by `prune_market_quotes`'s retention window, so this cannot scan
+    an unbounded table.
     """
     reference = candidate.created_at
     rows = connection.execute(
@@ -229,8 +236,7 @@ def resolve_signal_contract(connection: sqlite3.Connection, candidate: GoldTrade
         SELECT COALESCE(exchange_time, received_at), source
         FROM market_quotes
         WHERE symbol = 'GC' AND source LIKE 'ninjatrader:%'
-        ORDER BY id DESC
-        LIMIT 50000
+        ORDER BY id ASC
         """
     ).fetchall()
     if not rows:
@@ -238,7 +244,7 @@ def resolve_signal_contract(connection: sqlite3.Connection, candidate: GoldTrade
 
     before: tuple[datetime, str] | None = None
     after: tuple[datetime, str] | None = None
-    fallback = _source_contract(str(rows[0][1] or ""))
+    fallback = _source_contract(str(rows[-1][1] or ""))  # rows is ASC: last = newest known contract
     for timestamp, source in rows:
         parsed = _parse_time(timestamp)
         contract = _source_contract(str(source or ""))
@@ -271,6 +277,17 @@ def load_candidate_ticks(
     Starting at `created_at` is critical: allowing pre-setup quotes would let the
     Nautilus limit order fill before OTR had actually generated the trade, which
     creates a false execution mismatch.
+
+    The query fetches every matching row (ASC by id, i.e. insertion/chronological
+    order) and filters to [start, end] in Python, rather than taking the newest
+    `max_ticks` rows and filtering afterward. The previous "latest N, then filter"
+    order meant a trade whose window fell further back than the newest N quotes
+    was silently given an empty or truncated tick window -- e.g. a long-held
+    trade replayed days later, once enough newer quotes had accumulated, would
+    never see its own entry tick at all. `market_quotes` is already bounded per
+    symbol by `prune_market_quotes`'s retention window, so this cannot scan an
+    unbounded table; `max_ticks` is now applied only as a defensive cap on the
+    already-filtered result, preserving both endpoints if it is ever exceeded.
     """
     start = candidate.created_at
     end_anchor = candidate.closed_at or candidate.opened_at or candidate.created_at
@@ -284,10 +301,9 @@ def load_candidate_ticks(
             SELECT COALESCE(exchange_time, received_at), source, price, bid, ask
             FROM market_quotes
             WHERE symbol = 'GC' AND source = ?
-            ORDER BY id DESC
-            LIMIT ?
+            ORDER BY id ASC
             """,
-            (source, bounded),
+            (source,),
         ).fetchall()
     else:
         rows = connection.execute(
@@ -295,14 +311,12 @@ def load_candidate_ticks(
             SELECT COALESCE(exchange_time, received_at), source, price, bid, ask
             FROM market_quotes
             WHERE symbol = 'GC' AND source LIKE 'ninjatrader:%'
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (bounded,),
+            ORDER BY id ASC
+            """
         ).fetchall()
 
     ticks: list[StoredGoldTick] = []
-    for timestamp, row_source, price, bid, ask in reversed(rows):
+    for timestamp, row_source, price, bid, ask in rows:
         parsed = _parse_time(timestamp)
         if parsed is None or parsed < start or parsed > end:
             continue
@@ -324,6 +338,14 @@ def load_candidate_ticks(
             )
         )
     ticks.sort(key=lambda item: item.timestamp)
+
+    if len(ticks) > bounded:
+        # Effectively unreachable today (max_ticks default already matches the
+        # GC retention ceiling), but if retention ever grows, keep both
+        # endpoints rather than truncating from one side only -- dropping the
+        # tail would silently discard the exit/target touch.
+        half = bounded // 2
+        ticks = ticks[:half] + ticks[-(bounded - half):]
     return ticks
 
 
@@ -395,6 +417,23 @@ def run_candidate_parity(
         raise ValueError(
             f"Not enough retained post-setup Gold ticks for {candidate.setup_id}; "
             "the raw quote retention window may have rolled past this trade"
+        )
+
+    # Coverage check, not a fill check: even with the corrected query above, a
+    # trade held long enough (or replayed late enough) can have its actual
+    # entry moment already aged out of the market_quotes retention window.
+    # Fetching only quotes >= created_at can never surface that -- it will
+    # just return a set that appears to start "at the beginning" of whatever
+    # was retained. Compare against the requested start explicitly so a
+    # genuinely incomplete window fails loudly as INSUFFICIENT_DATA instead of
+    # silently producing a PENDING/no-fill verdict from a truncated replay.
+    coverage_tolerance = timedelta(seconds=5)
+    if ticks[0].timestamp > candidate.created_at + coverage_tolerance:
+        raise ValueError(
+            f"Retained Gold quotes for {candidate.setup_id} begin at "
+            f"{ticks[0].timestamp.isoformat()}, after the paper entry window started at "
+            f"{candidate.created_at.isoformat()}; retention has rolled past this trade's "
+            "entry and no execution verdict can be produced (insufficient coverage)"
         )
 
     quantity = shadow_quantity(candidate)
