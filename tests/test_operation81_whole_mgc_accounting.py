@@ -6,6 +6,9 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 
 from src.execution.paper import (
+    PaperCostModel,
+    cap_from_default,
+    default_max_micros_cap,
     CANNOT_SIZE_RESULT,
     PAPER_ACCOUNTING_VERSION_MGC_WHOLE_CONTRACT_V1,
     PaperExecutor,
@@ -234,3 +237,154 @@ class ExistingLifecycleUnaffectedTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SizingCapResolutionTests(unittest.TestCase):
+    """Regression coverage for the paper-sizing contract ceiling.
+
+    ``ExecutionConfig.max_micros`` deliberately defaults to 1 (fail-safe for an
+    unarmed broker deployment). Inheriting that into the *research* ledger
+    silently sized every paper trade at one micro contract, so replay P&L was
+    reported at a fraction of the intended scale.
+    """
+
+    def setUp(self):
+        self._saved = {
+            key: os.environ.get(key)
+            for key in ("OTR_PAPER_MAX_MICROS", "OTR_EXECUTION_MAX_MICROS", "EVAL_MAX_MICROS")
+        }
+        for key in self._saved:
+            os.environ.pop(key, None)
+
+    def tearDown(self):
+        for key, value in self._saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    def test_unconfigured_environment_uses_documented_default_not_one_contract(self):
+        self.assertEqual(default_max_micros_cap(), 40)
+        self.assertTrue(cap_from_default())
+
+    def test_execution_ceiling_is_honoured_when_configured(self):
+        with patch.dict(os.environ, {"OTR_EXECUTION_MAX_MICROS": "7"}, clear=False):
+            self.assertEqual(default_max_micros_cap(), 7)
+            self.assertFalse(cap_from_default())
+
+    def test_paper_override_wins_over_execution_ceiling(self):
+        with patch.dict(
+            os.environ,
+            {"OTR_EXECUTION_MAX_MICROS": "7", "OTR_PAPER_MAX_MICROS": "21"},
+            clear=False,
+        ):
+            self.assertEqual(default_max_micros_cap(), 21)
+
+    def test_eval_ceiling_is_used_when_no_execution_ceiling_is_set(self):
+        with patch.dict(os.environ, {"EVAL_MAX_MICROS": "12"}, clear=False):
+            self.assertEqual(default_max_micros_cap(), 12)
+            self.assertFalse(cap_from_default())
+
+    def test_a_plus_budget_is_not_collapsed_to_one_contract_by_default(self):
+        # $3.30 stop -> $33/contract; $750 should fund 22 contracts, not 1.
+        setup = _gc_setup(entry=3500.0, stop=3496.7, target=3520.0)
+        executor = PaperExecutor()
+        position = executor.register_setup(setup, risk_dollars=750.0)
+
+        self.assertEqual(position.quantity, 22)
+        self.assertFalse(position.cap_binding)
+        self.assertTrue(position.cap_from_default)
+
+    def test_binding_cap_is_recorded_instead_of_hidden(self):
+        # $0.90 stop -> $9/contract; $750 wants 83 contracts.
+        setup = _gc_setup(entry=4322.5, stop=4321.6, target=4326.7)
+        executor = PaperExecutor()
+        with patch.dict(os.environ, {"OTR_PAPER_MAX_MICROS": "10"}, clear=False):
+            position = executor.register_setup(setup, risk_dollars=750.0)
+
+        self.assertEqual(position.quantity, 10)
+        self.assertEqual(position.uncapped_quantity, 83)
+        self.assertTrue(position.cap_binding)
+        self.assertFalse(position.cap_from_default)
+
+
+class CostModelTests(unittest.TestCase):
+    """Execution frictions for the research ledger.
+
+    GROSS is the historical behaviour and must stay byte-for-byte identical so
+    existing runs remain comparable. REALISTIC adds stop slippage (including
+    gap-through) and per-contract round-turn costs.
+    """
+
+    def _run(self, cost_model, *, exit_price):
+        setup = _gc_setup(entry=3500.0, stop=3495.0, target=3510.0)
+        executor = PaperExecutor(cost_model=cost_model)
+        executor.register_setup(setup, risk_dollars=500.0, max_micros_cap=100)
+        t = setup.created_at
+        executor.on_price("GC", setup.entry_price, t)  # fill at 3500
+        changed = executor.on_price("GC", exit_price, t)
+        return changed[-1]
+
+    def test_gross_model_unchanged_on_target_exit(self):
+        position = self._run(PaperCostModel(model="GROSS"), exit_price=3510.0)
+        self.assertAlmostEqual(position.result_dollars, 1000.0, places=6)
+        self.assertAlmostEqual(position.result_dollars_gross, 1000.0, places=6)
+        self.assertAlmostEqual(position.slippage_dollars, 0.0, places=6)
+        self.assertEqual(position.cost_model, "GROSS")
+
+    def test_gross_model_unchanged_on_stop_exit(self):
+        position = self._run(PaperCostModel(model="GROSS"), exit_price=3495.0)
+        self.assertAlmostEqual(position.result_dollars, -500.0, places=6)
+
+    def test_realistic_target_exit_charges_costs_only(self):
+        # 10 contracts: 10 x ($1.24 + $0.36) = $16.00 of round-turn cost.
+        position = self._run(PaperCostModel(model="REALISTIC"), exit_price=3510.0)
+        self.assertAlmostEqual(position.result_dollars_gross, 1000.0, places=6)
+        self.assertAlmostEqual(position.commission_dollars, 12.4, places=6)
+        self.assertAlmostEqual(position.fees_dollars, 3.6, places=6)
+        self.assertAlmostEqual(position.slippage_dollars, 0.0, places=6)
+        self.assertAlmostEqual(position.result_dollars, 984.0, places=6)
+        self.assertAlmostEqual(position.result_dollars_net, 984.0, places=6)
+
+    def test_realistic_stop_exit_slips_one_tick_and_charges_costs(self):
+        # Stop 3495.0 touched exactly -> fill 3494.9 after 1 tick ($0.10).
+        # Loss = (3495.0 - 3494.9) ... i.e. 5.1 points x 10 contracts x $10.
+        position = self._run(PaperCostModel(model="REALISTIC"), exit_price=3495.0)
+        self.assertAlmostEqual(position.exit_price, 3494.9, places=6)
+        self.assertAlmostEqual(position.result_dollars_gross, -510.0, places=6)
+        self.assertAlmostEqual(position.slippage_dollars, 10.0, places=6)
+        self.assertAlmostEqual(position.result_dollars, -526.0, places=6)
+
+    def test_realistic_stop_exit_prices_a_gap_through_the_stop(self):
+        # A news print gaps two dollars through the stop: fill at the market
+        # price (3493.0) less one tick, not at the protected 3495.0.
+        position = self._run(PaperCostModel(model="REALISTIC"), exit_price=3493.0)
+        self.assertAlmostEqual(position.exit_price, 3492.9, places=6)
+        self.assertAlmostEqual(position.result_dollars_gross, -710.0, places=6)
+
+    def test_realistic_net_r_is_reported_against_actual_risk(self):
+        position = self._run(PaperCostModel(model="REALISTIC"), exit_price=3510.0)
+        # 984.0 net / 500.0 actual risk
+        self.assertAlmostEqual(position.net_result_r, 1.968, places=6)
+
+    def test_unknown_cost_model_is_rejected(self):
+        with self.assertRaises(ValueError):
+            PaperCostModel(model="NOT_A_MODEL")
+
+    def test_cost_model_reads_environment(self):
+        with patch.dict(
+            os.environ,
+            {
+                "OTR_PAPER_COST_MODEL": "REALISTIC",
+                "OTR_PAPER_ROUND_TURN_COMMISSION": "2.0",
+                "OTR_PAPER_ROUND_TURN_FEES": "0.5",
+                "OTR_PAPER_STOP_SLIPPAGE_TICKS": "2",
+            },
+            clear=False,
+        ):
+            model = PaperCostModel.from_env()
+        self.assertEqual(model.model, "REALISTIC")
+        self.assertTrue(model.enabled)
+        self.assertEqual(model.round_turn_commission, 2.0)
+        self.assertEqual(model.round_turn_fees, 0.5)
+        self.assertEqual(model.slippage_ticks, 2)

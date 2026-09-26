@@ -502,23 +502,65 @@ class StartupRiskEnvelopeTests(unittest.TestCase):
                 "EVAL_MIN_RISK_PER_TRADE": "500",
                 "OTR_EXECUTION_MODE": "PAPER",
                 "OTR_EXECUTION_ARMED": "0",
+                # Explicitly satisfy the two configuration warnings so this
+                # test keeps asserting "a correctly configured envelope is
+                # warning-free".
+                "OTR_PAPER_MAX_MICROS": "40",
+                "OTR_PAPER_COST_MODEL": "REALISTIC",
             },
             clear=False,
         ):
             report = core81._startup_risk_envelope_81()
 
         self.assertEqual(report["envelope"]["EVAL_RISK_PER_TRADE"], 750.0)
+        self.assertEqual(report["envelope"]["PAPER_MAX_MICROS_CAP"], 40)
+        self.assertEqual(report["envelope"]["PAPER_COST_MODEL"], "REALISTIC")
         self.assertFalse(report["broker_armed"])
         self.assertEqual(report["policy_targets"]["a_plus_target_dollars"], FULL_RISK_DOLLARS)
         self.assertEqual(report["policy_targets"]["a_target_dollars"], REDUCED_RISK_DOLLARS)
         self.assertEqual(report["warnings"], [])
 
     def test_warns_when_risk_per_trade_caps_a_plus(self):
-        with patch.dict(os.environ, {"EVAL_RISK_PER_TRADE": "250"}, clear=False):
+        with patch.dict(
+            os.environ,
+            {
+                "EVAL_RISK_PER_TRADE": "250",
+                "OTR_PAPER_MAX_MICROS": "40",
+                "OTR_PAPER_COST_MODEL": "REALISTIC",
+            },
+            clear=False,
+        ):
             report = core81._startup_risk_envelope_81()
 
         self.assertEqual(len(report["warnings"]), 1)
         self.assertIn("caps the A+ setup", report["warnings"][0])
+
+    def test_warns_when_no_contract_ceiling_is_configured(self):
+        with patch.dict(
+            os.environ,
+            {
+                "OTR_PAPER_MAX_MICROS": "",
+                "OTR_EXECUTION_MAX_MICROS": "",
+                "EVAL_MAX_MICROS": "",
+                "OTR_PAPER_COST_MODEL": "REALISTIC",
+            },
+            clear=False,
+        ):
+            report = core81._startup_risk_envelope_81()
+
+        self.assertEqual(report["envelope"]["PAPER_MAX_MICROS_CAP"], 40)
+        self.assertTrue(any("No contract ceiling is configured" in item for item in report["warnings"]))
+
+    def test_warns_when_the_ledger_is_gross_of_costs(self):
+        with patch.dict(
+            os.environ,
+            {"OTR_PAPER_MAX_MICROS": "40", "OTR_PAPER_COST_MODEL": "GROSS"},
+            clear=False,
+        ):
+            report = core81._startup_risk_envelope_81()
+
+        self.assertEqual(report["envelope"]["PAPER_COST_MODEL"], "GROSS")
+        self.assertTrue(any("OTR_PAPER_COST_MODEL=GROSS" in item for item in report["warnings"]))
 
     def test_malformed_env_value_does_not_raise(self):
         with patch.dict(os.environ, {"EVAL_RISK_PER_TRADE": "not-a-number"}, clear=False):

@@ -196,3 +196,55 @@ print(json.dumps({"engine": server_81._promote_engine_81()}))
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Operation81RegimeFloorAuthorityTests(unittest.TestCase):
+    """The regime gate outranks favourable counterfactual evidence.
+
+    The approved 8.1 contract says CHOP/WARMUP and regime-opposed candidates
+    tighten back toward 1.50R and that positive evidence "cannot bypass setup
+    quality, context, regime, exposure or cooldown gates". Ordering the
+    evidence relaxation after the regime tightening used to let a strong
+    counterfactual sample drag a CHOP-regime floor from 1.50R back down to
+    1.20R.
+    """
+
+    STRONG_EVIDENCE = {
+        "samples": 40, "wins": 26, "losses": 14,
+        "win_rate": 0.65, "expectancy_r": 0.55, "usable": True,
+    }
+
+    def _floor(self, *, regime, regime_direction="bullish", grade="A", rr=1.35):
+        # The setup itself is always bullish here (see setup_stub); only the
+        # regime's own direction varies, so "bearish" means regime-opposed.
+        setup = setup_stub(grade=grade, rr=rr)
+        setup.metadata["gold_regime_80"] = {"regime": regime, "direction": regime_direction}
+        return rr_decision81(setup, dict(self.STRONG_EVIDENCE))
+
+    def test_chop_regime_floor_survives_strong_positive_evidence(self):
+        decision = self._floor(regime="CHOP")
+        self.assertEqual(decision.floor, 1.50)
+        self.assertFalse(decision.allowed)
+
+    def test_warmup_regime_floor_survives_strong_positive_evidence(self):
+        decision = self._floor(regime="WARMUP")
+        self.assertEqual(decision.floor, 1.50)
+        self.assertFalse(decision.allowed)
+
+    def test_regime_opposed_floor_survives_strong_positive_evidence(self):
+        decision = self._floor(regime="TREND_EXPANSION", regime_direction="bearish")
+        self.assertEqual(decision.floor, 1.50)
+        self.assertFalse(decision.allowed)
+
+    def test_aligned_regime_still_allows_the_evidence_relaxation(self):
+        decision = self._floor(regime="TREND_EXPANSION", regime_direction="bullish")
+        self.assertEqual(decision.floor, 1.20)
+        self.assertTrue(decision.allowed)
+
+    def test_negative_evidence_tightens_every_regime(self):
+        setup = setup_stub(grade="A", rr=1.35)
+        setup.metadata["gold_regime_80"] = {"regime": "TREND_EXPANSION", "direction": "bullish"}
+        evidence = {"samples": 30, "wins": 10, "losses": 20, "win_rate": 1 / 3, "expectancy_r": -0.22, "usable": True}
+        decision = rr_decision81(setup, evidence)
+        self.assertEqual(decision.floor, 1.50)
+        self.assertFalse(decision.allowed)

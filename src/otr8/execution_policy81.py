@@ -174,22 +174,29 @@ def rr_decision81(setup, evidence: dict[str, Any] | None = None) -> RRDecision81
     else:
         floor = 1.50
 
+    # A regime/context tightening is authoritative. The approved 8.1 contract
+    # says positive counterfactual evidence can never bypass the regime gate, so
+    # the relaxation below is only allowed when no hard tightening applied.
     regime = metadata.get("gold_regime_80", {}) or {}
     regime_name = str(regime.get("regime") or "")
     regime_direction = str(regime.get("direction") or "neutral")
+    regime_tightened = False
     if regime_name in {"CHOP", "WARMUP"}:
         floor = max(floor, 1.50)
+        regime_tightened = True
     if regime_direction not in {"", "neutral", str(setup.direction)}:
         floor = max(floor, 1.50)
+        regime_tightened = True
 
     # Evidence can tighten a weak lane immediately, but it only relaxes A-tier
-    # from 1.30R to 1.20R after a meaningful same-strategy/regime sample.
+    # from 1.30R to 1.20R after a meaningful same-strategy/regime sample -- and
+    # never against a floor the regime engine already raised.
     if evidence.get("usable"):
         exp_r = _number(evidence.get("expectancy_r"), -99.0)
         win_rate = _number(evidence.get("win_rate"), 0.0)
         if exp_r <= 0:
             floor = max(floor, 1.50)
-        elif grade == "A" and exp_r >= 0.20 and win_rate >= 0.50:
+        elif grade == "A" and not regime_tightened and exp_r >= 0.20 and win_rate >= 0.50:
             floor = min(floor, 1.20)
 
     # The very bottom of the dynamic band is reserved for a real catalyst.

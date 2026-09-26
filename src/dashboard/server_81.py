@@ -10,7 +10,13 @@ from fastapi.responses import HTMLResponse
 from src.dashboard import server_80 as base
 from src.integrations.nautilus_shadow.ledger import ensure_parity_ledger, run_recent_gold_parity
 from src.integrations.vibe_research.routes import install_vibe_research_routes
-from src.execution.paper import PAPER_ACCOUNTING_VERSION_MGC_WHOLE_CONTRACT_V1
+from src.execution.paper import (
+    DEFAULT_PAPER_MAX_MICROS,
+    PAPER_ACCOUNTING_VERSION_MGC_WHOLE_CONTRACT_V1,
+    PaperCostModel,
+    cap_from_default,
+    default_max_micros_cap,
+)
 from src.otr8.execution_policy81 import FULL_RISK_DOLLARS, REDUCED_RISK_DOLLARS
 from src.research.conversion_funnel81 import conversion_funnel81
 from src.research.run_archive81 import list_run_archives81, start_fresh_run81, scoped_archive_rows81
@@ -482,6 +488,8 @@ def _startup_risk_envelope_81() -> dict:
         "EVAL_SESSION_PROFIT_CAP": config.session_profit_cap,
         "EVAL_CONTINUE_AFTER_TARGET": config.continue_after_target,
         "OTR_EXECUTION_MODE": execution_mode,
+        "PAPER_MAX_MICROS_CAP": default_max_micros_cap(),
+        "PAPER_COST_MODEL": PaperCostModel.from_env().model,
     }
     policy_targets = {
         "a_plus_target_dollars": FULL_RISK_DOLLARS,
@@ -504,6 +512,27 @@ def _startup_risk_envelope_81() -> dict:
         warning = (
             f"EVAL_RISK_PER_TRADE=${config.risk_per_trade:.2f} caps the A+ setup below its "
             f"Operation 8.1 target of ${FULL_RISK_DOLLARS:.2f}."
+        )
+        warnings.append(warning)
+        print(f"Operation 8.1 RISK ENVELOPE WARN: {warning}", flush=True)
+
+    # A paper/replay ledger sized at one micro contract still "works" -- it just
+    # reports P&L at a fraction of the intended scale, which looks like a
+    # strategy problem rather than a config problem. Surface it at boot.
+    if cap_from_default():
+        warning = (
+            f"No contract ceiling is configured (OTR_PAPER_MAX_MICROS / OTR_EXECUTION_MAX_MICROS / "
+            f"EVAL_MAX_MICROS); paper sizing fell back to the {DEFAULT_PAPER_MAX_MICROS}-contract default. "
+            "Set OTR_PAPER_MAX_MICROS explicitly so the research ledger and the broker path agree."
+        )
+        warnings.append(warning)
+        print(f"Operation 8.1 RISK ENVELOPE WARN: {warning}", flush=True)
+
+    if PaperCostModel.from_env().model == "GROSS":
+        warning = (
+            "OTR_PAPER_COST_MODEL=GROSS: the paper ledger fills every stop exactly at the stop price "
+            "and charges no commission or fees. Reported expectancy is an upper bound. Set "
+            "OTR_PAPER_COST_MODEL=REALISTIC before judging profitability."
         )
         warnings.append(warning)
         print(f"Operation 8.1 RISK ENVELOPE WARN: {warning}", flush=True)
