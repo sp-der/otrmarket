@@ -264,6 +264,44 @@ def resolve_signal_contract(connection: sqlite3.Connection, candidate: GoldTrade
     return fallback
 
 
+def retained_coverage_reaches(connection: sqlite3.Connection, source: str | None, start: datetime) -> bool:
+    """True if retained `market_quotes` history for this source/symbol reaches
+    back to or before `start` -- i.e. retention has not rolled past the
+    beginning of the requested window.
+
+    This is deliberately independent of how many ticks fall inside any
+    particular [start, end] interval: a legitimate quiet period in the market
+    can leave a candidate's first in-window tick well after `start` even when
+    retained history is complete, and no fixed number of seconds can tell
+    those two situations apart from inside the window alone. Only checking
+    where retained history for this source actually begins proves it either
+    way.
+    """
+    if source:
+        row = connection.execute(
+            """
+            SELECT COALESCE(exchange_time, received_at)
+            FROM market_quotes
+            WHERE symbol = 'GC' AND source = ?
+            ORDER BY id ASC LIMIT 1
+            """,
+            (source,),
+        ).fetchone()
+    else:
+        row = connection.execute(
+            """
+            SELECT COALESCE(exchange_time, received_at)
+            FROM market_quotes
+            WHERE symbol = 'GC' AND source LIKE 'ninjatrader:%'
+            ORDER BY id ASC LIMIT 1
+            """
+        ).fetchone()
+    if row is None:
+        return False
+    earliest = _parse_time(row[0])
+    return earliest is not None and earliest <= start
+
+
 def load_candidate_ticks(
     connection: sqlite3.Connection,
     candidate: GoldTradeCandidate,
@@ -286,8 +324,14 @@ def load_candidate_ticks(
     trade replayed days later, once enough newer quotes had accumulated, would
     never see its own entry tick at all. `market_quotes` is already bounded per
     symbol by `prune_market_quotes`'s retention window, so this cannot scan an
-    unbounded table; `max_ticks` is now applied only as a defensive cap on the
-    already-filtered result, preserving both endpoints if it is ever exceeded.
+    unbounded table.
+
+    `max_ticks` is a safety ceiling, not a "most recent" cap: if the
+    genuinely in-window tick count exceeds it, that is reported as an
+    explicit error rather than silently keeping only part of the window. A
+    dropped tick could be the one that touched the stop or target, which
+    would make the resulting execution-path verdict fabricated instead of
+    conservative -- see the raise below.
     """
     start = candidate.created_at
     end_anchor = candidate.closed_at or candidate.opened_at or candidate.created_at
@@ -340,12 +384,14 @@ def load_candidate_ticks(
     ticks.sort(key=lambda item: item.timestamp)
 
     if len(ticks) > bounded:
-        # Effectively unreachable today (max_ticks default already matches the
-        # GC retention ceiling), but if retention ever grows, keep both
-        # endpoints rather than truncating from one side only -- dropping the
-        # tail would silently discard the exit/target touch.
-        half = bounded // 2
-        ticks = ticks[:half] + ticks[-(bounded - half):]
+        raise ValueError(
+            f"Gold candidate {candidate.setup_id} has {len(ticks)} retained ticks inside its "
+            f"execution window, exceeding the {bounded}-tick safety bound; refusing to silently "
+            "subsample an execution path -- a discarded tick could be the one that touched the "
+            "stop or target, which would make the resulting parity verdict fabricated rather "
+            "than conservative. Pass a larger max_ticks explicitly, or treat this candidate as "
+            "unresolvable data volume rather than a pass/fail verdict."
+        )
     return ticks
 
 
@@ -412,28 +458,27 @@ def run_candidate_parity(
 ) -> ParityLedgerRecord:
     signal = resolve_signal_contract(connection, candidate)
     execution = execution_contract("GC", signal or None)
+    source = f"ninjatrader:{signal}" if signal else None
+
+    # Retention-boundary check FIRST and independent of how many ticks land
+    # inside [start, end]: a real trade window can contain two or more ticks
+    # even when retention has rolled past the entry, if the window is long
+    # enough. Only checking where retained history for this source actually
+    # begins proves coverage one way or the other; a fixed grace period does
+    # not, because a legitimate market-data gap can just as easily exceed it.
+    if not retained_coverage_reaches(connection, source, candidate.created_at):
+        raise ValueError(
+            f"Retained Gold quote history for {candidate.setup_id} does not reach back to its "
+            f"paper entry window start ({candidate.created_at.isoformat()}); retention has "
+            "rolled past this trade's entry and no execution verdict can be produced "
+            "(insufficient coverage)"
+        )
+
     ticks = load_candidate_ticks(connection, candidate, signal_contract=signal)
     if len(ticks) < 2:
         raise ValueError(
             f"Not enough retained post-setup Gold ticks for {candidate.setup_id}; "
             "the raw quote retention window may have rolled past this trade"
-        )
-
-    # Coverage check, not a fill check: even with the corrected query above, a
-    # trade held long enough (or replayed late enough) can have its actual
-    # entry moment already aged out of the market_quotes retention window.
-    # Fetching only quotes >= created_at can never surface that -- it will
-    # just return a set that appears to start "at the beginning" of whatever
-    # was retained. Compare against the requested start explicitly so a
-    # genuinely incomplete window fails loudly as INSUFFICIENT_DATA instead of
-    # silently producing a PENDING/no-fill verdict from a truncated replay.
-    coverage_tolerance = timedelta(seconds=5)
-    if ticks[0].timestamp > candidate.created_at + coverage_tolerance:
-        raise ValueError(
-            f"Retained Gold quotes for {candidate.setup_id} begin at "
-            f"{ticks[0].timestamp.isoformat()}, after the paper entry window started at "
-            f"{candidate.created_at.isoformat()}; retention has rolled past this trade's "
-            "entry and no execution verdict can be produced (insufficient coverage)"
         )
 
     quantity = shadow_quantity(candidate)

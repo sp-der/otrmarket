@@ -200,14 +200,25 @@ def process_one_auto_certification(
         record = execute(connection, candidate)
     except ValueError as exc:
         message = str(exc)
-        retention_error = (
-            "Not enough retained post-setup Gold ticks" in message
-            or "insufficient coverage" in message
-        )
-        if retention_error and attempts < MAX_ATTEMPTS:
+        # These are two distinct failure modes, not one "retention error":
+        # "insufficient coverage" means retained history has already been
+        # pruned past this trade's entry -- more time (and more attempts)
+        # cannot un-delete those rows, so it must never sit in WAITING_TICKS
+        # waiting for a retry that can only ever fail the same way. "Not
+        # enough retained post-setup Gold ticks" instead means coverage of
+        # the window's start is fine but too few ticks have landed inside it
+        # yet (e.g. ingestion lag right after a trade closes) -- that one
+        # can genuinely resolve itself, so it keeps the existing
+        # retry-then-give-up behavior.
+        history_pruned = "insufficient coverage" in message
+        awaiting_ticks = "Not enough retained post-setup Gold ticks" in message
+        if history_pruned:
+            status = "UNAVAILABLE_RETENTION"
+            completed = True
+        elif awaiting_ticks and attempts < MAX_ATTEMPTS:
             status = "WAITING_TICKS"
             completed = False
-        elif retention_error:
+        elif awaiting_ticks:
             status = "UNAVAILABLE_RETENTION"
             completed = True
         elif attempts < MAX_ATTEMPTS:
