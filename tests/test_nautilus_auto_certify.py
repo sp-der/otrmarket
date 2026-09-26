@@ -171,6 +171,38 @@ class NautilusAutoCertifyTests(unittest.TestCase):
         self.assertEqual(job[1], 3)
         self.assertIsNotNone(job[2])
 
+    def test_insufficient_coverage_is_terminal_and_never_retries(self):
+        # A pruned/insufficient START-of-window coverage failure cannot be
+        # fixed by waiting for more ticks to arrive -- retention has already
+        # deleted the rows it would need. This must reach UNAVAILABLE_RETENTION
+        # on the very first attempt, unlike the "not enough ticks yet" case
+        # covered by test_retention_failure_retries_three_times_then_quarantines_old_trade.
+        before = self._trade_snapshot()
+
+        def pruned_runner(connection, candidate):
+            raise ValueError(
+                f"Retained Gold quote history for {candidate.setup_id} does not reach back to "
+                "its paper entry window start (2026-09-07T13:30:00+00:00); retention has rolled "
+                "past this trade's entry and no execution verdict can be produced "
+                "(insufficient coverage)"
+            )
+
+        first = process_one_auto_certification(self.connection, runner=pruned_runner)
+
+        self.assertEqual(first["status"], "UNAVAILABLE_RETENTION")
+        self.assertEqual(self._trade_snapshot(), before)
+
+        job = self.connection.execute(
+            "SELECT status,attempts,completed_at FROM nautilus_shadow_auto_jobs WHERE setup_id='auto-1'"
+        ).fetchone()
+        self.assertEqual(job[0], "UNAVAILABLE_RETENTION")
+        self.assertEqual(job[1], 1)
+        self.assertIsNotNone(job[2])
+
+        # A second call must find nothing left to claim -- the job already
+        # completed, so it is never handed back for another attempt.
+        self.assertIsNone(process_one_auto_certification(self.connection, runner=pruned_runner))
+
     def test_interrupted_running_job_is_requeued_after_restart(self):
         ensure_auto_certify_schema(self.connection)
         self.connection.execute(
