@@ -114,6 +114,17 @@ class EvaluationDecision:
     snapshot: dict
 
 
+# CME Globex trading days roll at 18:00 New York time. Shifting by six hours
+# maps 18:00 ET onto the next calendar date, so a Sunday-evening or
+# Monday-evening loss is charged to the trading day it actually belongs to
+# instead of being forgotten at midnight (pre-live audit fix).
+_TRADING_DAY_SHIFT = timedelta(hours=6)
+
+
+def _trading_day(value: datetime):
+    return (value.astimezone(NY) + _TRADING_DAY_SHIFT).date()
+
+
 def _parse_dt(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -192,7 +203,7 @@ class EvaluationRiskGuard:
         if reference_time.tzinfo is None:
             reference_time = reference_time.replace(tzinfo=timezone.utc)
         reference_time = reference_time.astimezone(timezone.utc)
-        current_day = reference_time.astimezone(NY).date()
+        current_day = _trading_day(reference_time)
         current_session = _session_bucket(reference_time)
         rows = self._rows(connection)
 
@@ -219,7 +230,7 @@ class EvaluationRiskGuard:
             )
 
             if opened_at:
-                day = opened_at.astimezone(NY).date()
+                day = _trading_day(opened_at)
                 trades_by_day[day] = trades_by_day.get(day, 0) + 1
                 if belongs_to_current_session:
                     session_trades += 1
@@ -228,10 +239,10 @@ class EvaluationRiskGuard:
                 realized += result_dollars
                 closed_at = _parse_dt(row["closed_at"])
                 if closed_at:
-                    day = closed_at.astimezone(NY).date()
+                    day = _trading_day(closed_at)
                     daily_results[day] = daily_results.get(day, 0.0) + result_dollars
                 marker = str(row["result"] or "")
-                if closed_at and closed_at.astimezone(NY).date() == current_day:
+                if closed_at and _trading_day(closed_at) == current_day:
                     closed_today_sequence.append(marker)
                 if belongs_to_current_session:
                     session_pnl += result_dollars

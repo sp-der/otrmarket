@@ -33,6 +33,7 @@ def build_execution_intent(
     config: ExecutionConfig,
     signal_contract: str = "",
     now=None,
+    entry_lifetime_seconds: int | None = None,
 ) -> ExecutionIntent:
     now = now or utc_now()
     entry, stop, target = normalize_trade_prices(
@@ -92,5 +93,12 @@ def build_execution_intent(
             "original_entry": float(setup.entry_price),
             "original_stop": float(setup.stop_price),
             "original_target": float(setup.target_price),
+            # Wall-clock deadline for the resting entry order at the broker.
+            # The bridge is told to cancel an unfilled entry after this.
+            "entry_expires_at": (
+                (now + timedelta(seconds=int(entry_lifetime_seconds))).isoformat()
+                if entry_lifetime_seconds and int(entry_lifetime_seconds) > 0
+                else None
+            ),
         },
     )

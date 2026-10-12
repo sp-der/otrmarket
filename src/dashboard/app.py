@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import math
 import os
 from pathlib import Path
 
@@ -66,14 +67,20 @@ class BridgeBatchPayload(BaseModel):
     ticks: list[BridgeTickPayload] = Field(min_length=1, max_length=5000)
 
 
+# Pre-live audit: an empty DASHBOARD_PASSWORD used to switch authentication
+# off entirely, exposing the kill-switch reset and run rotation to anyone. Auth
+# is now always required unless a local developer explicitly opts out.
+ALLOW_UNAUTHENTICATED_DASHBOARD = os.getenv("OTR_DASHBOARD_ALLOW_NO_PASSWORD", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def auth_required() -> bool:
-    return bool(DASHBOARD_PASSWORD)
+    return bool(DASHBOARD_PASSWORD) or not ALLOW_UNAUTHENTICATED_DASHBOARD
 
 
 def valid_cookie(cookie_value: str | None) -> bool:
     if not auth_required():
         return True
-    if not cookie_value or not SESSION_SECRET:
+    if not cookie_value or not SESSION_SECRET or not DASHBOARD_PASSWORD:
         return False
     expected = hmac.new(
         SESSION_SECRET.encode("utf-8"),
@@ -250,11 +257,19 @@ async def health(response: Response):
     }
 
 
+def _valid_price(value) -> bool:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(number) and number > 0
+
+
 def require_bridge_key(request: Request) -> None:
     if not BRIDGE_KEY:
         raise HTTPException(status_code=503, detail="OTR bridge key is not configured")
     supplied = request.headers.get("X-OTR-Bridge-Key", "")
-    if not hmac.compare_digest(supplied, BRIDGE_KEY):
+    if not hmac.compare_digest(supplied.encode("utf-8"), BRIDGE_KEY.encode("utf-8")):
         raise HTTPException(status_code=401, detail="Invalid OTR bridge key")
 
 
@@ -264,12 +279,18 @@ async def bridge_ticks(payload: BridgeBatchPayload, request: Request):
 
     rows = []
     accepted = {"NQ": 0, "ES": 0, "GC": 0}
+    rejected: dict[str, int] = {}
     for item in payload.ticks:
         try:
             symbol = normalize_bridge_symbol(item.symbol)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+        if not _valid_price(item.last) or (item.bid is not None and not _valid_price(item.bid)) or (item.ask is not None and not _valid_price(item.ask)):
+            # A 0/negative/inf tick would set a candle low to 0 or book a
+            # full-R paper stop. Drop it rather than poison the series.
+            rejected[symbol] = rejected.get(symbol, 0) + 1
+            continue
         rows.append(
             (
                 item.timestamp,
@@ -289,7 +310,7 @@ async def bridge_ticks(payload: BridgeBatchPayload, request: Request):
     finally:
         connection.close()
 
-    return {"ok": True, "inserted": inserted, "symbols": accepted}
+    return {"ok": True, "inserted": inserted, "symbols": accepted, "rejected": rejected}
 
 
 @app.get(f"{BASE_PATH}/api/auth-status")
@@ -304,7 +325,9 @@ async def auth_status(request: Request):
 async def login(payload: LoginPayload, response: Response):
     if not auth_required():
         return {"ok": True}
-    if not hmac.compare_digest(payload.password, DASHBOARD_PASSWORD):
+    if not DASHBOARD_PASSWORD:
+        raise HTTPException(status_code=503, detail="Dashboard password is not configured")
+    if not hmac.compare_digest(payload.password.encode("utf-8"), DASHBOARD_PASSWORD.encode("utf-8")):
         raise HTTPException(status_code=401, detail="Incorrect password")
 
     response.set_cookie(

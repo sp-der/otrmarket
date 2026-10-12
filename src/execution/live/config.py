@@ -27,6 +27,15 @@ def _float(name: str, default: float) -> float:
         return default
 
 
+def _symbols(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    values = tuple(item.strip().upper() for item in raw.split(",") if item.strip())
+    # An empty allowlist means nothing may be transmitted, never "everything".
+    return values
+
+
 @dataclass(frozen=True)
 class ExecutionConfig:
     mode: ExecutionMode = ExecutionMode.PAPER
@@ -40,6 +49,17 @@ class ExecutionConfig:
     heartbeat_ttl_seconds: int = 15
     reconciliation_ttl_seconds: int = 15
     claimed_redelivery_seconds: int = 5
+    # Pre-live audit hardening. These are execution-layer (broker command)
+    # limits enforced independently of the paper/strategy ledger. They only
+    # matter once broker transmission is possible (SIM_BRIDGE/LIVE + armed).
+    allowed_symbols: tuple[str, ...] = ("GC",)
+    max_active_commands: int = 1
+    max_daily_loss_dollars: float = 750.0
+    max_trades_per_day: int = 2
+    max_data_age_seconds: int = 10
+    commission_per_contract_rt: float = 0.0
+    session_tz: str = "America/New_York"
+    trading_day_roll_hour: int = 18
 
     @classmethod
     def from_env(cls) -> "ExecutionConfig":
@@ -60,6 +80,14 @@ class ExecutionConfig:
             heartbeat_ttl_seconds=max(5, _int("OTR_EXECUTION_HEARTBEAT_TTL_SECONDS", 15)),
             reconciliation_ttl_seconds=max(5, _int("OTR_EXECUTION_RECONCILIATION_TTL_SECONDS", 15)),
             claimed_redelivery_seconds=max(2, _int("OTR_EXECUTION_CLAIM_REDELIVERY_SECONDS", 5)),
+            allowed_symbols=_symbols("OTR_EXECUTION_ALLOWED_SYMBOLS", ("GC",)),
+            max_active_commands=max(1, _int("OTR_EXECUTION_MAX_ACTIVE_COMMANDS", 1)),
+            max_daily_loss_dollars=max(1.0, _float("OTR_EXECUTION_MAX_DAILY_LOSS", 750.0)),
+            max_trades_per_day=max(1, _int("OTR_EXECUTION_MAX_TRADES_PER_DAY", 2)),
+            max_data_age_seconds=max(1, _int("OTR_EXECUTION_MAX_DATA_AGE_SECONDS", 10)),
+            commission_per_contract_rt=max(0.0, _float("OTR_EXECUTION_COMMISSION_PER_CONTRACT_RT", 0.0)),
+            session_tz=os.getenv("OTR_SESSION_TZ", "America/New_York").strip() or "America/New_York",
+            trading_day_roll_hour=min(23, max(0, _int("OTR_EXECUTION_TRADING_DAY_ROLL_HOUR", 18))),
         )
 
     @property

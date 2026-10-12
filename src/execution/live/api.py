@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any, Callable
 
 from fastapi import APIRouter, HTTPException, Request
@@ -10,7 +11,18 @@ from src.storage.database import get_connection
 from .config import ExecutionConfig
 from .models import utc_now
 from .safety import bridge_dispatch_ready
-from .store import ensure_schema, execution_status, poll_commands, record_bridge_snapshot, record_event, set_state
+from .store import (
+    cancel_directives,
+    cancel_pending_commands,
+    daily_execution_ledger,
+    ensure_schema,
+    execution_status,
+    get_state,
+    poll_commands,
+    record_bridge_snapshot,
+    record_event,
+    set_state,
+)
 
 
 BASE = "/market/api"
@@ -58,11 +70,20 @@ def build_router(*, require_http_auth: Callable[[Request], None], require_bridge
         connection = get_connection()
         try:
             ensure_schema(connection)
+            kill_switch, _ = get_state(connection, "kill_switch", False)
+            # Cancel directives are delivered even when dispatch is blocked:
+            # a kill switch or stale entry must still reach resting orders.
+            cancels = cancel_directives(
+                connection,
+                account=config.account,
+                mode=config.mode.value,
+                kill_switch=bool(kill_switch) or os.getenv("OTR_EXECUTION_KILL_SWITCH", "0").strip().lower() in {"1", "true", "yes", "on"},
+            )
             ready = bridge_dispatch_ready(connection, config)
             if not ready.allowed:
-                return {"ok": True, "dispatch_ready": False, "reason": ready.reason, "code": ready.code, "mode": config.mode.value, "account": config.account, "commands": []}
+                return {"ok": True, "dispatch_ready": False, "reason": ready.reason, "code": ready.code, "mode": config.mode.value, "account": config.account, "commands": [], "cancels": cancels}
             commands = poll_commands(connection, account=config.account, mode=config.mode.value, max_items=limit, redelivery_seconds=config.claimed_redelivery_seconds)
-            return {"ok": True, "dispatch_ready": True, "mode": config.mode.value, "account": config.account, "commands": commands}
+            return {"ok": True, "dispatch_ready": True, "mode": config.mode.value, "account": config.account, "commands": commands, "cancels": cancels}
         finally:
             connection.close()
 
@@ -106,6 +127,13 @@ def build_router(*, require_http_auth: Callable[[Request], None], require_bridge
         try:
             status = execution_status(connection)
             dispatch = bridge_dispatch_ready(connection, config)
+            status["daily_ledger"] = daily_execution_ledger(
+                connection,
+                account=config.account,
+                tz_name=config.session_tz,
+                roll_hour=config.trading_day_roll_hour,
+                commission_per_contract_rt=config.commission_per_contract_rt,
+            )
         finally:
             connection.close()
         status["config"] = {
@@ -117,6 +145,11 @@ def build_router(*, require_http_auth: Callable[[Request], None], require_bridge
             "certified": config.certified,
             "max_micros": config.max_micros,
             "max_risk_dollars": config.max_risk_dollars,
+            "allowed_symbols": list(config.allowed_symbols),
+            "max_active_commands": config.max_active_commands,
+            "max_daily_loss_dollars": config.max_daily_loss_dollars,
+            "max_trades_per_day": config.max_trades_per_day,
+            "max_data_age_seconds": config.max_data_age_seconds,
         }
         status["dispatch"] = dispatch.to_dict()
         status["broker_transmission_possible"] = bool(dispatch.allowed)
@@ -133,6 +166,11 @@ def build_router(*, require_http_auth: Callable[[Request], None], require_bridge
         connection = get_connection()
         try:
             set_state(connection, "kill_switch", payload.enabled)
+            cancelled = 0
+            if payload.enabled:
+                # Undelivered commands must never be dispatched after a later
+                # reset; delivered-but-unfilled entries get cancel directives.
+                cancelled = cancel_pending_commands(connection, "Kill switch engaged before broker delivery.")
             set_state(
                 connection,
                 "kill_switch_audit",
@@ -142,7 +180,7 @@ def build_router(*, require_http_auth: Callable[[Request], None], require_bridge
                     "changed_at": utc_now().isoformat(),
                 },
             )
-            return {"ok": True, "enabled": payload.enabled, "reason": payload.reason}
+            return {"ok": True, "enabled": payload.enabled, "reason": payload.reason, "cancelled_pending": cancelled}
         finally:
             connection.close()
 

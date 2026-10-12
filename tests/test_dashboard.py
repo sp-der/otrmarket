@@ -219,7 +219,9 @@ class DashboardTests(unittest.TestCase):
         from src.dashboard import app as dashboard_app
 
         request = Request({"type": "http", "headers": []})
-        with patch.object(dashboard_app, "repository", self.repo):
+        with patch.object(dashboard_app, "repository", self.repo), \
+             patch.object(dashboard_app, "DASHBOARD_PASSWORD", ""), \
+             patch.object(dashboard_app, "ALLOW_UNAUTHENTICATED_DASHBOARD", True):
             api_chart = asyncio.run(
                 dashboard_app.execution_chart(request, "nq", "1m", 50)
             )

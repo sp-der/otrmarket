@@ -199,6 +199,14 @@ _original_paper_register_72 = runtime.paper.register_setup
 def _register_setup_72(setup, *, risk_dollars=None, guard_reason=None):
     """Preserve simulated execution, then mirror only fully-approved setups."""
     position = _original_paper_register_72(setup, risk_dollars=risk_dollars, guard_reason=guard_reason)
+    if str(getattr(position, "status", "") or "").upper() != "PENDING":
+        # The paper ledger refused this setup (e.g. CANNOT_SIZE_MGC). A broker
+        # order must never exist for an idea the OTR ledger is not tracking.
+        runtime.console.log(
+            f"EXECUTION 7.2 SKIPPED: {setup.symbol} {setup.timeframe} paper status "
+            f"{getattr(position, 'status', None)}; no broker command mirrored."
+        )
+        return position
     try:
         result = execution_gateway.handle_approved_setup(setup, risk_dollars=risk_dollars, guard_reason=guard_reason)
         runtime.console.log(
