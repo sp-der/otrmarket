@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 import hashlib
 import math
 
@@ -20,6 +20,17 @@ def _quality(setup) -> tuple[str, float | None]:
     except (TypeError, ValueError):
         score = None
     return grade, score
+
+
+def _signal_event_time(setup):
+    raw = (getattr(setup, "metadata", {}) or {}).get("pending_registered_at_81")
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def _strategy(setup) -> str:
@@ -58,6 +69,7 @@ def build_execution_intent(
         )
 
     actual_risk = quantity * per_contract_risk
+    signal_event = _signal_event_time(setup)
     grade, score = _quality(setup)
     setup_id = str(setup.setup_id)
     command_id = hashlib.sha256(f"OTR72|{setup_id}".encode("utf-8")).hexdigest()[:24]
@@ -98,6 +110,15 @@ def build_execution_intent(
             "entry_expires_at": (
                 (now + timedelta(seconds=int(entry_lifetime_seconds))).isoformat()
                 if entry_lifetime_seconds and int(entry_lifetime_seconds) > 0
+                else None
+            ),
+            # Market event time the approved plan entered the order book
+            # (Operation 8.1 registration clock). Used by the explicit
+            # REPLAY data-clock policy and the WALL backlog check.
+            "signal_event_at": signal_event.isoformat() if signal_event else None,
+            "entry_expires_event_at": (
+                (signal_event + timedelta(seconds=int(entry_lifetime_seconds))).isoformat()
+                if signal_event and entry_lifetime_seconds and int(entry_lifetime_seconds) > 0
                 else None
             ),
         },

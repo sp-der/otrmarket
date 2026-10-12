@@ -71,7 +71,7 @@ def sim_config(**overrides):
         max_micros=40,
         max_risk_dollars=250.0,
         max_daily_loss_dollars=750.0,
-        max_trades_per_day=2,
+        max_trades_per_day=0,  # production default: unlimited
         max_active_commands=1,
         max_data_age_seconds=10,
     )
@@ -276,13 +276,23 @@ class DataFreshnessTests(_GatewayHarness):
 
     def test_backlog_replay_with_old_exchange_time_blocks_entries(self):
         self.reconcile()
-        # Freshly ingested (server clock) but carrying a 20-minute-old
-        # exchange timestamp: an engine restart replaying its backlog.
+        # Freshly ingested (server clock) but carrying 20-minute-old exchange
+        # timestamps: an engine restart replaying its backlog in LIVE.
+        self.connection.execute("DELETE FROM market_quotes")
+        for offset in (21, 20):
+            self.connection.execute(
+                "INSERT INTO market_quotes(symbol, source, received_at, ingested_at) VALUES ('GC', 'ninjatrader:GC 12-26', ?, ?)",
+                ((NOW - timedelta(minutes=offset)).isoformat(), NOW.isoformat()),
+            )
+        self.assertEqual(evaluate_intent(self.connection, self.intent(), sim_config(), now=NOW).code, "MARKET_DATA_NOT_CURRENT")
+
+    def test_feed_running_backwards_blocks_entries(self):
+        self.reconcile()
         self.connection.execute(
             "INSERT INTO market_quotes(symbol, source, received_at, ingested_at) VALUES ('GC', 'ninjatrader:GC 12-26', ?, ?)",
             ((NOW - timedelta(minutes=20)).isoformat(), NOW.isoformat()),
         )
-        self.assertEqual(evaluate_intent(self.connection, self.intent(), sim_config(), now=NOW).code, "MARKET_DATA_NOT_CURRENT")
+        self.assertEqual(evaluate_intent(self.connection, self.intent(), sim_config(), now=NOW).code, "MARKET_DATA_REORDERED")
 
     def test_ninjatrader_seven_digit_timestamp_is_accepted(self):
         self.reconcile()
@@ -312,6 +322,7 @@ class ExposureAndDailyLimitTests(_GatewayHarness):
     def test_two_simultaneous_signals_cannot_both_queue(self):
         # The gateway evaluates against the real wall clock.
         wall = datetime.now(UTC)
+        self.connection.execute("DELETE FROM market_quotes")
         self.fresh_quote(wall)
         self.reconcile(now=wall)
         gateway = ExecutionGateway(sim_config())
@@ -349,12 +360,12 @@ class ExposureAndDailyLimitTests(_GatewayHarness):
         self.assertEqual(ledger["loss_used"], 0.0)
         self.assertTrue(evaluate_intent(self.connection, self.intent("w2"), config, now=NOW).allowed)
 
-    def test_max_trade_count_blocks_additional_entries(self):
+    def test_default_config_never_trade_count_blocks(self):
         self.reconcile()
         config = sim_config(max_daily_loss_dollars=10_000)
-        self.close_trade(self.intent("t1"), entry=4300.0, exit_price=4315.0)
-        self.close_trade(self.intent("t2"), entry=4300.0, exit_price=4315.0)
-        self.assertEqual(evaluate_intent(self.connection, self.intent("t3"), config, now=NOW).code, "DAILY_TRADE_LIMIT")
+        for ident in ("t1", "t2", "t3", "t4"):
+            self.close_trade(self.intent(ident), entry=4300.0, exit_price=4315.0)
+        self.assertTrue(evaluate_intent(self.connection, self.intent("t5"), config, now=NOW).allowed)
 
     def test_lockout_is_reconstructed_after_restart(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -501,6 +512,270 @@ class TickAndAuthHardeningTests(unittest.TestCase):
             self.assertFalse(dashboard.valid_cookie(None))
             self.assertEqual(client.post("/market/api/login", json={"password": ""}).status_code, 503)
             self.assertEqual(client.get("/market/api/snapshot").status_code, 401)
+
+
+class UnlimitedQualifiedTradesTests(_GatewayHarness):
+    """Owner policy: unlimited good trades, limited bad risk."""
+
+    def test_default_has_no_daily_trade_cap(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(ExecutionConfig.from_env().max_trades_per_day, 0)
+        self.assertEqual(ExecutionConfig().max_trades_per_day, 0)
+
+    def test_third_fourth_and_fifth_qualified_trades_are_allowed(self):
+        self.reconcile()
+        config = sim_config(max_trades_per_day=0, max_daily_loss_dollars=1_000.0)
+        # Four completed trades (two wins, two losses) -> net +$1,000.
+        self.close_trade(self.intent("u1"), entry=4300.0, exit_price=4295.0)  # -250
+        self.close_trade(self.intent("u2"), entry=4300.0, exit_price=4315.0)  # +750
+        for ident in ("u3", "u4", "u5"):
+            decision = evaluate_intent(self.connection, self.intent(ident), config, now=NOW)
+            self.assertTrue(decision.allowed, f"{ident}: {decision.code} {decision.reason}")
+            self.close_trade(self.intent(ident), entry=4300.0, exit_price=4315.0 if ident != "u4" else 4295.0)
+        self.assertEqual(daily_execution_ledger(self.connection, account="Sim101", now=NOW)["trades"], 5)
+        self.assertTrue(evaluate_intent(self.connection, self.intent("u6"), config, now=NOW).allowed)
+
+    def test_no_cooldown_after_a_win(self):
+        self.reconcile()
+        self.close_trade(self.intent("win"), entry=4300.0, exit_price=4315.0)
+        self.assertTrue(evaluate_intent(self.connection, self.intent("next"), sim_config(), now=NOW).allowed)
+
+    def test_loss_capacity_still_blocks_with_unlimited_trades(self):
+        self.reconcile()
+        config = sim_config(max_trades_per_day=0, max_daily_loss_dollars=750.0)
+        self.close_trade(self.intent("x1"), entry=4300.0, exit_price=4295.0)
+        self.close_trade(self.intent("x2"), entry=4300.0, exit_price=4295.0)
+        self.close_trade(self.intent("x3"), entry=4300.0, exit_price=4295.0)
+        self.assertEqual(evaluate_intent(self.connection, self.intent("x4"), config, now=NOW).code, "DAILY_LOSS_LIMIT")
+
+    def test_one_active_gold_idea_still_enforced_with_unlimited_trades(self):
+        self.reconcile()
+        enqueue_intent(self.connection, self.intent("active"))
+        self.assertEqual(evaluate_intent(self.connection, self.intent("second"), sim_config(), now=NOW).code, "EXPOSURE_LIMIT")
+
+    def test_optional_trade_cap_still_works_when_explicitly_configured(self):
+        self.reconcile()
+        config = sim_config(max_trades_per_day=1, max_daily_loss_dollars=10_000)
+        self.close_trade(self.intent("c1"), entry=4300.0, exit_price=4315.0)
+        self.assertEqual(evaluate_intent(self.connection, self.intent("c2"), config, now=NOW).code, "DAILY_TRADE_LIMIT")
+
+
+class Operation81RiskPreservationTests(_GatewayHarness):
+    def test_daily_loss_default_follows_paper_guard_internal_stop(self):
+        with mock.patch.dict(os.environ, {"EVAL_INTERNAL_DAILY_STOP": "1000"}, clear=True):
+            self.assertEqual(ExecutionConfig.from_env().max_daily_loss_dollars, 1000.0)
+        with mock.patch.dict(os.environ, {"EVAL_INTERNAL_DAILY_STOP": "1000", "OTR_EXECUTION_MAX_DAILY_LOSS": "900"}, clear=True):
+            self.assertEqual(ExecutionConfig.from_env().max_daily_loss_dollars, 900.0)
+
+    def test_a_plus_750_dollar_plan_is_transmittable_with_matching_caps(self):
+        self.reconcile()
+        config = sim_config(max_risk_dollars=750.0, max_daily_loss_dollars=1000.0)
+        intent = build_execution_intent(gold_setup("aplus"), risk_dollars=750.0, config=config, signal_contract=CONTRACT, now=NOW)
+        # 5pt stop on MGC = $50/contract -> 15 micros = exactly $750.
+        self.assertEqual((intent.quantity, intent.risk_dollars), (15, 750.0))
+        self.assertTrue(evaluate_intent(self.connection, intent, config, now=NOW).allowed)
+
+    def test_a_500_dollar_plan_is_floored_to_whole_mgc(self):
+        intent = build_execution_intent(gold_setup("a", stop=4296.3), risk_dollars=500.0, config=sim_config(max_risk_dollars=750.0), signal_contract=CONTRACT, now=NOW)
+        # 3.7pt stop = $37/contract -> floor(500/37) = 13 micros = $481.
+        self.assertEqual(intent.quantity, 13)
+        self.assertLessEqual(intent.risk_dollars, 500.0)
+
+    def test_high_reward_targets_are_never_reduced(self):
+        self.reconcile()
+        config = sim_config(max_risk_dollars=750.0, max_daily_loss_dollars=1000.0)
+        # ~6.88R plan: 5pt risk, 34.4pt reward.
+        intent = build_execution_intent(gold_setup("big", target=4334.4), risk_dollars=750.0, config=config, signal_contract=CONTRACT, now=NOW)
+        self.assertEqual(intent.target_price, 4334.4)
+        self.assertTrue(evaluate_intent(self.connection, intent, config, now=NOW).allowed)
+
+    def test_dynamic_low_rr_plan_is_not_blocked_by_broker_layer(self):
+        self.reconcile()
+        intent = self.intent("lowrr", target=4306.0)  # 1.2R, permitted upstream by 8.1 for A+
+        self.assertTrue(evaluate_intent(self.connection, intent, sim_config(), now=NOW).allowed)
+
+
+def replay_setup(ident, registered_at, **kwargs):
+    setup = gold_setup(ident, **kwargs)
+    setup.metadata["pending_registered_at_81"] = registered_at.isoformat()
+    return setup
+
+
+class DataClockPolicyTests(_GatewayHarness):
+    # A September replay session viewed from an October wall clock.
+    REPLAY_HEAD = datetime(2026, 9, 15, 14, 30, tzinfo=UTC)
+
+    def replay_stream(self, head=None, count=3):
+        head = head or self.REPLAY_HEAD
+        self.connection.execute("DELETE FROM market_quotes")
+        for offset in range(count - 1, -1, -1):
+            self.connection.execute(
+                "INSERT INTO market_quotes(symbol, source, received_at, ingested_at) VALUES ('GC', ?, ?, ?)",
+                (f"ninjatrader:{CONTRACT}", (head - timedelta(seconds=offset)).isoformat(), NOW.isoformat()),
+            )
+
+    def replay_intent(self, ident, registered_at, config):
+        return build_execution_intent(
+            replay_setup(ident, registered_at), risk_dollars=250.0, config=config,
+            signal_contract=CONTRACT, now=NOW, entry_lifetime_seconds=720,
+        )
+
+    def test_clock_policy_is_explicit_and_defaults_to_wall(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(ExecutionConfig.from_env().data_clock, "WALL")
+        for raw in ("", "auto", "replay-ish", "LIVE"):
+            with mock.patch.dict(os.environ, {"OTR_EXECUTION_DATA_CLOCK": raw}, clear=True):
+                self.assertEqual(ExecutionConfig.from_env().data_clock, "WALL", raw)
+        with mock.patch.dict(os.environ, {"OTR_EXECUTION_DATA_CLOCK": "replay"}, clear=True):
+            self.assertEqual(ExecutionConfig.from_env().data_clock, "REPLAY")
+
+    def test_fresh_live_data_passes(self):
+        self.reconcile()
+        intent = self.replay_intent("live-ok", NOW - timedelta(seconds=5), sim_config())
+        self.assertTrue(evaluate_intent(self.connection, intent, sim_config(), now=NOW).allowed)
+
+    def test_stale_live_data_blocks(self):
+        self.reconcile(now=NOW + timedelta(seconds=30))
+        later = NOW + timedelta(seconds=30)
+        self.assertEqual(evaluate_intent(self.connection, self.intent(now=later), sim_config(), now=later).code, "MARKET_DATA_STALE")
+
+    def test_live_restart_backlog_signal_blocks(self):
+        self.reconcile()
+        # Feed is current, but the setup was registered from backlog ticks
+        # processed ten minutes behind real time.
+        intent = self.replay_intent("backlog", NOW - timedelta(minutes=10), sim_config())
+        self.assertEqual(evaluate_intent(self.connection, intent, sim_config(), now=NOW).code, "SIGNAL_BACKLOG")
+
+    def test_historical_replay_blocks_without_explicit_replay_clock(self):
+        self.replay_stream()
+        self.reconcile()
+        config = sim_config()  # WALL clock (default)
+        intent = self.replay_intent("hist", self.REPLAY_HEAD - timedelta(seconds=2), config)
+        self.assertEqual(evaluate_intent(self.connection, intent, config, now=NOW).code, "MARKET_DATA_NOT_CURRENT")
+
+    def test_historical_replay_passes_with_explicit_replay_clock(self):
+        self.replay_stream()
+        self.reconcile()
+        config = sim_config(data_clock="REPLAY")
+        intent = self.replay_intent("hist", self.REPLAY_HEAD - timedelta(seconds=2), config)
+        decision = evaluate_intent(self.connection, intent, config, now=NOW)
+        self.assertTrue(decision.allowed, decision.reason)
+
+    def test_replay_backlog_relative_to_stream_still_blocks(self):
+        self.replay_stream()
+        self.reconcile()
+        config = sim_config(data_clock="REPLAY")
+        intent = self.replay_intent("old", self.REPLAY_HEAD - timedelta(minutes=10), config)
+        self.assertEqual(evaluate_intent(self.connection, intent, config, now=NOW).code, "REPLAY_SIGNAL_BACKLOG")
+
+    def test_replay_stalled_stream_blocks(self):
+        self.replay_stream()
+        self.reconcile(now=NOW + timedelta(seconds=30))
+        later = NOW + timedelta(seconds=30)
+        config = sim_config(data_clock="REPLAY")
+        intent = self.replay_intent("stall", self.REPLAY_HEAD, config)
+        self.assertEqual(evaluate_intent(self.connection, intent, config, now=later).code, "MARKET_DATA_STALE")
+
+    def test_replay_rewind_blocks(self):
+        self.replay_stream()
+        self.connection.execute(
+            "INSERT INTO market_quotes(symbol, source, received_at, ingested_at) VALUES ('GC', ?, ?, ?)",
+            (f"ninjatrader:{CONTRACT}", (self.REPLAY_HEAD - timedelta(hours=1)).isoformat(), NOW.isoformat()),
+        )
+        self.reconcile()
+        config = sim_config(data_clock="REPLAY")
+        intent = self.replay_intent("rewind", self.REPLAY_HEAD - timedelta(hours=1), config)
+        self.assertEqual(evaluate_intent(self.connection, intent, config, now=NOW).code, "MARKET_DATA_REORDERED")
+
+    def test_accelerated_replay_chart_interleave_is_tolerated(self):
+        # Two charts feeding GC under fast replay: newest row is 60 event-s
+        # behind the other chart's last tick. Not a rewind.
+        self.replay_stream()
+        self.connection.execute(
+            "INSERT INTO market_quotes(symbol, source, received_at, ingested_at) VALUES ('GC', ?, ?, ?)",
+            (f"ninjatrader:{CONTRACT}", (self.REPLAY_HEAD - timedelta(seconds=60)).isoformat(), NOW.isoformat()),
+        )
+        self.reconcile()
+        config = sim_config(data_clock="REPLAY")
+        intent = self.replay_intent("interleave", self.REPLAY_HEAD - timedelta(seconds=60), config)
+        decision = evaluate_intent(self.connection, intent, config, now=NOW)
+        self.assertTrue(decision.allowed, decision.reason)
+
+    def test_replay_requires_registration_event_time(self):
+        self.replay_stream()
+        self.reconcile()
+        config = sim_config(data_clock="REPLAY")
+        intent = build_execution_intent(gold_setup("nostamp"), risk_dollars=250.0, config=config, signal_contract=CONTRACT, now=NOW)
+        self.assertEqual(evaluate_intent(self.connection, intent, config, now=NOW).code, "REPLAY_SIGNAL_TIME_REQUIRED")
+
+    def test_replay_clock_is_forbidden_in_live_mode(self):
+        config = sim_config(mode=ExecutionMode.LIVE, account="Live1", live_allowed=True, certified=True, data_clock="REPLAY")
+        self.assertEqual(bridge_dispatch_ready(self.connection, config, now=NOW).code, "REPLAY_CLOCK_FORBIDDEN")
+        intent = self.replay_intent("live-replay", NOW, config)
+        self.assertEqual(evaluate_intent(self.connection, intent, config, now=NOW).code, "REPLAY_CLOCK_FORBIDDEN")
+
+    def test_replay_entry_expiry_uses_replay_event_time(self):
+        self.replay_stream()
+        self.reconcile()
+        config = sim_config(data_clock="REPLAY")
+        item = self.replay_intent("exp", self.REPLAY_HEAD, config)
+        enqueue_intent(self.connection, item)
+        self.event(item.command_id, "WORKING", "w-exp")
+        # 13 replay minutes later (but still the same wall clock): expired.
+        self.replay_stream(head=self.REPLAY_HEAD + timedelta(minutes=13))
+        directives = cancel_directives(self.connection, account="Sim101", mode="SIM_BRIDGE", kill_switch=False, now=NOW, replay_clock=True)
+        self.assertEqual(directives, [{"command_id": item.command_id, "reason": "ENTRY_EXPIRED"}])
+        # The wall-clock deadline has not passed, so WALL policy would not cancel.
+        self.assertEqual(cancel_directives(self.connection, account="Sim101", mode="SIM_BRIDGE", kill_switch=False, now=NOW), [])
+
+    def test_replay_daily_ledger_follows_replay_trading_days(self):
+        config = sim_config(data_clock="REPLAY")
+        monday = datetime(2026, 9, 14, 14, 0, tzinfo=UTC)
+        tuesday = datetime(2026, 9, 15, 14, 0, tzinfo=UTC)
+        for ident, day in (("mon", monday), ("tue", tuesday)):
+            item = self.replay_intent(ident, day, config)
+            self.close_trade(item, entry=4300.0, exit_price=4295.0, prefix=ident)
+        ledger = daily_execution_ledger(self.connection, account="Sim101", now=tuesday, replay_clock=True)
+        self.assertEqual((ledger["trades"], ledger["loss_used"]), (1, 250.0))
+        # The WALL clock would lump both replay days into today's wall day.
+        wall = daily_execution_ledger(self.connection, account="Sim101", now=NOW)
+        self.assertEqual(wall["trades"], 2)
+
+
+class ReplayProvenanceTests(unittest.TestCase):
+    def test_worker_declares_its_true_engine(self):
+        from src.research.replay import worker
+
+        provenance = worker.engine_provenance()
+        self.assertEqual(provenance["engine_module"], "src.main_70")
+        self.assertEqual(provenance["engine_operation"], "Operation 7.0")
+        self.assertFalse(provenance["production_parity"])
+
+    def test_runner_refuses_manifest_claiming_a_different_engine(self):
+        from src.research.replay.runner import ReplayRunner
+        from src.research.replay.runs import ReplayRunStore, RunManifest
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ReplayRunStore(Path(tmp) / "runs.db", Path(tmp) / "runs")
+            store.initialize()
+            manifest = RunManifest(
+                run_id="mislabelled", git_commit="UNKNOWN", capture_id="c", markets=("GC",),
+                contracts=("GC 12-26",), start_time="2026-09-01T00:00:00+00:00", end_time="2026-09-02T00:00:00+00:00",
+                enabled_timeframes=("1m",), configuration={}, account_profile={}, engine_version="Operation 8.1",
+            )
+            with self.assertRaisesRegex(ValueError, "Operation 7.0"):
+                ReplayRunner(store, Path.cwd()).run(manifest, Path(tmp) / "missing.db")
+            # Refused before any run directory or ledger was created.
+            self.assertFalse((Path(tmp) / "runs" / "mislabelled").exists())
+
+    def test_git_commit_is_detected_not_hard_coded(self):
+        from src.research.replay.runner import current_git_commit
+
+        commit = current_git_commit(Path(__file__).resolve().parents[1])
+        self.assertTrue(commit == "UNKNOWN" or len(commit) == 40)
+        self.assertNotEqual(commit, "62ee79bf441e2da26787052d00a92544c5605b17")
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(current_git_commit(tmp), "UNKNOWN")
 
 
 class BridgeApiTests(unittest.TestCase):

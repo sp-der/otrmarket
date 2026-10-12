@@ -8,7 +8,7 @@ from src.risk.geometry import validate_trade_geometry
 
 from .config import ExecutionConfig
 from .models import ExecutionIntent, ExecutionMode, SafetyDecision, iso, utc_now
-from .store import daily_execution_ledger, get_state, latest_market_data_at, latest_market_event_at
+from .store import daily_execution_ledger, get_state, latest_market_data_at, latest_market_event_at, recent_market_event_max
 
 
 def _age_seconds(timestamp: datetime | None, now: datetime) -> float | None:
@@ -74,6 +74,9 @@ def evaluate_intent(connection, intent: ExecutionIntent, config: ExecutionConfig
             return SafetyDecision(False, "LIVE_INTERLOCK", "LIVE mode requires both OTR_EXECUTION_LIVE_ALLOWED=1 and OTR_EXECUTION_CERTIFIED=1.")
     else:
         return SafetyDecision(False, "UNKNOWN_MODE", f"Unsupported execution mode: {config.mode!s}")
+    replay_block = _replay_clock_block(config)
+    if replay_block is not None:
+        return replay_block
 
     if intent.expires_at <= now:
         return SafetyDecision(False, "EXPIRED", "Execution command expired before dispatch.")
@@ -82,26 +85,9 @@ def evaluate_intent(connection, intent: ExecutionIntent, config: ExecutionConfig
     if integrity is not None:
         return integrity
 
-    data_at = latest_market_data_at(connection, intent.root_symbol)
-    data_age = _age_seconds(data_at, now)
-    if data_age is None or data_age > config.max_data_age_seconds:
-        return SafetyDecision(
-            False,
-            "MARKET_DATA_STALE",
-            f"Newest {intent.root_symbol} quote is older than {config.max_data_age_seconds}s; new entries are blocked.",
-            {"age_seconds": data_age},
-        )
-    event_at = latest_market_event_at(connection, intent.root_symbol)
-    if event_at is None or abs((now - event_at).total_seconds()) > config.max_data_age_seconds:
-        return SafetyDecision(
-            False,
-            "MARKET_DATA_NOT_CURRENT",
-            (
-                f"Newest {intent.root_symbol} exchange timestamp is not within {config.max_data_age_seconds}s of the "
-                "wall clock (restart backlog, replay data or bridge clock fault)."
-            ),
-            {"event_at": iso(event_at) if event_at else None},
-        )
+    freshness, ledger_reference = _market_data_freshness(connection, intent, config, now)
+    if freshness is not None:
+        return freshness
 
     reconciliation, reconciliation_at = get_state(connection, "reconciliation", None)
     recon_age = _age_seconds(reconciliation_at, now)
@@ -115,10 +101,11 @@ def evaluate_intent(connection, intent: ExecutionIntent, config: ExecutionConfig
     ledger = daily_execution_ledger(
         connection,
         account=config.account,
-        now=now,
+        now=ledger_reference,
         tz_name=config.session_tz,
         roll_hour=config.trading_day_roll_hour,
         commission_per_contract_rt=config.commission_per_contract_rt,
+        replay_clock=config.replay_clock,
     )
     if ledger["active_commands"] >= config.max_active_commands:
         return SafetyDecision(
@@ -127,7 +114,8 @@ def evaluate_intent(connection, intent: ExecutionIntent, config: ExecutionConfig
             f"{ledger['active_commands']} broker command(s) already active; limit is {config.max_active_commands}.",
             {"ledger": ledger},
         )
-    if ledger["trades"] >= config.max_trades_per_day:
+    # Optional, disabled by default (0 = unlimited qualified trades per day).
+    if config.max_trades_per_day > 0 and ledger["trades"] >= config.max_trades_per_day:
         return SafetyDecision(
             False,
             "DAILY_TRADE_LIMIT",
@@ -147,6 +135,105 @@ def evaluate_intent(connection, intent: ExecutionIntent, config: ExecutionConfig
         )
 
     return SafetyDecision(True, "APPROVED", "Execution intent passed Operation 7.2 fail-closed safety interlocks.", {"mode": config.mode.value, "account": config.account, "quantity": intent.quantity, "risk_dollars": intent.risk_dollars, "ledger": ledger})
+
+
+def _replay_clock_block(config: ExecutionConfig) -> SafetyDecision | None:
+    """Historical replay chronology is a simulation-only policy."""
+    if config.replay_clock and config.mode != ExecutionMode.SIM_BRIDGE:
+        return SafetyDecision(
+            False,
+            "REPLAY_CLOCK_FORBIDDEN",
+            "OTR_EXECUTION_DATA_CLOCK=REPLAY is only valid with OTR_EXECUTION_MODE=SIM_BRIDGE; LIVE always uses the wall clock.",
+        )
+    return None
+
+
+def _signal_event_at(intent: ExecutionIntent) -> datetime | None:
+    raw = (intent.metadata or {}).get("signal_event_at")
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _market_data_freshness(connection, intent: ExecutionIntent, config: ExecutionConfig, now: datetime) -> tuple[SafetyDecision | None, datetime]:
+    """Explicit data-clock policy. Returns (block, ledger reference time).
+
+    Both clocks require the bridge to be delivering quotes right now (server
+    receipt time) and the stream not to be running backwards. They differ in
+    what "current" means for exchange/event timestamps:
+
+    * WALL: the newest exchange timestamp must be within max_data_age of the
+      real wall clock, and a stamped signal must be within max_signal_lag of
+      it. A restart backlog or historical data is refused.
+    * REPLAY: the replay stream's own newest event time is the reference.
+      The signal's event time must sit within max_signal_lag behind it, so a
+      backlog being re-processed relative to the stream is still refused,
+      while September replay data in October is not.
+    """
+    symbol = intent.root_symbol
+    data_at = latest_market_data_at(connection, symbol)
+    data_age = _age_seconds(data_at, now)
+    if data_age is None or data_age > config.max_data_age_seconds:
+        return SafetyDecision(
+            False,
+            "MARKET_DATA_STALE",
+            f"No {symbol} quote received in the last {config.max_data_age_seconds}s (bridge stalled or disconnected); new entries are blocked.",
+            {"age_seconds": data_age, "data_clock": config.data_clock},
+        ), now
+
+    head = latest_market_event_at(connection, symbol)
+    if head is None:
+        return SafetyDecision(False, "MARKET_DATA_NOT_CURRENT", f"Newest {symbol} quote has no usable event timestamp.", {"data_clock": config.data_clock}), now
+
+    recent_max = recent_market_event_max(connection, symbol)
+    # Event-time tolerance: in accelerated Market Replay, several charts
+    # mapping to one root can interleave by many event-seconds per flush, so
+    # REPLAY uses the (event-time) signal-lag tolerance instead of 10s.
+    reorder_tolerance = config.max_signal_lag_seconds if config.replay_clock else config.max_data_age_seconds
+    if recent_max is not None and (recent_max - head).total_seconds() > reorder_tolerance:
+        return SafetyDecision(
+            False,
+            "MARKET_DATA_REORDERED",
+            f"Newest {symbol} event time is behind recently received quotes (out-of-order feed or replay rewind).",
+            {"head": iso(head), "recent_max": iso(recent_max), "data_clock": config.data_clock},
+        ), now
+
+    signal_at = _signal_event_at(intent)
+    if config.replay_clock:
+        if signal_at is None:
+            return SafetyDecision(False, "REPLAY_SIGNAL_TIME_REQUIRED", "REPLAY clock requires the setup's registration event time.", {"data_clock": "REPLAY"}), head
+        lag = (head - signal_at).total_seconds()
+        if lag > config.max_signal_lag_seconds or lag < -config.max_data_age_seconds:
+            return SafetyDecision(
+                False,
+                "REPLAY_SIGNAL_BACKLOG",
+                f"Signal event time is {lag:.0f}s from the replay stream head; allowed lag is {config.max_signal_lag_seconds}s.",
+                {"head": iso(head), "signal_event_at": iso(signal_at), "data_clock": "REPLAY"},
+            ), head
+        return None, head
+
+    if abs((now - head).total_seconds()) > config.max_data_age_seconds:
+        return SafetyDecision(
+            False,
+            "MARKET_DATA_NOT_CURRENT",
+            (
+                f"Newest {symbol} exchange timestamp is not within {config.max_data_age_seconds}s of the wall clock "
+                "(restart backlog, historical replay without OTR_EXECUTION_DATA_CLOCK=REPLAY, or bridge clock fault)."
+            ),
+            {"event_at": iso(head), "data_clock": "WALL"},
+        ), now
+    if signal_at is not None and (now - signal_at).total_seconds() > config.max_signal_lag_seconds:
+        return SafetyDecision(
+            False,
+            "SIGNAL_BACKLOG",
+            f"Signal event time is more than {config.max_signal_lag_seconds}s old relative to the wall clock.",
+            {"signal_event_at": iso(signal_at), "data_clock": "WALL"},
+        ), now
+    return None, now
 
 
 def _instrument_integrity(intent: ExecutionIntent, config: ExecutionConfig) -> SafetyDecision | None:
@@ -199,6 +286,9 @@ def bridge_dispatch_ready(connection, config: ExecutionConfig, *, now: datetime 
         return SafetyDecision(False, "SIM_ACCOUNT_REQUIRED", "SIM_BRIDGE requires a simulation account.")
     if config.mode == ExecutionMode.LIVE and not (config.live_allowed and config.certified):
         return SafetyDecision(False, "LIVE_INTERLOCK", "LIVE execution interlock is not fully satisfied.")
+    replay_block = _replay_clock_block(config)
+    if replay_block is not None:
+        return replay_block
 
     reconciliation, reconciliation_at = get_state(connection, "reconciliation", None)
     age = _age_seconds(reconciliation_at, now)

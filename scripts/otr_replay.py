@@ -9,7 +9,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.research.replay.runner import ReplayRunner
+from src.research.replay.runner import ReplayRunner, current_git_commit
+from src.research.replay.worker import ENGINE_OPERATION
 from src.research.replay.runs import ReplayRunStore, RunManifest
 
 
@@ -42,11 +43,11 @@ def main():
     store = ReplayRunStore(args.run_db, args.runs_dir)
     store.initialize()
     manifest = RunManifest(
-        run_id=args.run_id, git_commit="62ee79bf441e2da26787052d00a92544c5605b17",
+        run_id=args.run_id, git_commit=current_git_commit(ROOT),
         capture_id=args.capture_id, markets=roots, contracts=tuple(args.contracts),
         start_time=args.start, end_time=args.end, enabled_timeframes=tuple(args.timeframes),
         configuration={"OTR_EXECUTION_TIMEFRAME":"ALL"},
-        account_profile={"profile_verification":"RESEARCH_REFERENCE_PROFILE"}, engine_version="Operation 7.0",
+        account_profile={"profile_verification":"RESEARCH_REFERENCE_PROFILE"}, engine_version=ENGINE_OPERATION,
         replay_mode=args.mode, fill_model=args.fill_model, ambiguity_policy=args.ambiguity_policy,
         execution_config={"slippage_ticks":args.slippage_ticks,"round_turn_commission":args.round_turn_commission,
                           "round_turn_fees":args.round_turn_fees},
@@ -55,6 +56,7 @@ def main():
     result = ReplayRunner(store, ROOT).run(manifest, args.historical_db)
     print(f"run_id: {args.run_id}")
     print(f"mode: {args.mode}")
+    print(f"engine: {result.get('engine')}")
     print(f"traces: {result['trace_count']}")
     print(f"decision_digest: {result['decision_digest']}")
     print(f"ledger: {result['ledger_path']}")

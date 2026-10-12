@@ -114,10 +114,13 @@ class EvaluationDecision:
     snapshot: dict
 
 
-# CME Globex trading days roll at 18:00 New York time. Shifting by six hours
-# maps 18:00 ET onto the next calendar date, so a Sunday-evening or
-# Monday-evening loss is charged to the trading day it actually belongs to
-# instead of being forgotten at midnight (pre-live audit fix).
+# OTR research/execution-day convention: the day rolls at 18:00 New York
+# time, matching the CME Globex session. Shifting by six hours maps 18:00 ET
+# onto the next calendar date, so an evening loss is charged to the trading
+# day it belongs to instead of being forgotten at midnight.
+# This is NOT claimed to match any prop firm's reset/drawdown rules (the
+# EVAL_PROFILE name, e.g. LUCID_PRO_50K, is only a label). The evaluation
+# provider's official rules must be verified and configured separately.
 _TRADING_DAY_SHIFT = timedelta(hours=6)
 
 

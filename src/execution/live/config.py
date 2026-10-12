@@ -36,6 +36,14 @@ def _symbols(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
     return values
 
 
+DATA_CLOCKS = {"WALL", "REPLAY"}
+
+
+def _data_clock(value: str | None) -> str:
+    candidate = str(value or "").strip().upper()
+    return candidate if candidate in DATA_CLOCKS else "WALL"
+
+
 @dataclass(frozen=True)
 class ExecutionConfig:
     mode: ExecutionMode = ExecutionMode.PAPER
@@ -54,9 +62,22 @@ class ExecutionConfig:
     # matter once broker transmission is possible (SIM_BRIDGE/LIVE + armed).
     allowed_symbols: tuple[str, ...] = ("GC",)
     max_active_commands: int = 1
+    # Account-level daily loss ceiling for broker commands. from_env falls back
+    # to the paper guard's EVAL_INTERNAL_DAILY_STOP so the two layers can never
+    # silently disagree. This is OTR's internal ceiling, not a firm rule.
     max_daily_loss_dollars: float = 750.0
-    max_trades_per_day: int = 2
+    # 0 = unlimited. OTR deliberately does not cap qualified trades per day;
+    # daily loss, open risk and the one-active-idea limit govern instead.
+    max_trades_per_day: int = 0
     max_data_age_seconds: int = 10
+    # Explicit market-data clock policy (never auto-detected):
+    #   WALL   - LIVE / real-time SIM. Exchange timestamps must be current
+    #            relative to the real wall clock.
+    #   REPLAY - intentional NinjaTrader historical Market Replay. Chronology
+    #            is judged against the replay stream's own event time.
+    # Any unknown value falls back to WALL, which refuses historical data.
+    data_clock: str = "WALL"
+    max_signal_lag_seconds: int = 120
     commission_per_contract_rt: float = 0.0
     session_tz: str = "America/New_York"
     trading_day_roll_hour: int = 18
@@ -82,13 +103,22 @@ class ExecutionConfig:
             claimed_redelivery_seconds=max(2, _int("OTR_EXECUTION_CLAIM_REDELIVERY_SECONDS", 5)),
             allowed_symbols=_symbols("OTR_EXECUTION_ALLOWED_SYMBOLS", ("GC",)),
             max_active_commands=max(1, _int("OTR_EXECUTION_MAX_ACTIVE_COMMANDS", 1)),
-            max_daily_loss_dollars=max(1.0, _float("OTR_EXECUTION_MAX_DAILY_LOSS", 750.0)),
-            max_trades_per_day=max(1, _int("OTR_EXECUTION_MAX_TRADES_PER_DAY", 2)),
+            max_daily_loss_dollars=max(
+                1.0,
+                _float("OTR_EXECUTION_MAX_DAILY_LOSS", _float("EVAL_INTERNAL_DAILY_STOP", 750.0)),
+            ),
+            max_trades_per_day=max(0, _int("OTR_EXECUTION_MAX_TRADES_PER_DAY", 0)),
             max_data_age_seconds=max(1, _int("OTR_EXECUTION_MAX_DATA_AGE_SECONDS", 10)),
+            data_clock=_data_clock(os.getenv("OTR_EXECUTION_DATA_CLOCK", "WALL")),
+            max_signal_lag_seconds=max(1, _int("OTR_EXECUTION_MAX_SIGNAL_LAG_SECONDS", 120)),
             commission_per_contract_rt=max(0.0, _float("OTR_EXECUTION_COMMISSION_PER_CONTRACT_RT", 0.0)),
             session_tz=os.getenv("OTR_SESSION_TZ", "America/New_York").strip() or "America/New_York",
             trading_day_roll_hour=min(23, max(0, _int("OTR_EXECUTION_TRADING_DAY_ROLL_HOUR", 18))),
         )
+
+    @property
+    def replay_clock(self) -> bool:
+        return self.data_clock == "REPLAY"
 
     @property
     def is_sim_account(self) -> bool:

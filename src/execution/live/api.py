@@ -18,6 +18,7 @@ from .store import (
     ensure_schema,
     execution_status,
     get_state,
+    latest_market_event_at,
     poll_commands,
     record_bridge_snapshot,
     record_event,
@@ -78,6 +79,7 @@ def build_router(*, require_http_auth: Callable[[Request], None], require_bridge
                 account=config.account,
                 mode=config.mode.value,
                 kill_switch=bool(kill_switch) or os.getenv("OTR_EXECUTION_KILL_SWITCH", "0").strip().lower() in {"1", "true", "yes", "on"},
+                replay_clock=config.replay_clock,
             )
             ready = bridge_dispatch_ready(connection, config)
             if not ready.allowed:
@@ -127,12 +129,18 @@ def build_router(*, require_http_auth: Callable[[Request], None], require_bridge
         try:
             status = execution_status(connection)
             dispatch = bridge_dispatch_ready(connection, config)
+            ledger_reference = None
+            if config.replay_clock and config.allowed_symbols:
+                # Replay day attribution follows the replay stream, not today.
+                ledger_reference = latest_market_event_at(connection, config.allowed_symbols[0])
             status["daily_ledger"] = daily_execution_ledger(
                 connection,
                 account=config.account,
+                now=ledger_reference,
                 tz_name=config.session_tz,
                 roll_hour=config.trading_day_roll_hour,
                 commission_per_contract_rt=config.commission_per_contract_rt,
+                replay_clock=config.replay_clock,
             )
         finally:
             connection.close()
@@ -150,6 +158,8 @@ def build_router(*, require_http_auth: Callable[[Request], None], require_bridge
             "max_daily_loss_dollars": config.max_daily_loss_dollars,
             "max_trades_per_day": config.max_trades_per_day,
             "max_data_age_seconds": config.max_data_age_seconds,
+            "data_clock": config.data_clock,
+            "max_signal_lag_seconds": config.max_signal_lag_seconds,
         }
         status["dispatch"] = dispatch.to_dict()
         status["broker_transmission_possible"] = bool(dispatch.allowed)

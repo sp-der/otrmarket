@@ -622,7 +622,8 @@ def trading_day_start(now: datetime, *, tz_name: str = "America/New_York", roll_
     """Start of the CME-style trading day containing ``now`` (UTC result).
 
     Futures trading days roll at 18:00 New York time, so 19:00 ET Sunday and
-    10:00 ET Monday belong to the same trading day.
+    10:00 ET Monday belong to the same trading day. This is OTR's internal
+    execution-day convention, not a verified prop-firm reset rule.
     """
     from zoneinfo import ZoneInfo
 
@@ -659,6 +660,18 @@ def _exit_prices(connection: sqlite3.Connection, command_ids: list[str]) -> dict
     return {str(command_id): float(price) for command_id, price in rows}
 
 
+def _command_day_time(row, replay_clock: bool) -> datetime | None:
+    if replay_clock:
+        try:
+            payload = json.loads(row[9] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            payload = {}
+        event_at = _parse((payload.get("metadata") or {}).get("signal_event_at"))
+        if event_at is not None:
+            return event_at
+    return _parse(row[8])
+
+
 def daily_execution_ledger(
     connection: sqlite3.Connection,
     *,
@@ -667,6 +680,7 @@ def daily_execution_ledger(
     tz_name: str = "America/New_York",
     roll_hour: int = 18,
     commission_per_contract_rt: float = 0.0,
+    replay_clock: bool = False,
 ) -> dict:
     """Broker-side daily risk state for one account.
 
@@ -684,14 +698,18 @@ def daily_execution_ledger(
     cursor = connection.execute(
         """
         SELECT command_id, status, root_symbol, direction, quantity, filled_quantity,
-               average_fill_price, risk_dollars, created_at
+               average_fill_price, risk_dollars, created_at, payload_json
         FROM execution_commands
         WHERE account = ?
         """,
         (account,),
     )
-    rows = cursor.fetchall()
-    todays = [row for row in rows if (_parse(row[8]) or start) >= start]
+    rows = [row[:9] + (_command_day_time(row, replay_clock),) for row in cursor.fetchall()]
+    # Under the REPLAY clock, ``now`` is the replay stream head and commands
+    # are attributed by their signal event time, so a week of replay run in
+    # one afternoon is still judged day by day. A command with no usable time
+    # is charged to the current day (never silently dropped).
+    todays = [row for row in rows if (row[9] or start) >= start]
     closed_ids = [str(row[0]) for row in todays if row[1] == CommandStatus.CLOSED.value]
     exits = _exit_prices(connection, closed_ids)
 
@@ -699,7 +717,7 @@ def daily_execution_ledger(
     unresolved_loss = 0.0
     unresolved: list[str] = []
     trades = 0
-    for command_id, status, root, direction, quantity, filled, avg_fill, risk, _created in todays:
+    for command_id, status, root, direction, quantity, filled, avg_fill, risk, _created, _day_time in todays:
         command_id = str(command_id)
         filled_qty = int(filled or 0)
         if filled_qty > 0 or status in ACTIVE_STATUSES:
@@ -776,6 +794,23 @@ def latest_market_event_at(connection: sqlite3.Connection, symbol: str) -> datet
     return _parse(str(row[0])) if row and row[0] else None
 
 
+def recent_market_event_max(connection: sqlite3.Connection, symbol: str, window: int = 50) -> datetime | None:
+    """Latest event time among the last ``window`` quotes received for ``symbol``.
+
+    If the newest quote is materially older than this, the feed went
+    backwards: an out-of-order delivery or a Market Replay rewind.
+    """
+    try:
+        rows = connection.execute(
+            "SELECT received_at FROM market_quotes WHERE symbol = ? ORDER BY rowid DESC LIMIT ?",
+            (str(symbol).upper(), int(window)),
+        ).fetchall()
+    except sqlite3.Error:
+        return None
+    parsed = [value for value in (_parse(str(row[0])) for row in rows if row and row[0]) if value is not None]
+    return max(parsed) if parsed else None
+
+
 def cancel_pending_commands(connection: sqlite3.Connection, reason: str, now: datetime | None = None) -> int:
     """Terminally cancel commands that have not been delivered to the broker."""
     ensure_schema(connection)
@@ -799,6 +834,7 @@ def cancel_directives(
     mode: str,
     kill_switch: bool,
     now: datetime | None = None,
+    replay_clock: bool = False,
 ) -> list[dict]:
     """Unfilled broker entry orders the bridge must cancel.
 
@@ -813,14 +849,15 @@ def cancel_directives(
     placeholders = ",".join("?" for _ in UNFILLED_BROKER_STATUSES)
     rows = connection.execute(
         f"""
-        SELECT command_id, payload_json FROM execution_commands
+        SELECT command_id, payload_json, root_symbol FROM execution_commands
         WHERE account = ? AND mode = ? AND COALESCE(filled_quantity, 0) = 0
           AND status IN ({placeholders})
         """,
         (account, mode, *sorted(UNFILLED_BROKER_STATUSES)),
     ).fetchall()
     directives = []
-    for command_id, payload_json in rows:
+    heads: dict[str, datetime | None] = {}
+    for command_id, payload_json, root_symbol in rows:
         reason = None
         if kill_switch:
             reason = "KILL_SWITCH"
@@ -829,8 +866,19 @@ def cancel_directives(
                 payload = json.loads(payload_json or "{}")
             except (TypeError, json.JSONDecodeError):
                 payload = {}
-            expires = _parse((payload.get("metadata") or {}).get("entry_expires_at"))
-            if expires is not None and expires <= now:
+            metadata = payload.get("metadata") or {}
+            if replay_clock:
+                # Replay speed is arbitrary, so the entry deadline is judged
+                # in replay event time against the stream head.
+                root = str(root_symbol or "").upper()
+                if root not in heads:
+                    heads[root] = latest_market_event_at(connection, root)
+                expires = _parse(metadata.get("entry_expires_event_at"))
+                reference = heads[root]
+            else:
+                expires = _parse(metadata.get("entry_expires_at"))
+                reference = now
+            if expires is not None and reference is not None and expires <= reference:
                 reason = "ENTRY_EXPIRED"
         if reason:
             directives.append({"command_id": str(command_id), "reason": reason})
