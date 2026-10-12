@@ -41,6 +41,18 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _daily_loss_locks_label() -> str:
+    """Display text for the trade-count / loss-streak rules (display only).
+
+    Mirrors EvaluationConfig: EVAL_MAX_TRADES_PER_DAY defaults to 0, and any
+    value <= 0 means unlimited qualified trades.
+    """
+    max_trades = _env_int("EVAL_MAX_TRADES_PER_DAY", 0)
+    trades = f"{max_trades} trades max" if max_trades > 0 else "Unlimited trades"
+    losses = _env_int("EVAL_MAX_CONSECUTIVE_LOSSES", 3)
+    return f"{trades} · {losses} consecutive losses max · 1 concurrent position"
+
+
 def _reset_evaluation_history_if_requested() -> None:
     """Clear the paper evaluation ledger once for a new replay run.
 
@@ -189,10 +201,7 @@ def _write_runtime_manifest(engine_module: str) -> None:
             },
             {
                 "name": "Daily / loss locks",
-                "value": (
-                    f"{_env_int('EVAL_MAX_TRADES_PER_DAY', 4)} trades max · "
-                    f"{_env_int('EVAL_MAX_CONSECUTIVE_LOSSES', 3)} consecutive losses max · 1 concurrent position"
-                ),
+                "value": _daily_loss_locks_label(),
                 "source": "src/risk/evaluation.py",
             },
             {

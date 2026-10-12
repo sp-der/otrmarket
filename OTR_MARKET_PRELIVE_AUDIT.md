@@ -219,8 +219,8 @@ The policy is configured explicitly with `OTR_EXECUTION_DATA_CLOCK`. It is **nev
 
 | Command | Result |
 |---|---|
-| `python -m unittest discover -s tests` | **591 passed, 0 failed, 0 skipped** (revision 2: 581; revision 1: 552; baseline: 512) |
-| `python -m unittest tests.test_prelive_audit_execution` | **79 passed** |
+| `python -m unittest discover -s tests` | **595 passed, 0 failed, 0 skipped** (revision 2.1 pre-label: 591; revision 2: 581; revision 1: 552; baseline: 512) |
+| `python -m unittest tests.test_prelive_audit_execution` | **83 passed** |
 | `ruff check src scripts tests --select E9,F` | All checks passed |
 | `python -m compileall -q src scripts tests` | OK |
 | `bash -n run_all.sh run_dashboard.sh` | OK |
@@ -484,9 +484,9 @@ To make research replay conservative:
 |---|---|
 | `src/execution/live/config.py` | `max_risk_dollars` default $750. `from_env` reads `OTR_EXECUTION_MAX_RISK_DOLLARS`, else `EVAL_RISK_PER_TRADE`, else $750 |
 | `src/risk/evaluation.py` | `session_profit_cap` default 0 (disabled, env-configurable, negative clamped to 0). Disabled cap → `session_profit_remaining=None`; approval reason handles `None` |
-| `src/dashboard/server.py` | Legacy rules panel shows "Disabled" when the cap is 0 |
+| `src/dashboard/server.py` | Legacy rules panel: session cap shows "Disabled" at 0; trade-count rule defaults to 0 and shows "Unlimited trades" when ≤ 0 (was a stale default of 4). Display only |
 | `.env.example` | Broker risk override commented out (inherits); `EVAL_SESSION_PROFIT_CAP=0` documented |
-| `tests/test_prelive_audit_execution.py` | +10 tests |
+| `tests/test_prelive_audit_execution.py` | +14 tests (incl. rules-panel label) |
 
 **Not changed (strategy and risk):**
 

@@ -859,6 +859,33 @@ print(json.dumps({"risk": risk, "multiplier": multiplier}))
             self.assertEqual(EvaluationConfig.from_env().session_profit_cap, 1500.0)
 
 
+class LegacyRulesPanelLabelTests(unittest.TestCase):
+    def label(self, env):
+        from src.dashboard import server as legacy_server
+
+        with mock.patch.dict(os.environ, env, clear=True):
+            return legacy_server._daily_loss_locks_label()
+
+    def test_unset_trade_cap_displays_unlimited(self):
+        self.assertEqual(self.label({}), "Unlimited trades · 3 consecutive losses max · 1 concurrent position")
+
+    def test_zero_or_negative_trade_cap_displays_unlimited(self):
+        for raw in ("0", "-1"):
+            self.assertTrue(self.label({"EVAL_MAX_TRADES_PER_DAY": raw}).startswith("Unlimited trades · "), raw)
+
+    def test_positive_trade_cap_displays_count(self):
+        self.assertEqual(
+            self.label({"EVAL_MAX_TRADES_PER_DAY": "5", "EVAL_MAX_CONSECUTIVE_LOSSES": "2"}),
+            "5 trades max · 2 consecutive losses max · 1 concurrent position",
+        )
+
+    def test_label_default_matches_evaluation_config_default(self):
+        from src.risk.evaluation import EvaluationConfig
+
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(EvaluationConfig.from_env().max_trades_per_day, 0)
+
+
 class ReplayProvenanceTests(unittest.TestCase):
     def test_worker_declares_its_true_engine(self):
         from src.research.replay import worker
