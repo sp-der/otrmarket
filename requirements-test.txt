@@ -1,0 +1,6 @@
+# Test-only dependencies for the regression suite.
+# starlette.testclient (used via fastapi.testclient) imports httpx2 and fails
+# at import time without it. Kept out of requirements.txt so the application
+# runtime set stays explicit; installed by CI and by the Docker image because
+# Railway's preDeployCommand runs the full unittest suite inside that image.
+httpx2>=2.13,<3

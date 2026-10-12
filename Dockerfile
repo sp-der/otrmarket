@@ -8,10 +8,13 @@ ENV PYTHONUNBUFFERED=1 \
 
 # NautilusTrader is observational only, but production includes the pinned
 # package so authenticated parity diagnostics can replay the same Gold data.
-COPY requirements.txt requirements-nautilus.txt requirements-vibe.txt requirements-confluence-ml.txt ./
+# requirements-test.txt is included because Railway's preDeployCommand runs
+# the full unittest suite inside this image as the deployment gate.
+COPY requirements.txt requirements-nautilus.txt requirements-vibe.txt requirements-confluence-ml.txt requirements-test.txt ./
 RUN pip install --no-cache-dir -r requirements.txt \
     && pip install --no-cache-dir -r requirements-nautilus.txt \
-    && pip install --no-cache-dir -r requirements-confluence-ml.txt
+    && pip install --no-cache-dir -r requirements-confluence-ml.txt \
+    && pip install --no-cache-dir -r requirements-test.txt
 RUN python -m venv /opt/vibe \
     && /opt/vibe/bin/pip install --no-cache-dir -r requirements-vibe.txt
 
