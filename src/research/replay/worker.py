@@ -10,6 +10,24 @@ import sys
 import uuid
 
 
+# Replay engine provenance. This worker drives the Operation 7.0 strategy
+# chain, NOT the production Operation 8.1 stack (see OTR_MARKET_PRELIVE_AUDIT.md
+# section "Replay worker parity"). The runner refuses any manifest that claims
+# a different engine, and every result records exactly what produced it.
+ENGINE_MODULE = "src.main_70"
+ENGINE_OPERATION = "Operation 7.0"
+PRODUCTION_PARITY = False
+
+
+def engine_provenance() -> dict:
+    return {
+        "engine_module": ENGINE_MODULE,
+        "engine_operation": ENGINE_OPERATION,
+        "production_parity": PRODUCTION_PARITY,
+        "production_engine": "src.main_81",
+    }
+
+
 def _json(value):
     if hasattr(value, "to_dict"):
         return value.to_dict()
@@ -184,7 +202,7 @@ def execute(request: dict) -> dict:
         connection.close()
     simulator=research_executor.simulator
     metrics,segments=raw_metrics(simulator.records,simulator.account.equity_points)
-    return {"traces": traces, "trace_count": len(traces),"execution_trades":simulator.records,
+    return {"engine": engine_provenance(), "traces": traces, "trace_count": len(traces),"execution_trades":simulator.records,
       "equity":simulator.account.equity_points,"account_blocks":simulator.blocks,"risk_audits":simulator.risk_audits,
       "metrics":metrics,"segments":segments}
 

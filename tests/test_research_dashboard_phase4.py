@@ -112,8 +112,10 @@ def check_research_api_is_get_only_and_does_not_mutate_stores(research_stores):
     from src.dashboard import app as dashboard
     original_repository = dashboard.research_repository
     original_password = dashboard.DASHBOARD_PASSWORD
+    original_allow = dashboard.ALLOW_UNAUTHENTICATED_DASHBOARD
     dashboard.research_repository = ResearchDashboardRepository(*research_stores)
     dashboard.DASHBOARD_PASSWORD = ""
+    dashboard.ALLOW_UNAUTHENTICATED_DASHBOARD = True
     before = [digest(path) for path in research_stores]
     try:
         request = SimpleNamespace(cookies={})
@@ -132,6 +134,7 @@ def check_research_api_is_get_only_and_does_not_mutate_stores(research_stores):
     finally:
         dashboard.research_repository = original_repository
         dashboard.DASHBOARD_PASSWORD = original_password
+        dashboard.ALLOW_UNAUTHENTICATED_DASHBOARD = original_allow
 
 
 def check_strategy_lab_static_surface_contains_required_views():

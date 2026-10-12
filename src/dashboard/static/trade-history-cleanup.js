@@ -142,26 +142,12 @@ async function ensureActiveBuildPanel65() {
   }
 }
 
-// Dashboard-facing terminology should describe the trading system without
-// exposing the internal executor/storage implementation name. Internal Python,
-// SQLite and safety boundaries remain unchanged.
+// Pre-live audit: this used to rewrite "Paper Balance" to "Account Balance",
+// "PAPER" to "TEST" and so on, which made simulated paper-ledger figures read
+// like broker truth. Simulated values must stay labelled as simulated, so the
+// copy is now passed through unchanged. The hook is kept for its callers.
 function cleanTradingCopy65(value) {
-  if (!value || typeof value !== "string") return value;
-  return value
-    .replace(/paper_trading/gi, "trading")
-    .replace(/paper-trading/gi, "trading")
-    .replace(/paper\s+trade(s)?/gi, (_match, plural) => `trade${plural || ""}`)
-    .replace(/paper\s+position(s)?/gi, (_match, plural) => `position${plural || ""}`)
-    .replace(/paper\s+order(s)?/gi, (_match, plural) => `order${plural || ""}`)
-    .replace(/paper\s+risk/gi, "risk")
-    .replace(/paper\s+realized/gi, "realized")
-    .replace(/paper\s+balance/gi, "Account Balance")
-    .replace(/paper\s+performance/gi, "PERFORMANCE")
-    .replace(/paper\s+mode/gi, "TEST MODE")
-    .replace(/paper\s+only/gi, "Simulation only")
-    .replace(/paper\s+execution/gi, "execution")
-    .replace(/\bPAPER\b/g, "TEST")
-    .replace(/\bpaper\b/gi, "test");
+  return value;
 }
 
 function sanitizeTradingCopy65(root = document.body) {

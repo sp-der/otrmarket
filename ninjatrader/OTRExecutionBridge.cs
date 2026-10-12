@@ -38,6 +38,13 @@ namespace NinjaTrader.NinjaScript.Indicators
             public string mode { get; set; }
             public string account { get; set; }
             public List<ExecutionCommand> commands { get; set; }
+            public List<CancelDirective> cancels { get; set; }
+        }
+
+        private sealed class CancelDirective
+        {
+            public string command_id { get; set; }
+            public string reason { get; set; }
         }
 
         private sealed class ExecutionCommand
@@ -101,6 +108,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private readonly JavaScriptSerializer json = new JavaScriptSerializer();
         private readonly ConcurrentQueue<BridgeEvent> eventQueue = new ConcurrentQueue<BridgeEvent>();
         private readonly ConcurrentQueue<ExecutionCommand> commandQueue = new ConcurrentQueue<ExecutionCommand>();
+        private readonly ConcurrentQueue<CancelDirective> cancelQueue = new ConcurrentQueue<CancelDirective>();
         private readonly ConcurrentDictionary<string, byte> submittedCommands = new ConcurrentDictionary<string, byte>();
         private readonly ConcurrentDictionary<string, byte> bracketsSubmitted = new ConcurrentDictionary<string, byte>();
         private readonly ConcurrentDictionary<string, ExecutionCommand> commandPlans = new ConcurrentDictionary<string, ExecutionCommand>();
@@ -235,7 +243,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     return;
 
                 PollCommands();
-                if (!commandQueue.IsEmpty)
+                if (!commandQueue.IsEmpty || !cancelQueue.IsEmpty)
                     TriggerCustomEvent(ProcessCommandQueue, null);
             }
             catch (Exception ex)
@@ -255,7 +263,21 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return;
 
             CommandEnvelope envelope = json.Deserialize<CommandEnvelope>(response);
-            if (envelope == null || !envelope.ok || !envelope.dispatch_ready || envelope.commands == null)
+            if (envelope == null || !envelope.ok)
+                return;
+
+            // Pre-live audit: cancel directives (kill switch, expired pending
+            // entry) are honoured even while new dispatch is blocked.
+            if (envelope.cancels != null)
+            {
+                foreach (CancelDirective directive in envelope.cancels)
+                {
+                    if (directive != null && !string.IsNullOrWhiteSpace(directive.command_id))
+                        cancelQueue.Enqueue(directive);
+                }
+            }
+
+            if (!envelope.dispatch_ready || envelope.commands == null)
                 return;
 
             foreach (ExecutionCommand command in envelope.commands)
@@ -295,9 +317,52 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (!ArmSimulationOrders || account == null || !IsSimulationAccountName(account.Name))
                 return;
 
+            CancelDirective directive;
+            while (cancelQueue.TryDequeue(out directive))
+                CancelUnfilledEntry(directive);
+
             ExecutionCommand command;
             while (commandQueue.TryDequeue(out command))
                 SubmitCommand(command);
+        }
+
+        // Cancels only the unfilled OTR entry order ("|E") for a command.
+        // Protective target/stop orders are never touched here, so an open
+        // position always keeps its bracket. The resulting Cancelled order
+        // update is reported to OTR through OnAccountOrderUpdate.
+        private void CancelUnfilledEntry(CancelDirective directive)
+        {
+            if (account == null || directive == null)
+                return;
+            string entryName = OrderName(directive.command_id, "E");
+            List<Order> toCancel = new List<Order>();
+            lock (account.Orders)
+            {
+                foreach (Order order in account.Orders)
+                {
+                    if (order == null || !string.Equals(order.Name, entryName, StringComparison.Ordinal))
+                        continue;
+                    if (order.Filled > 0)
+                        continue;
+                    if (order.OrderState == OrderState.Working
+                        || order.OrderState == OrderState.Accepted
+                        || order.OrderState == OrderState.Submitted
+                        || order.OrderState == OrderState.ChangePending
+                        || order.OrderState == OrderState.ChangeSubmitted)
+                        toCancel.Add(order);
+                }
+            }
+            if (toCancel.Count == 0)
+                return;
+            try
+            {
+                account.Cancel(toCancel);
+                Print("OTRExecutionBridge cancelled entry for " + directive.command_id + " (" + (directive.reason ?? "") + ")");
+            }
+            catch (Exception ex)
+            {
+                Print("OTRExecutionBridge cancel error for " + directive.command_id + ": " + ex.Message);
+            }
         }
 
         private void SubmitCommand(ExecutionCommand command)
@@ -402,6 +467,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 OrderAction exitAction = string.Equals(plan.side, "BUY", StringComparison.OrdinalIgnoreCase)
                     ? OrderAction.Sell
                     : OrderAction.BuyToCover;
+                // GTC (pre-live audit): DAY protective orders can expire at the
+                // session close and leave the position without a stop.
                 string oco = "OTR72-" + commandId + "-" + Guid.NewGuid().ToString("N").Substring(0, 8);
 
                 Order target = account.CreateOrder(
@@ -409,7 +476,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     exitAction,
                     OrderType.Limit,
                     OrderEntry.Automated,
-                    TimeInForce.Day,
+                    TimeInForce.Gtc,
                     1,
                     plan.target_price,
                     0,
@@ -423,7 +490,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     exitAction,
                     OrderType.StopMarket,
                     OrderEntry.Automated,
-                    TimeInForce.Day,
+                    TimeInForce.Gtc,
                     1,
                     0,
                     plan.stop_price,

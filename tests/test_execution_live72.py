@@ -105,8 +105,13 @@ class ExecutionSafetyAndStoreTests(unittest.TestCase):
         verdict = self.reconciled()
         self.assertTrue(verdict["ok"])
         config = sim_config()
-        decision = evaluate_intent(self.connection, self.intent(config), config, now=NOW)
-        self.assertTrue(decision.allowed)
+        # Pre-live audit gates: Gold is the only authorised market, the
+        # contract expiry must be resolved and market data must be fresh.
+        self.connection.execute("CREATE TABLE market_quotes (symbol TEXT, received_at TEXT, ingested_at TEXT)")
+        self.connection.execute("INSERT INTO market_quotes VALUES ('GC', ?, ?)", (NOW.isoformat(), NOW.isoformat()))
+        intent = build_execution_intent(setup("GC"), risk_dollars=250, config=config, signal_contract="GC 12-26", now=NOW)
+        decision = evaluate_intent(self.connection, intent, config, now=NOW)
+        self.assertTrue(decision.allowed, decision.reason)
 
     def test_non_sim_account_is_refused_in_sim_bridge(self):
         config = sim_config(account="Funded123")

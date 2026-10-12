@@ -29,6 +29,21 @@ def _signal_contract(connection: sqlite3.Connection, symbol: str) -> str:
     return source.split(":", 1)[1].strip() if ":" in source else ""
 
 
+def _entry_lifetime_seconds(setup) -> int | None:
+    """Pending-entry lifetime the paper ledger applies to this timeframe.
+
+    Read at call time so Operation 8.1's patched PENDING_BARS are used.
+    """
+    from src.execution import paper as paper_module
+
+    timeframe = str(getattr(setup, "timeframe", "") or "")
+    bars = paper_module._PENDING_BARS.get(timeframe)
+    seconds = paper_module._BAR_SECONDS.get(timeframe)
+    if not bars or not seconds:
+        return None
+    return int(bars) * int(seconds)
+
+
 class ExecutionGateway:
     """Mirror approved OTR setups into a fail-closed broker command queue."""
 
@@ -48,7 +63,13 @@ class ExecutionGateway:
                 return result
 
             try:
-                intent = build_execution_intent(setup, risk_dollars=float(risk_dollars or 0.0), config=self.config, signal_contract=signal_contract)
+                intent = build_execution_intent(
+                    setup,
+                    risk_dollars=float(risk_dollars or 0.0),
+                    config=self.config,
+                    signal_contract=signal_contract,
+                    entry_lifetime_seconds=_entry_lifetime_seconds(setup),
+                )
             except ValueError as exc:
                 result = {"allowed": False, "code": "INTENT_REJECTED", "reason": str(exc), "mode": self.config.mode.value}
                 record_audit(connection, str(setup.setup_id), result["code"], result["reason"], result)
