@@ -3,6 +3,7 @@
 - **Branch:** `claude/upbeat-goodall-rbekun` (base `main` @ `a963690`)
 - **Revision 1:** 2026-10-12, commit `a208a26`.
 - **Revision 2:** 2026-10-12. This revision applies the owner's risk and strategy decisions and adds an explicit data-clock policy. It also corrects two claims from revision 1 (§0).
+- **Revision 2.1:** pre-PR cleanup, owner decisions D1 and D2 (§0a).
 - **Safety:** no orders were sent to any broker, simulator or prop account. All execution tests use in-memory or temp-file SQLite with simulated broker events.
 
 Confidence tags:
@@ -37,6 +38,21 @@ Confidence tags:
    - A real resting buy limit would fill at the gap price and then stop out at about the same price. The true outcome is roughly a scratch minus fees and slippage, not −1R.
    - It is still unrealistic, but smaller than revision 1 implied (§7).
 
+## 0a. Revision 2.1 owner decisions (pre-PR cleanup)
+
+**D1 — Broker per-trade risk ceiling inherits the strategy budget.**
+- `OTR_EXECUTION_MAX_RISK_DOLLARS`, when unset, now inherits `EVAL_RISK_PER_TRADE`. If neither is set, it is **$750** (the old code default was $350).
+- A valid Operation 8.1 A+ (~$750) plan is no longer silently cut to $350 during SIM certification.
+- The broker layer can still be set **lower** explicitly. A lower cap shrinks quantity (e.g. $500 → 10 MGC at a 5pt stop); it does not reject the trade.
+- Strategy-layer risk (8.1 tiers, `eval_risk81`) is unchanged.
+
+**D2 — Session profit cap disabled by default.**
+- `EVAL_SESSION_PROFIT_CAP` now defaults to **0 = disabled** (was $1,500). It stays configurable, and a positive value still produces `SESSION_PROFIT_LOCK`.
+- **Defect found and fixed while doing this [Certain]:** a disabled cap previously computed `session_profit_remaining = $0`. The legacy session sizer `_setup_risk_66` (`src/main_66.py:31-62`) caps risk to `remaining / R`, so that would have sized every trade to **$0** rather than disabling the cap. A disabled cap now reports `session_profit_remaining = None` (no limit), which `_setup_risk_66` already treats as "do not cap". Covered by a regression test.
+- The supervisor's legacy 7.2M repair explicitly never rewrites `EVAL_SESSION_PROFIT_CAP` (`server_72.py:56-60`), so the new default is effective.
+- **Production impact on merge:** if Railway does not set `EVAL_SESSION_PROFIT_CAP`, the paper engine stops applying the $1,500 lock. That is the intended policy change. The Railway value is unverified; nothing was read or changed there.
+- **Not changed (scope):** the research simulator's reference account profile (`src/research/execution/account.py:23`) still defaults to a $1,500 session cap. Its check (`:126`) has no `> 0` guard, so setting it to 0 there would lock every trade. Align it in the replay-parity follow-up (§9a).
+
 ---
 
 ## 13. Final readiness decision (stated first)
@@ -66,9 +82,9 @@ Blocking reasons for live trading, each sufficient alone:
 - **CRITICAL: 6.**
   - Open (3): no live path; protection failure unremediated; no verified edge.
   - Fixed (3): dashboard auth fail-open; broker gateway lacked exposure/loss/data checks; no cancel path.
-- **HIGH: 17.**
-  - Fixed: 9, some partially.
-  - Open: 8. Most are strategy or owner decisions, or need a NinjaTrader machine.
+- **HIGH: 18.**
+  - Fixed: 11, some partially (including H17 and H18 in revision 2.1).
+  - Open: 7. Most are strategy or owner decisions, or need a NinjaTrader machine.
 
 **What works [Certain]:**
 
@@ -131,11 +147,10 @@ Revision 1 §3 findings stand as **observations**. Per the owner, none of them w
 
 **Owner hypothesis (post-win give-back): not acted on.** It needs sequence analysis on a larger sample than 8 trades.
 
-**Related pre-existing behaviour to review [Certain]:**
+**Session profit cap — resolved in revision 2.1 (§0a D2):**
 
-- `EVAL_SESSION_PROFIT_CAP` defaults to **$1,500** (`evaluation.py:75,103`). It fires a `SESSION_PROFIT_LOCK` after realized session profit, which is effectively a post-win stop.
-- That contradicts both "no session profit ceiling" (`OPERATION-8.1.md`) and the stated philosophy.
-- It was **not changed**. The actual Railway value is unverified. Owner decision needed.
+- The paper guard's `EVAL_SESSION_PROFIT_CAP` previously defaulted to $1,500, an effective post-win stop. It now defaults to 0 = disabled and stays configurable.
+- This matches "no session profit ceiling" (`OPERATION-8.1.md`) and the stated philosophy.
 
 ---
 
@@ -145,12 +160,13 @@ Revision 1 §3 findings stand as **observations**. Per the owner, none of them w
 |---|---|
 | A+ ≈ $750 / A ≈ $500 (8.1) | ✅ Preserved, unchanged (`execution_policy81.py:12-14`). Env can only lower it |
 | Whole-MGC floor sizing | ✅ Verified ($750 at a 5pt stop = 15 MGC; $500 at a 3.7pt stop = 13 MGC / $481) |
-| Execution risk cap `OTR_EXECUTION_MAX_RISK_DOLLARS` | ⚠️ Pre-existing code default **$350**, `.env.example` $750. If unset in SIM_BRIDGE, A+ plans are cut to $350. Not changed; set explicitly before certification |
+| Execution risk cap `OTR_EXECUTION_MAX_RISK_DOLLARS` | ✅ (revision 2.1) Unset → inherits `EVAL_RISK_PER_TRADE`, else $750. Explicit lower values are honoured and shrink quantity |
 | Daily trade-count cap | ✅ **None by default** (broker `OTR_EXECUTION_MAX_TRADES_PER_DAY=0`; paper `EVAL_MAX_TRADES_PER_DAY=0`). Optional cap still works if set |
 | One active Gold idea | ✅ Paper (one per symbol + `EVAL_MAX_CONCURRENT=1`) and broker (`OTR_EXECUTION_MAX_ACTIVE_COMMANDS=1`) |
 | Daily loss — paper guard | ✅ Realized P&L, internal stop `EVAL_INTERNAL_DAILY_STOP` (code default $750, `.env.example` $1,000), 18:00 ET day |
 | Daily loss — broker layer | ✅ Realized + unresolved-exposure loss + open risk + new risk ≤ ceiling. Ceiling = `OTR_EXECUTION_MAX_DAILY_LOSS`, else `EVAL_INTERNAL_DAILY_STOP`, else $750. Derived from the persisted broker ledger, so it survives restarts and run rotation |
 | No post-win cooldown | ✅ None added. Test `test_no_cooldown_after_a_win` |
+| Session profit lock | ✅ (revision 2.1) Disabled by default (`EVAL_SESSION_PROFIT_CAP=0`); a disabled cap never sizes risk to $0; a positive value still locks |
 | MLL headroom | ✅ Paper guard, EOD-trailing on realized balance |
 | VERIFY mode | ✅ Broker refuses while `OTR_TRADING_MODE=VERIFY` (all governors are off in VERIFY) |
 | Run rotation (`start-fresh-run`) | ⚠️ Resets **paper** loss state. The broker ledger is immune |
@@ -203,8 +219,8 @@ The policy is configured explicitly with `OTR_EXECUTION_DATA_CLOCK`. It is **nev
 
 | Command | Result |
 |---|---|
-| `python -m unittest discover -s tests` | **581 passed, 0 failed, 0 skipped** (revision 1: 552; baseline: 512) |
-| `python -m unittest tests.test_prelive_audit_execution` | **69 passed** |
+| `python -m unittest discover -s tests` | **591 passed, 0 failed, 0 skipped** (revision 2: 581; revision 1: 552; baseline: 512) |
+| `python -m unittest tests.test_prelive_audit_execution` | **79 passed** |
 | `ruff check src scripts tests --select E9,F` | All checks passed |
 | `python -m compileall -q src scripts tests` | OK |
 | `bash -n run_all.sh run_dashboard.sh` | OK |
@@ -247,6 +263,18 @@ The policy is configured explicitly with `OTR_EXECUTION_DATA_CLOCK`. It is **nev
   - replay entry expiry uses event time;
   - the replay ledger follows replay days;
   - a backwards feed blocks.
+- **Revision 2.1 — broker risk ceiling:**
+  - inherits `EVAL_RISK_PER_TRADE=750`;
+  - an explicit $500 override wins;
+  - fallback $750 with nothing set;
+  - an A+ $750 intent is allowed with an env-derived config;
+  - an explicit lower cap shrinks size rather than blocking.
+- **Revision 2.1 — session profit cap:**
+  - default 0 (dataclass and env);
+  - a +$1,500 session does not stop the next setup (full $750 approved);
+  - a disabled cap never zeroes risk in `_setup_risk_66`;
+  - an explicit $1,500 cap still locks;
+  - the env var is still configurable.
 - **Replay provenance:**
   - the worker declares 7.0;
   - the runner refuses a mislabelled manifest before creating any run directory;
@@ -377,7 +405,9 @@ To make research replay conservative:
 
 **H16 — All protection is process-dependent** · Open.
 
-**H17 — `EVAL_SESSION_PROFIT_CAP=$1,500` acts as a post-win lock, contrary to the stated philosophy** · Open (owner decision; not changed per Task 8).
+**H17 — `EVAL_SESSION_PROFIT_CAP=$1,500` acted as a post-win lock, contrary to the stated philosophy** · ✅ Fixed in revision 2.1 (default 0 = disabled; configurable; disabled no longer yields $0 sizing).
+
+**H18 — Broker execution risk default of $350 would cut 8.1 A+ plans** · ✅ Fixed in revision 2.1 (inherits `EVAL_RISK_PER_TRADE`, fallback $750).
 
 ---
 
@@ -448,11 +478,21 @@ To make research replay conservative:
 | `.env.example` | Trade cap `0`; daily-loss override commented out (inherits `EVAL_INTERNAL_DAILY_STOP`); `OTR_EXECUTION_DATA_CLOCK=WALL`; signal lag; boundary disclaimer |
 | `tests/test_prelive_audit_execution.py` | +29 tests (§6) |
 
+**Revision 2.1:**
+
+| File | Change |
+|---|---|
+| `src/execution/live/config.py` | `max_risk_dollars` default $750. `from_env` reads `OTR_EXECUTION_MAX_RISK_DOLLARS`, else `EVAL_RISK_PER_TRADE`, else $750 |
+| `src/risk/evaluation.py` | `session_profit_cap` default 0 (disabled, env-configurable, negative clamped to 0). Disabled cap → `session_profit_remaining=None`; approval reason handles `None` |
+| `src/dashboard/server.py` | Legacy rules panel shows "Disabled" when the cap is 0 |
+| `.env.example` | Broker risk override commented out (inherits); `EVAL_SESSION_PROFIT_CAP=0` documented |
+| `tests/test_prelive_audit_execution.py` | +10 tests |
+
 **Not changed (strategy and risk):**
 
 - 8.1 A+/A amounts, R:R floors, zone logic, pending bars, quality and expectancy logic.
 - Strategy families, the intrabar lane, session hours, market selection.
-- `EVAL_*` defaults and `EVAL_SESSION_PROFIT_CAP`.
+- `EVAL_*` defaults other than `EVAL_SESSION_PROFIT_CAP` (revision 2.1, owner decision D2).
 - The `PaperExecutor` fill model.
 - The adapter's SIM-only restriction.
 - Railway variables.
@@ -473,18 +513,18 @@ To make research replay conservative:
 4. Verified evaluation-provider rules configured explicitly: daily loss definition, trailing drawdown, reset time, automation and news policy.
 5. Strategy evidence: 8.1 replay parity (§9a) with conservative fills (§7), out-of-sample, ≥100 trades.
 6. Owner decisions:
-   - `EVAL_SESSION_PROFIT_CAP` (H17);
    - the intrabar lane (H10);
    - the zone-edge / post-loss interaction (H11);
    - session hours.
-7. Set `OTR_EXECUTION_MAX_RISK_DOLLARS` explicitly (code default $350 would cut A+ plans).
 
 ### 11a. PR readiness
 
 **Ready for PR review** as an infrastructure-only hardening branch: tests green, no strategy or risk-tier change. Before merging, note:
 
 - **Merging `main` deploys to Railway** (`DEPLOY-RAILWAY.md`). Confirm `DASHBOARD_PASSWORD` is set there. With it empty, the dashboard now locks instead of opening.
-- **Production paper behaviour changes in one way:** the paper daily lock follows the 18:00 ET day. Evening losses now count toward the correct day, which is strictly more conservative.
+- **Production paper behaviour changes in two ways:**
+  - the paper daily lock follows the 18:00 ET day, so evening losses count toward the correct day (more conservative);
+  - unless Railway sets `EVAL_SESSION_PROFIT_CAP`, the $1,500 session profit lock no longer fires (owner decision D2).
 - **No broker behaviour changes in PAPER mode.** All new broker gates apply only when SIM_BRIDGE or LIVE is armed.
 - **The NinjaScript file is uncompiled.** Reviewers should treat the C# diff as pending certification.
 
@@ -499,7 +539,8 @@ This follows the owner's philosophy. Apply it only after §11 is closed.
 | Instrument | MGC only, front month pinned (`OTR_EXECUTION_ALLOWED_SYMBOLS=GC`) |
 | Concurrency | One active Gold idea (`OTR_EXECUTION_MAX_ACTIVE_COMMANDS=1`, `EVAL_MAX_CONCURRENT=1`) |
 | Trades per day | Unlimited (`OTR_EXECUTION_MAX_TRADES_PER_DAY=0`, `EVAL_MAX_TRADES_PER_DAY=0`) |
-| Risk per trade | 8.1 tiers, A+ ≤ $750 / A ≈ $500, with `OTR_EXECUTION_MAX_RISK_DOLLARS=750`. Certification first at `OTR_EXECUTION_MAX_MICROS=1` |
+| Risk per trade | 8.1 tiers, A+ ≤ $750 / A ≈ $500; broker ceiling inherits `EVAL_RISK_PER_TRADE`. Certification first at `OTR_EXECUTION_MAX_MICROS=1` |
+| Session profit lock | Disabled (`EVAL_SESSION_PROFIT_CAP=0`) |
 | Daily loss | `EVAL_INTERNAL_DAILY_STOP` set **below** the verified firm daily limit; broker inherits it |
 | R:R | 8.1 dynamic floors; no reward cap |
 | Data clock | `WALL` for live; `REPLAY` only for supervised SIM replay certification |

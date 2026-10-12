@@ -70,9 +70,12 @@ class EvaluationConfig:
     no_new_trades_after_et: str = "16:30"
     resume_trading_et: str = "18:00"
 
-    # Fast-eval mode banks a strong session instead of handing profit back.
-    # This is a realized-profit lock, not a trade-count allowance.
-    session_profit_cap: float = 1_500.0
+    # Optional session-banking rule: a realized-profit lock per session
+    # bucket. 0 = disabled (default). OTR policy is "unlimited good trades,
+    # limited bad risk", so a profitable session alone never stops the next
+    # independently qualified setup. Set EVAL_SESSION_PROFIT_CAP > 0 to
+    # deliberately enable banking.
+    session_profit_cap: float = 0.0
 
     # Keep the $3k target as the evaluation pass marker while optionally
     # continuing the replay/paper run for research after a simulated pass.
@@ -100,7 +103,7 @@ class EvaluationConfig:
             max_concurrent_positions=_env_int("EVAL_MAX_CONCURRENT", 1),
             no_new_trades_after_et=os.getenv("EVAL_NO_NEW_AFTER_ET", "16:30").strip(),
             resume_trading_et=os.getenv("EVAL_RESUME_ET", "18:00").strip(),
-            session_profit_cap=_env_float("EVAL_SESSION_PROFIT_CAP", 1_500.0),
+            session_profit_cap=max(0.0, _env_float("EVAL_SESSION_PROFIT_CAP", 0.0)),
             continue_after_target=_env_bool("EVAL_CONTINUE_AFTER_TARGET", True),
         )
 
@@ -291,7 +294,14 @@ class EvaluationRiskGuard:
         largest_day_profit = max([0.0] + [value for value in daily_results.values() if value > 0])
         positive_profit = max(0.0, realized)
         consistency = (largest_day_profit / positive_profit * 100.0) if positive_profit > 0 else None
-        session_profit_remaining = max(0.0, float(c.session_profit_cap) - max(0.0, session_pnl))
+        # None = no session banking limit. A disabled cap must never read as
+        # "$0 remaining", which downstream risk hooks (main_66) would treat as
+        # "size the next trade to zero".
+        session_profit_remaining = (
+            max(0.0, float(c.session_profit_cap) - max(0.0, session_pnl))
+            if c.session_profit_cap > 0
+            else None
+        )
 
         # Safety locks always outrank the profit target. Hitting $3k is a pass
         # marker, not permission to ignore the MLL/daily/concurrency governors.
@@ -409,5 +419,10 @@ class EvaluationRiskGuard:
             return EvaluationDecision(True, risk, "PASSED", reason, snap)
 
         session_name = (snap.get("session") or {}).get("name")
-        suffix = f" · {session_name} remaining ${snap['session_profit_remaining']:.2f}" if session_name else ""
+        remaining = snap.get("session_profit_remaining")
+        suffix = (
+            f" · {session_name} remaining ${remaining:.2f}"
+            if session_name and remaining is not None
+            else ""
+        )
         return EvaluationDecision(True, risk, "ACTIVE", f"Approved with ${risk:.2f} paper risk{suffix}.", snap)

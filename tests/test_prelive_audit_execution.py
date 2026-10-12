@@ -742,6 +742,123 @@ class DataClockPolicyTests(_GatewayHarness):
         self.assertEqual(wall["trades"], 2)
 
 
+class BrokerRiskCeilingDefaultTests(_GatewayHarness):
+    SIM_ENV = {"OTR_EXECUTION_MODE": "SIM_BRIDGE", "OTR_EXECUTION_ARMED": "1", "OTR_EXECUTION_ACCOUNT": "Sim101", "OTR_EXECUTION_MAX_MICROS": "40"}
+
+    def test_broker_max_risk_inherits_eval_risk_per_trade(self):
+        with mock.patch.dict(os.environ, {"EVAL_RISK_PER_TRADE": "750"}, clear=True):
+            self.assertEqual(ExecutionConfig.from_env().max_risk_dollars, 750.0)
+
+    def test_explicit_broker_max_risk_overrides_lower(self):
+        with mock.patch.dict(os.environ, {"EVAL_RISK_PER_TRADE": "750", "OTR_EXECUTION_MAX_RISK_DOLLARS": "500"}, clear=True):
+            self.assertEqual(ExecutionConfig.from_env().max_risk_dollars, 500.0)
+
+    def test_broker_max_risk_fallback_is_750_when_nothing_is_set(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(ExecutionConfig.from_env().max_risk_dollars, 750.0)
+        self.assertEqual(ExecutionConfig().max_risk_dollars, 750.0)
+
+    def test_a_plus_750_intent_allowed_with_env_derived_config(self):
+        self.reconcile()
+        with mock.patch.dict(os.environ, {**self.SIM_ENV, "EVAL_RISK_PER_TRADE": "750", "EVAL_INTERNAL_DAILY_STOP": "1000"}, clear=True):
+            config = ExecutionConfig.from_env()
+            intent = build_execution_intent(gold_setup("aplus-env"), risk_dollars=750.0, config=config, signal_contract=CONTRACT, now=NOW)
+            decision = evaluate_intent(self.connection, intent, config, now=NOW)
+        self.assertEqual((intent.quantity, intent.risk_dollars), (15, 750.0))
+        self.assertTrue(decision.allowed, decision.reason)
+
+    def test_explicit_lower_broker_cap_shrinks_a_plus_size_not_blocks(self):
+        with mock.patch.dict(os.environ, {**self.SIM_ENV, "EVAL_RISK_PER_TRADE": "750", "OTR_EXECUTION_MAX_RISK_DOLLARS": "500"}, clear=True):
+            config = ExecutionConfig.from_env()
+        intent = build_execution_intent(gold_setup("aplus-capped"), risk_dollars=750.0, config=config, signal_contract=CONTRACT, now=NOW)
+        self.assertEqual((intent.quantity, intent.risk_dollars), (10, 500.0))
+
+
+def _session_paper_db():
+    from tests.test_operation66 import _paper_db
+
+    connection = _paper_db()
+    # Two New York-session wins totalling $1,500.
+    connection.executemany(
+        "INSERT INTO paper_trades VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            ("w1", "CLOSED", "2026-08-19T13:00:00+00:00", "2026-08-19T13:30:00+00:00", "WIN", 2.0, 300.0, 800.0, "2026-08-19T13:30:00+00:00"),
+            ("w2", "CLOSED", "2026-08-19T14:00:00+00:00", "2026-08-19T14:30:00+00:00", "WIN", 2.0, 300.0, 700.0, "2026-08-19T14:30:00+00:00"),
+        ],
+    )
+    connection.commit()
+    return connection
+
+
+class SessionProfitCapDefaultTests(unittest.TestCase):
+    AFTER_SESSION_WINS = datetime(2026, 8, 19, 15, 0, tzinfo=UTC)
+
+    def guard_config(self, **overrides):
+        from src.risk.evaluation import EvaluationConfig
+
+        values = dict(
+            risk_per_trade=750.0, min_risk_per_trade=500.0, internal_daily_stop=1000.0,
+            max_trades_per_day=0, max_consecutive_losses=3, continue_after_target=True,
+        )
+        values.update(overrides)
+        return EvaluationConfig(**values)
+
+    def test_default_session_profit_cap_is_disabled(self):
+        from src.risk.evaluation import EvaluationConfig
+
+        self.assertEqual(EvaluationConfig().session_profit_cap, 0.0)
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(EvaluationConfig.from_env().session_profit_cap, 0.0)
+
+    def test_disabled_cap_does_not_stop_next_setup_after_profitable_session(self):
+        from src.risk.evaluation import EvaluationRiskGuard
+
+        connection = _session_paper_db()
+        guard = EvaluationRiskGuard(self.guard_config())  # session_profit_cap default 0
+        decision = guard.decide(connection, self.AFTER_SESSION_WINS)
+        self.assertTrue(decision.allowed, decision.reason)
+        self.assertEqual(decision.status, "ACTIVE")
+        self.assertEqual(decision.risk_dollars, 750.0)
+        self.assertEqual(decision.snapshot["session_pnl"], 1500.0)
+        # Disabled means "no allowance", never "$0 remaining".
+        self.assertIsNone(decision.snapshot["session_profit_remaining"])
+
+    def test_disabled_cap_never_shrinks_risk_in_legacy_session_sizer(self):
+        script = r'''
+import json
+from types import SimpleNamespace
+import src.main_66 as op66
+decision = SimpleNamespace(risk_dollars=750.0, snapshot={"session_profit_remaining": None})
+setup = SimpleNamespace(risk_reward=3.0, metadata={"risk_multiplier": 1.0})
+original = op66._previous_setup_risk_66
+op66._previous_setup_risk_66 = lambda decision, setup: (750.0, 1.0)
+try:
+    risk, multiplier = op66._setup_risk_66(decision, setup)
+finally:
+    op66._previous_setup_risk_66 = original
+print(json.dumps({"risk": risk, "multiplier": multiplier}))
+'''
+        result = subprocess.run([sys.executable, "-c", script], check=True, capture_output=True, text=True, timeout=60)
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        self.assertEqual(payload, {"risk": 750.0, "multiplier": 1.0})
+
+    def test_explicit_positive_session_cap_still_locks(self):
+        from src.risk.evaluation import EvaluationRiskGuard
+
+        connection = _session_paper_db()
+        guard = EvaluationRiskGuard(self.guard_config(session_profit_cap=1500.0))
+        decision = guard.decide(connection, self.AFTER_SESSION_WINS)
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.status, "SESSION_PROFIT_LOCK")
+        self.assertEqual(decision.snapshot["session_profit_remaining"], 0.0)
+
+    def test_session_cap_env_still_configurable(self):
+        from src.risk.evaluation import EvaluationConfig
+
+        with mock.patch.dict(os.environ, {"EVAL_SESSION_PROFIT_CAP": "1500"}, clear=True):
+            self.assertEqual(EvaluationConfig.from_env().session_profit_cap, 1500.0)
+
+
 class ReplayProvenanceTests(unittest.TestCase):
     def test_worker_declares_its_true_engine(self):
         from src.research.replay import worker

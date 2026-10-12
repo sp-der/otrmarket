@@ -52,7 +52,10 @@ class ExecutionConfig:
     certified: bool = False
     account: str = "Sim101"
     max_micros: int = 1
-    max_risk_dollars: float = 350.0
+    # Broker per-trade risk ceiling. from_env inherits EVAL_RISK_PER_TRADE so a
+    # valid Operation 8.1 A+ (~$750) plan is not silently cut during SIM
+    # certification; it may still be configured lower explicitly.
+    max_risk_dollars: float = 750.0
     command_ttl_seconds: int = 45
     heartbeat_ttl_seconds: int = 15
     reconciliation_ttl_seconds: int = 15
@@ -96,7 +99,10 @@ class ExecutionConfig:
             certified=_bool("OTR_EXECUTION_CERTIFIED", False),
             account=os.getenv("OTR_EXECUTION_ACCOUNT", "Sim101").strip() or "Sim101",
             max_micros=max(1, _int("OTR_EXECUTION_MAX_MICROS", 1)),
-            max_risk_dollars=max(1.0, _float("OTR_EXECUTION_MAX_RISK_DOLLARS", 350.0)),
+            max_risk_dollars=max(
+                1.0,
+                _float("OTR_EXECUTION_MAX_RISK_DOLLARS", _float("EVAL_RISK_PER_TRADE", 750.0)),
+            ),
             command_ttl_seconds=max(5, _int("OTR_EXECUTION_COMMAND_TTL_SECONDS", 45)),
             heartbeat_ttl_seconds=max(5, _int("OTR_EXECUTION_HEARTBEAT_TTL_SECONDS", 15)),
             reconciliation_ttl_seconds=max(5, _int("OTR_EXECUTION_RECONCILIATION_TTL_SECONDS", 15)),

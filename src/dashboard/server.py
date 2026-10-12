@@ -168,8 +168,12 @@ def _write_runtime_manifest(engine_module: str) -> None:
             {
                 "name": "Fast-eval session profit lock",
                 "value": (
-                    f"${_env_float('EVAL_SESSION_PROFIT_CAP', 1500.0):.0f} realized max per bucket · "
-                    "Asia 18-21 ET · Tokyo 21-02 ET · London 02-08 ET · New York 08-16:30 ET"
+                    (
+                        f"${_env_float('EVAL_SESSION_PROFIT_CAP', 0.0):.0f} realized max per bucket · "
+                        "Asia 18-21 ET · Tokyo 21-02 ET · London 02-08 ET · New York 08-16:30 ET"
+                    )
+                    if _env_float("EVAL_SESSION_PROFIT_CAP", 0.0) > 0
+                    else "Disabled (EVAL_SESSION_PROFIT_CAP=0) · unlimited qualified trades, daily loss governs"
                 ),
                 "source": "src/risk/evaluation.py",
             },
